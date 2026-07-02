@@ -19,15 +19,23 @@
         } catch (e) {}
       })();
     </script>
-    <!-- MIP RUM — POC (retirer après la démo) -->
+    <!-- MIP RUM — Real User Monitoring (front). Chargé au plus tôt dans le <head>
+         pour couvrir toutes les pages. Collecte anonymisée (user_hash, sans IP
+         stockée, maskAllInputs sur le replay). NB : la bannière cookies actuelle
+         est informative (pas de gate de consentement) ; pour un vrai consentement,
+         ajouter requireConsent:true ici puis appeler MIPRum.consent(true/false). -->
     <script src="https://mip-rum-console.vercel.app/mip-rum.js"></script>
     <script>
       MIPRum.init({
         endpoint: "https://nupxrdpsliqptqnjkmgw.supabase.co/functions/v1/v1-traces",
         appId: "gip-plateforme",
         clientId: "groupement-it",
-        env: "prod",
-        sampleRate: 1.0
+        apiKey: "mip_live_gip_59ca708ce596d20a52d58ea976dc512c516b442a",
+        env: "production",
+        sampleRate: 1.0,   // 100% des sessions
+        trace: true,       // tracing distribué front→back (spans serveur déjà collectés)
+        replay: 0.1,       // 10% des sessions en session-replay (maskAllInputs)
+        frustration: true  // rage clicks / dead clicks
       });
     </script>
   </head>

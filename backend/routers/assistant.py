@@ -25,12 +25,12 @@ import time
 import unicodedata
 from datetime import date, datetime, timezone
 from typing import Callable, Optional, Literal
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 from openai import AsyncOpenAI
 
 from config import settings
-from mip_rum_ai import record_ai_call
+from mip_rum_ai import record_ai_call, session_id_from_tracestate
 from services.supabase_client import supabase
 from services.ratelimit import rate_limit
 from routers.auth import get_current_user
@@ -726,8 +726,9 @@ def _fallback(messages: list[ChatMessage], role: str, snap: Optional[dict]) -> C
 
 
 @router.post("/chat", response_model=ChatResponse, dependencies=[Depends(rate_limit(20, 60))])
-async def chat(body: ChatRequest, user: dict = Depends(get_current_user)):
+async def chat(body: ChatRequest, request: Request, user: dict = Depends(get_current_user)):
     role = user.get("role", "ao")
+    session_id = session_id_from_tracestate(request.headers.get("tracestate"))
     snap = _build_snapshot(user)
     if _client is None or not body.messages:
         return _fallback(body.messages, role, snap)
@@ -741,7 +742,7 @@ async def chat(body: ChatRequest, user: dict = Depends(get_current_user)):
     convo += [{"role": m.role, "content": m.content} for m in body.messages[-10:]]
 
     try:
-        with record_ai_call(provider="openrouter", model=MODEL, route="assistant/chat") as _call:
+        with record_ai_call(provider="openrouter", model=MODEL, route="assistant/chat", session_id=session_id) as _call:
             resp = await _client.chat.completions.create(model=MODEL, messages=convo, temperature=0.3, max_tokens=900)
             _u = getattr(resp, "usage", None)
             if _u:

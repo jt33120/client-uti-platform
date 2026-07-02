@@ -25,13 +25,22 @@ import time
 from typing import Optional
 
 from config import settings
-# On réutilise l'encodeur d'attribut, le POST OTLP et la version du middleware.
-from mip_rum_middleware import _kv, _post, VERSION
+# On réutilise l'encodeur d'attribut, le POST OTLP, la regex tracestate et la
+# version du middleware existant (même format de session que http.server).
+from mip_rum_middleware import _kv, _post, _TRACESTATE_MIP, VERSION
 
 _ENDPOINT = settings.mip_rum_endpoint
 _APP_ID = settings.mip_rum_app_id
 _API_KEY = settings.mip_rum_api_key
 _ENABLED = bool(_ENDPOINT and _APP_ID)
+
+
+def session_id_from_tracestate(tracestate: Optional[str]) -> Optional[str]:
+    """Extrait le ``mip.session_id`` du header ``tracestate: mip=s:<id>`` (best-effort)."""
+    if not tracestate:
+        return None
+    m = _TRACESTATE_MIP.search(tracestate)
+    return m.group(1) if m else None
 
 
 def _otlp(span: dict) -> dict:

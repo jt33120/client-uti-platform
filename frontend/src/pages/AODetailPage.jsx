@@ -1099,7 +1099,14 @@ function ClientSendModal({ aoId, sub, clientId, onClose, onSent }) {
   )
 }
 
-function ValidationTab({ aoId, submissions, clientId }) {
+// Pastille de score (couleur selon le niveau) — visible d'un coup d'œil.
+const scoreTone = (v) => v >= 75
+  ? { background: 'rgba(16,185,129,0.15)', color: '#10b981', borderColor: 'rgba(16,185,129,0.45)' }
+  : v >= 50
+    ? { background: 'var(--accent-soft)', color: 'var(--accent-text)', borderColor: 'var(--border)' }
+    : { background: 'rgba(245,158,11,0.14)', color: '#f59e0b', borderColor: 'rgba(245,158,11,0.4)' }
+
+function ValidationTab({ aoId, submissions, clientId, scores }) {
   const confirm = useConfirm()
   const [states, setStates] = useState({})
   const [busy, setBusy] = useState(null)
@@ -1212,6 +1219,13 @@ function ValidationTab({ aoId, submissions, clientId }) {
                     <span className="text-sm font-medium text-white truncate">
                       {s.submitter?.name && <span className="text-slate-600">· </span>}{c.name || 'Inconnu'}
                     </span>
+                    {scores?.[s.consultant_id] != null && (
+                      <span className="text-[11px] font-bold px-1.5 py-0.5 rounded border tabular"
+                        style={scoreTone(scores[s.consultant_id])}
+                        title="Score de matching IA">
+                        {scores[s.consultant_id]}
+                      </span>
+                    )}
                     {c.employment_type && (
                       <span className="badge bg-white/5 text-slate-400 text-[10px]">
                         {c.employment_type === 'salarie' ? 'Salarié' : 'Indépendant'}
@@ -2237,7 +2251,11 @@ export default function AODetailPage() {
       {/* ── Onglet Analyse & CV : top profils, CVs, couverture, diffusion (ordre adaptatif) ── */}
       {tab === 'validation' && isAdmin && (
         <div className="mb-5">
-          <ValidationTab aoId={id} submissions={submissions} clientId={ao.client_id} />
+          <ValidationTab aoId={id} submissions={submissions} clientId={ao.client_id}
+            scores={(matchResults || []).reduce((m, r) => {
+              if (r.consultant_id != null) m[r.consultant_id] = r.score_hybride ?? r.score_total
+              return m
+            }, {})} />
         </div>
       )}
 

@@ -21,6 +21,7 @@ from typing import Optional
 
 from openai import AsyncOpenAI
 from config import settings
+from mip_rum_ai import record_ai_call
 from services.ai_matching import calculate_cost
 
 _client = AsyncOpenAI(
@@ -106,16 +107,22 @@ def _candidate_brief(features: dict, consultant: dict) -> str:
 
 async def _call_scoring(c: AsyncOpenAI, model: str, user: str, maxes: dict) -> tuple[Optional[dict], float]:
     """Appel de scoring sur un client/modèle donné. Lève en cas d'erreur."""
-    resp = await c.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": _SYSTEM},
-            {"role": "user", "content": user},
-        ],
-        response_format={"type": "json_object"},
-        temperature=0,
-        max_tokens=700,
-    )
+    _prov = "mistral" if "mistral" in str(getattr(c, "base_url", "")) else "openrouter"
+    with record_ai_call(provider=_prov, model=model, operation="chat", route="matching/score") as _call:
+        resp = await c.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": _SYSTEM},
+                {"role": "user", "content": user},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0,
+            max_tokens=700,
+        )
+        _u = resp.usage
+        _call.usage(input_tokens=getattr(_u, "prompt_tokens", None),
+                    output_tokens=getattr(_u, "completion_tokens", None),
+                    cost=getattr(_u, "cost", None))
     data = json.loads(resp.choices[0].message.content)
     usage = resp.usage
     cost = calculate_cost(usage.prompt_tokens, usage.completion_tokens)

@@ -11,6 +11,7 @@ import json
 from typing import Optional
 from openai import AsyncOpenAI
 from config import settings
+from mip_rum_ai import record_ai_call
 
 client = AsyncOpenAI(
     api_key=settings.openrouter_key,
@@ -81,16 +82,22 @@ _EMPTY_FEATURES = {"skills": [], "experience_years": None, "sectors": [], "summa
 
 async def _call_extraction(c: AsyncOpenAI, model: str, cv_text: str) -> tuple[dict, float]:
     """Appel d'extraction sur un client/modèle donné. Lève en cas d'erreur."""
-    response = await c.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
-            {"role": "user", "content": cv_text[:6000]},
-        ],
-        response_format={"type": "json_object"},
-        temperature=0,
-        max_tokens=800,
-    )
+    _prov = "mistral" if "mistral" in str(getattr(c, "base_url", "")) else "openrouter"
+    with record_ai_call(provider=_prov, model=model, operation="chat", route="matching/extract") as _call:
+        response = await c.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
+                {"role": "user", "content": cv_text[:6000]},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0,
+            max_tokens=800,
+        )
+        _u = response.usage
+        _call.usage(input_tokens=getattr(_u, "prompt_tokens", None),
+                    output_tokens=getattr(_u, "completion_tokens", None),
+                    cost=getattr(_u, "cost", None))
     data = json.loads(response.choices[0].message.content)
     usage = response.usage
     cost = calculate_cost(usage.prompt_tokens, usage.completion_tokens)

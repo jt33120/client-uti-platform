@@ -14,6 +14,7 @@ from typing import Optional
 from openai import AsyncOpenAI
 
 from config import settings
+from mip_rum_ai import record_ai_call
 
 _client: Optional[AsyncOpenAI] = (
     AsyncOpenAI(api_key=settings.openrouter_key, base_url="https://openrouter.ai/api/v1")
@@ -200,15 +201,21 @@ async def draft_ao_fields(source: str, ao_types: list[str]) -> Optional[dict]:
     last_err: Optional[Exception] = None
     for c, model, provider in candidates:
         try:
-            resp = await c.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                temperature=0.2,
-                max_tokens=1200,
-            )
+            with record_ai_call(provider=provider.lower(), model=model, route="ao/draft") as _call:
+                resp = await c.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
+                    ],
+                    temperature=0.2,
+                    max_tokens=1200,
+                )
+                _u = getattr(resp, "usage", None)
+                if _u:
+                    _call.usage(input_tokens=getattr(_u, "prompt_tokens", None),
+                                output_tokens=getattr(_u, "completion_tokens", None),
+                                cost=getattr(_u, "cost", None))
             data = _extract_json(resp.choices[0].message.content or "")
             if data is None:
                 continue
@@ -245,19 +252,25 @@ async def summarize_ao(ao: dict) -> Optional[str]:
         return None
     for c, model, provider in candidates:
         try:
-            resp = await c.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": (
-                        "Tu résumes un appel d'offres en UNE seule phrase courte (20 mots "
-                        "maximum), en français, claire et parlante. Réponds uniquement par "
-                        "la phrase, sans préfixe, sans guillemets."
-                    )},
-                    {"role": "user", "content": source},
-                ],
-                temperature=0.3,
-                max_tokens=80,
-            )
+            with record_ai_call(provider=provider.lower(), model=model, route="ao/summary") as _call:
+                resp = await c.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": (
+                            "Tu résumes un appel d'offres en UNE seule phrase courte (20 mots "
+                            "maximum), en français, claire et parlante. Réponds uniquement par "
+                            "la phrase, sans préfixe, sans guillemets."
+                        )},
+                        {"role": "user", "content": source},
+                    ],
+                    temperature=0.3,
+                    max_tokens=80,
+                )
+                _u = getattr(resp, "usage", None)
+                if _u:
+                    _call.usage(input_tokens=getattr(_u, "prompt_tokens", None),
+                                output_tokens=getattr(_u, "completion_tokens", None),
+                                cost=getattr(_u, "cost", None))
             txt = (resp.choices[0].message.content or "").strip().strip('"').strip()
             return txt[:240] or None
         except Exception as e:  # noqa: BLE001

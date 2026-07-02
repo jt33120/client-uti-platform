@@ -4,7 +4,7 @@ import api from '../lib/api'
 import { useAuth } from '../contexts/AuthContext'
 import {
   ArrowLeft, Building2, Briefcase, UserCircle2, Mail, Pencil, Loader2,
-  FileText, Plus, Euro, MapPin, Clock, Star, ListChecks, Ban, AlertCircle,
+  FileText, Plus, Euro, MapPin, Clock, Star, ListChecks, Ban,
   ChevronDown, Users, CheckCircle2
 } from 'lucide-react'
 import clsx from 'clsx'
@@ -15,26 +15,6 @@ const TIER_OPTIONS = [
   { value: 'list_2', label: 'Liste 2', color: 'text-brand-300' },
   { value: 'suspended', label: 'Suspendu', color: 'text-red-400' },
 ]
-
-function TierBadge({ tier }) {
-  const map = {
-    list_1: { cls: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20', label: 'Liste 1', Icon: Star },
-    list_2: { cls: 'bg-brand-500/10 text-brand-300 border-brand-500/20', label: 'Liste 2', Icon: ListChecks },
-    suspended: { cls: 'bg-red-500/10 text-red-400 border-red-500/20', label: 'Suspendu', Icon: AlertCircle },
-  }
-  if (!tier) return (
-    <span className="badge bg-slate-800 text-slate-500 border border-slate-700 text-[10px] flex items-center gap-1">
-      <Ban size={9} /> Aucun accès
-    </span>
-  )
-  const c = map[tier]
-  if (!c) return null
-  return (
-    <span className={clsx('badge border text-[10px] flex items-center gap-1', c.cls)}>
-      <c.Icon size={9} /> {c.label}
-    </span>
-  )
-}
 
 function ClientEditModal({ client, onClose, onSaved }) {
   const [form, setForm] = useState({

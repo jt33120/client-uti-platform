@@ -6,17 +6,7 @@ import { useConfirm } from '../contexts/ConfirmContext'
 import { Building2, Plus, Pencil, Trash2, Search, Briefcase, UserCircle2, Mail, ArrowRight, AlertTriangle, ChevronRight, Layers } from 'lucide-react'
 import clsx from 'clsx'
 import { findSimilarClients } from '../lib/similarity'
-
-function TierBadge({ tier }) {
-  const map = {
-    list_1: 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20',
-    list_2: 'bg-brand-500/10 text-brand-300 border border-brand-500/20',
-    suspended: 'bg-red-500/10 text-red-400 border border-red-500/20',
-  }
-  const label = { list_1: 'Liste 1', list_2: 'Liste 2', suspended: 'Suspendu' }
-  if (!tier) return null
-  return <span className={clsx('badge text-[10px]', map[tier])}>{label[tier]}</span>
-}
+import { TierBadge } from '../components/badges'
 
 // Puce périmètre (AMOA, SAD, SI, ...)
 function PerimetreBadge({ perimetre }) {

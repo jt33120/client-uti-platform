@@ -2383,7 +2383,7 @@ export default function AODetailPage() {
                 <MatchCarousel results={matchResults} aoId={id} isAdmin ao={ao} />
               ) : !matching && submissions.length === 0 ? (
                 <div className="card p-8 text-center border-dashed border-white/10">
-                  <Users size={28} className="mx-auto text-slate-700 mb-3" />
+                  <Users size={32} className="mx-auto text-slate-700 mb-3" />
                   <p className="text-slate-400 text-sm">Aucun CV n'a encore été soumis</p>
                   <p className="text-xs text-slate-600 mt-1">Le scoring se lancera automatiquement dès la première soumission</p>
                 </div>

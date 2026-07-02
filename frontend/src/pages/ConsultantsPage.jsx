@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import api from '../lib/api'
+import { EmptyState } from '../components/EmptyState'
 import { useAuth } from '../contexts/AuthContext'
 import { useConfirm } from '../contexts/ConfirmContext'
 import ContactPartnerModal from '../components/ContactPartnerModal'
@@ -425,17 +426,15 @@ export default function ConsultantsPage() {
           {loading ? (
             <div className="text-center py-16 text-slate-500 text-sm">Chargement...</div>
           ) : filtered.length === 0 ? (
-            <div className="text-center py-16">
-              <Users size={32} className="mx-auto text-slate-700 mb-3" />
-              <p className="text-slate-500 text-sm">
-                {search || activeFilterCount ? 'Aucun résultat' : 'Aucun consultant dans votre vivier'}
-              </p>
-              {!isStaff && !search && !activeFilterCount && (
+            <EmptyState
+              icon={Users}
+              message={search || activeFilterCount ? 'Aucun résultat' : 'Aucun consultant dans votre vivier'}
+              action={!isStaff && !search && !activeFilterCount && (
                 <Link to="/consultants/new" className="btn-primary mt-4 mx-auto">
                   <Plus size={14} /> Ajouter le premier consultant
                 </Link>
               )}
-            </div>
+            />
           ) : (
             <>
               <div className="text-[11px] mb-2 px-1" style={{ color: 'var(--text-faint)' }}>

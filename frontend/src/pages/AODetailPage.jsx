@@ -1208,7 +1208,7 @@ function ValidationTab({ aoId, submissions, clientId, scores }) {
                   onChange={() => toggleSel(s.consultant_id)}
                   className="shrink-0 w-4 h-4 cursor-pointer" style={{ accentColor: 'var(--accent)' }}
                   title="Sélectionner pour une action groupée" />
-                <UserCircle2 size={26} className="text-slate-500 shrink-0" />
+                <UserCircle2 size={24} className="text-slate-500 shrink-0" />
                 <div className="min-w-0 flex-1">
                   {/* Identité + score (mis en avant) */}
                   <div className="flex items-center gap-2 flex-wrap">
@@ -2383,7 +2383,7 @@ export default function AODetailPage() {
                 <MatchCarousel results={matchResults} aoId={id} isAdmin ao={ao} />
               ) : !matching && submissions.length === 0 ? (
                 <div className="card p-8 text-center border-dashed border-white/10">
-                  <Users size={28} className="mx-auto text-slate-700 mb-3" />
+                  <Users size={32} className="mx-auto text-slate-700 mb-3" />
                   <p className="text-slate-400 text-sm">Aucun CV n'a encore été soumis</p>
                   <p className="text-xs text-slate-600 mt-1">Le scoring se lancera automatiquement dès la première soumission</p>
                 </div>

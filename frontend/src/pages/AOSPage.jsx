@@ -9,6 +9,7 @@ import {
   Pencil, X, Loader2, ChevronDown, Check, Trash2, ArrowDownUp, Sparkles,
 } from 'lucide-react'
 import { TierBadge } from '../components/badges'
+import { EmptyState } from '../components/EmptyState'
 
 // Parse date-only strings as local to avoid the UTC off-by-one.
 const parseDateLocal = (iso) => {
@@ -598,27 +599,27 @@ export default function AOSPage() {
       {loading ? (
         <div className="text-center py-16 text-slate-500 text-sm">Chargement...</div>
       ) : sorted.length === 0 ? (
-        <div className="text-center py-16">
-          <FileText size={32} className="mx-auto text-slate-700 mb-3" />
-          <p className="text-slate-500 text-sm">
-            {matchedOnly
-              ? "Aucun AO n'a encore trouvé de consultant potentiel."
-              : search
-                ? 'Aucun résultat'
-                : 'Aucun appel d\'offres accessible pour le moment'}
-          </p>
-          {/* Ne proposer « créer » que sur un vrai état vide (pas un filtre). */}
-          {isStaff && !search && !matchedOnly && (
-            <Link to="/aos/new" className="btn-primary mt-4 mx-auto">
-              <Plus size={14} /> Créer le premier AO
-            </Link>
-          )}
-          {matchedOnly && (
-            <button onClick={() => setSearchParams({}, { replace: true })} className="btn-ghost mt-4 mx-auto">
-              Voir tous les AOs
-            </button>
-          )}
-        </div>
+        <EmptyState
+          icon={FileText}
+          message={matchedOnly
+            ? "Aucun AO n'a encore trouvé de consultant potentiel."
+            : search
+              ? 'Aucun résultat'
+              : 'Aucun appel d\'offres accessible pour le moment'}
+          action={<>
+            {/* Ne proposer « créer » que sur un vrai état vide (pas un filtre). */}
+            {isStaff && !search && !matchedOnly && (
+              <Link to="/aos/new" className="btn-primary mt-4 mx-auto">
+                <Plus size={14} /> Créer le premier AO
+              </Link>
+            )}
+            {matchedOnly && (
+              <button onClick={() => setSearchParams({}, { replace: true })} className="btn-ghost mt-4 mx-auto">
+                Voir tous les AOs
+              </button>
+            )}
+          </>}
+        />
       ) : groupBy === 'client' && groupedByClient ? (
         <div className="space-y-6">
           {groupedByClient.map(group => (

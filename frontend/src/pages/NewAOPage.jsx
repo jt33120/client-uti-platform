@@ -180,7 +180,7 @@ export default function NewAOPage() {
         className={`card p-6 mb-6 border bg-gradient-to-br from-violet-500/[0.08] to-brand-500/[0.04] transition-colors ${dragOver ? 'border-violet-400 ring-2 ring-violet-400/40' : 'border-violet-500/20'}`}>
         <div className="flex items-start gap-3 mb-4">
           <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-violet-500/30 to-brand-500/30 border border-violet-400/20 flex items-center justify-center shrink-0">
-            <Sparkles size={17} className="text-violet-300" />
+            <Sparkles size={18} className="text-violet-300" />
           </div>
           <div>
             <h2 className="text-sm font-semibold text-white">Générer l'AO avec l'IA</h2>

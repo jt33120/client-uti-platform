@@ -7,6 +7,7 @@ import { Building2, Plus, Pencil, Trash2, Search, Briefcase, UserCircle2, Mail, 
 import clsx from 'clsx'
 import { findSimilarClients } from '../lib/similarity'
 import { TierBadge } from '../components/badges'
+import { EmptyState } from '../components/EmptyState'
 
 // Puce périmètre (AMOA, SAD, SI, ...)
 function PerimetreBadge({ perimetre }) {
@@ -365,17 +366,15 @@ export default function ClientsPage() {
       {loading ? (
         <div className="text-center py-16 text-slate-500 text-sm">Chargement...</div>
       ) : filteredRoots.length === 0 ? (
-        <div className="text-center py-16">
-          <Building2 size={32} className="mx-auto text-slate-700 mb-3" />
-          <p className="text-slate-500 text-sm">
-            {search ? 'Aucun résultat' : isAdmin ? 'Aucun client pour le moment' : 'Aucun client accessible'}
-          </p>
-          {isAdmin && !search && (
+        <EmptyState
+          icon={Building2}
+          message={search ? 'Aucun résultat' : isAdmin ? 'Aucun client pour le moment' : 'Aucun client accessible'}
+          action={isAdmin && !search && (
             <Link to="/clients/new" className="btn-primary mt-4 mx-auto">
               <Plus size={14} /> Créer le premier client
             </Link>
           )}
-        </div>
+        />
       ) : (
         <div className="space-y-2">
           {filteredRoots.map(r => {

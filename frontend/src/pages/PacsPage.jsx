@@ -8,6 +8,7 @@ import {
 } from 'lucide-react'
 import clsx from 'clsx'
 import { TierBadge } from '../components/badges'
+import { EmptyState } from '../components/EmptyState'
 
 const TIER_OPTIONS = [
   { value: 'list_1', label: 'Liste 1 (prioritaire)' },
@@ -355,17 +356,15 @@ export default function PacsPage({ embedded = false }) {
       )}
 
       {filtered.length === 0 ? (
-        <div className="card p-10 text-center">
-          <Package size={30} className="mx-auto text-slate-700 mb-3" />
-          <p className="text-slate-400 text-sm">
-            {search ? 'Aucun résultat.' : 'Aucun PAC créé.'}
-          </p>
-          {!search && (
+        <EmptyState
+          icon={Package}
+          message={search ? 'Aucun résultat.' : 'Aucun PAC créé.'}
+          action={!search && (
             <button onClick={() => setShowCreate(true)} className="mt-4 btn-ghost text-xs inline-flex items-center gap-1.5">
               <Sparkles size={12} /> Créer votre premier PAC
             </button>
           )}
-        </div>
+        />
       ) : (
         <div className="space-y-2">
           {filtered.map(pac => (

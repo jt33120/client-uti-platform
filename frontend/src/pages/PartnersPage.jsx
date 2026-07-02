@@ -1,6 +1,7 @@
 import { useEffect, useState, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import api from '../lib/api'
+import { EmptyState } from '../components/EmptyState'
 import {
   Users, Search, Pencil, X, Loader2, AlertCircle,
   ShieldOff, Star, ListChecks, UserPlus, Ban, CalendarDays,
@@ -402,14 +403,12 @@ export default function PartnersPage() {
         {/* Liste */}
         <div className="flex-1 min-w-0">
           {filtered.length === 0 ? (
-            <div className="card p-10 text-center">
-              <Users size={30} className="mx-auto text-slate-700 mb-3" />
-              <p className="text-slate-400 text-sm">
-                {search || activeFilterCount
-                  ? 'Aucun résultat pour cette recherche.'
-                  : 'Aucun partenaire inscrit. Utilisez le bouton « Inviter » pour en ajouter.'}
-              </p>
-            </div>
+            <EmptyState
+              icon={Users}
+              message={search || activeFilterCount
+                ? 'Aucun résultat pour cette recherche.'
+                : 'Aucun partenaire inscrit. Utilisez le bouton « Inviter » pour en ajouter.'}
+            />
           ) : (
             <>
               <div className="text-[11px] mb-2 px-1" style={{ color: 'var(--text-faint)' }}>

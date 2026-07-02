@@ -18,6 +18,7 @@ export default function NewAOPage() {
   const [form, setForm] = useState({
     client_id: '', title: '', description: '', skills_required: '', reference: '',
     budget_max: '', location: '', duration: '', context: '', ao_type: '', deadline: '', work_mode: '',
+    langue_requise: '',
     ...(state?.assistantPrefill || {}),  // assistant may pre-fill (never submits)
   })
   const [loading, setLoading] = useState(false)
@@ -84,6 +85,7 @@ export default function NewAOPage() {
         duration: data.duration || p.duration,
         deadline: data.deadline || p.deadline,
         context: data.context || p.context,
+        langue_requise: data.langue_requise || p.langue_requise,
       }))
       if (data.scoring_stars && Object.keys(data.scoring_stars).length) {
         setStars(p => ({ ...p, ...data.scoring_stars }))
@@ -130,6 +132,7 @@ export default function NewAOPage() {
       else payload.budget_max = parseInt(payload.budget_max)
       if (!payload.deadline) delete payload.deadline
       if (!payload.work_mode) delete payload.work_mode
+      if (!payload.langue_requise?.trim()) delete payload.langue_requise
       if (scoringTouched) payload.scoring_overrides = { stars }
       const { data } = await api.post('/aos', payload)
       // Persiste les pièces jointes d'origine pour les retrouver à l'édition.
@@ -425,6 +428,15 @@ export default function NewAOPage() {
                   </select>
                   <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
                 </div>
+              </div>
+
+              <div>
+                <label className="label">Langue requise</label>
+                <input type="text" className="input" placeholder="ex. Anglais courant (impératif)"
+                  value={form.langue_requise} onChange={set('langue_requise')} />
+                <p className="text-[10px] text-slate-500 mt-1">
+                  Si le client l'exige. Le matching signale les CV où cette langue n'est pas détectée.
+                </p>
               </div>
             </div>
 

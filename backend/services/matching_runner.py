@@ -47,6 +47,9 @@ def _weights_from_config(config: dict) -> dict:
 _HYBRID_COLS = (
     "score_llm", "score_hybride", "agreement",
     "llm_breakdown", "llm_global", "hybrid_breakdown", "weights",
+    # Colonne langues (supabase_migration_languages.sql) : stripée elle aussi
+    # si la migration n'est pas encore appliquée.
+    "langues",
 )
 
 
@@ -77,6 +80,7 @@ def _persist(ao_id: str, results: list[dict], cost_usd: float, ran_by: Optional[
         "llm_global": r.get("llm_global"),
         "hybrid_breakdown": r.get("hybrid_breakdown"),
         "weights": r.get("weights"),
+        "langues": r.get("langues"),  # langues détectées dans le CV (affichage)
         "rank": rank,
         "cost_usd": cost_usd,
         "ran_by": ran_by,
@@ -147,6 +151,7 @@ async def _score_all(
         score["submitter_name"] = it.get("submitter_name")
         score["consultant_tjm"] = it.get("tjm")
         score["consultant_skills"] = it.get("skills")
+        score["langues"] = features.get("languages")  # affichées dans le détail
         results.append(score)
         audit.log_event(
             "score", run_id,

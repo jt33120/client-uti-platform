@@ -104,6 +104,7 @@ class AOCreate(BaseModel):
     ao_type: Optional[str] = None
     deadline: Optional[str] = None  # date limite de réponse (YYYY-MM-DD)
     work_mode: Optional[str] = None  # onsite | hybrid | remote
+    langue_requise: Optional[str] = None  # langue exigée par le client (ex. "Anglais courant")
     scoring_overrides: Optional[AOScoringOverrides] = None  # priorités de matching propres à l'AO
 
 
@@ -121,6 +122,7 @@ class AOUpdate(BaseModel):
     deadline: Optional[str] = None  # date limite de réponse (YYYY-MM-DD)
     status: Optional[str] = None
     work_mode: Optional[str] = None
+    langue_requise: Optional[str] = None
     scoring_overrides: Optional[AOScoringOverrides] = None
 
 
@@ -221,6 +223,7 @@ async def create_ao(body: AOCreate, background_tasks: BackgroundTasks, user: dic
             "ao_type": body.ao_type,
             "deadline": body.deadline,
             "work_mode": body.work_mode,
+            "langue_requise": body.langue_requise,
             "status": "open",
             "created_by": user["sub"],
         }
@@ -230,8 +233,8 @@ async def create_ao(body: AOCreate, background_tasks: BackgroundTasks, user: dic
                 {**record, "scoring_overrides": overrides}
             ).execute()
         except Exception:
-            # Colonnes récentes (scoring_overrides / work_mode / reference) pas migrées.
-            slim = {k: v for k, v in record.items() if k not in ("work_mode", "reference")}
+            # Colonnes récentes (scoring_overrides / work_mode / reference / langue_requise) pas migrées.
+            slim = {k: v for k, v in record.items() if k not in ("work_mode", "reference", "langue_requise")}
             response = supabase.table("appels_offres").insert(slim).execute()
         ao = response.data[0]
         # Kick off vivier recommendations right away — staff get suggested
@@ -483,7 +486,7 @@ async def update_ao(ao_id: str, body: AOUpdate, background_tasks: BackgroundTask
             response = supabase.table("appels_offres").update(update_data).eq("id", ao_id).execute()
         except Exception:
             # Colonnes récentes pas encore migrées → on met à jour le reste.
-            for k in ("scoring_overrides", "work_mode"):
+            for k in ("scoring_overrides", "work_mode", "langue_requise"):
                 update_data.pop(k, None)
             response = supabase.table("appels_offres").update(update_data).eq("id", ao_id).execute()
         # Localisation ou mode de travail modifié → re-géocoder pour la carte.

@@ -113,6 +113,7 @@ def _sanitize(d: dict, ao_types: list[str]) -> dict:
         "duration": text("duration"),
         "deadline": deadline,
         "context": text("context"),
+        "langue_requise": text("langue_requise")[:120],
         # Suggestion (jamais imposée) des priorités de matching : l'admin garde
         # la main et peut tout ajuster avant d'enregistrer l'AO.
         "scoring_stars": _stars(d.get("importance")),
@@ -191,6 +192,8 @@ async def draft_ao_fields(source: str, ao_types: list[str]) -> Optional[dict]:
         '- "deadline": date limite de réponse au format "YYYY-MM-DD" (sur un modèle '
         'de marché : la « Date de limite de remise des offres »), sinon ""\n'
         '- "context": éléments de contexte utiles (secteur, contraintes, urgence, environnement technique)\n'
+        '- "langue_requise": si une langue est exigée (ex. "Langue impérative : Anglais courant"), '
+        'renvoie-la de façon concise (ex. "Anglais courant"), sinon "".\n'
         '- "importance": objet notant de 0 (exclu) à 5 (critique) l\'importance '
         'RELATIVE de chaque critère DÉDUITE du texte, avec les clés exactes '
         '"competences", "seniorite", "contexte", "points_forts_cv", '

@@ -51,12 +51,18 @@ Retourne UNIQUEMENT un JSON valide, sans markdown, au format exact :
   "skills": ["compétence 1", "compétence 2", ...],   // technologies/outils/méthodes explicitement mentionnés
   "experience_years": 8,                               // nombre d'années d'expérience pro (entier) ou null
   "sectors": ["banque", "assurance", ...],            // secteurs/domaines métier rencontrés
+  "languages": [                                       // langues parlées + niveau, [] si non mentionné
+    {"langue": "anglais", "niveau": "courant"}         // niveau : natif | courant | professionnel | intermédiaire | notions
+  ],
   "summary": "résumé factuel en 1-2 phrases, sans donnée personnelle"
 }
 
 Règles :
 - N'inclus jamais de nom, e-mail, téléphone, adresse, âge, genre, nationalité.
 - Si une information est absente, mets une liste vide ou null. N'invente pas.
+- "languages" : normalise le nom de langue en minuscules (anglais, espagnol…) et le
+  niveau parmi natif/courant/professionnel/intermédiaire/notions. Si le niveau
+  n'est pas précisé, mets "niveau": null. N'ajoute pas une langue non mentionnée.
 """
 
 
@@ -77,7 +83,34 @@ def _as_int(value) -> Optional[int]:
         return None
 
 
-_EMPTY_FEATURES = {"skills": [], "experience_years": None, "sectors": [], "summary": ""}
+_LANG_LEVELS = {"natif", "courant", "professionnel", "intermédiaire", "intermediaire", "notions", "bilingue"}
+
+
+def _as_languages(value) -> list[dict]:
+    """Normalise la liste des langues extraites en [{"langue","niveau"}]."""
+    if not isinstance(value, list):
+        return []
+    out: list[dict] = []
+    seen: set[str] = set()
+    for item in value:
+        langue = niveau = None
+        if isinstance(item, dict):
+            langue = item.get("langue") or item.get("language") or item.get("nom")
+            niveau = item.get("niveau") or item.get("level")
+        elif isinstance(item, str):
+            langue = item
+        langue = str(langue or "").strip().lower()
+        if not langue or langue in seen:
+            continue
+        seen.add(langue)
+        niveau = str(niveau or "").strip().lower() or None
+        if niveau and niveau not in _LANG_LEVELS:
+            niveau = niveau[:40]  # niveau libre inattendu : on garde tel quel, borné
+        out.append({"langue": langue[:40], "niveau": niveau})
+    return out[:12]
+
+
+_EMPTY_FEATURES = {"skills": [], "experience_years": None, "sectors": [], "languages": [], "summary": ""}
 
 
 async def _call_extraction(c: AsyncOpenAI, model: str, cv_text: str) -> tuple[dict, float]:
@@ -105,6 +138,7 @@ async def _call_extraction(c: AsyncOpenAI, model: str, cv_text: str) -> tuple[di
         "skills": _as_list(data.get("skills")),
         "experience_years": _as_int(data.get("experience_years")),
         "sectors": _as_list(data.get("sectors")),
+        "languages": _as_languages(data.get("languages")),
         "summary": str(data.get("summary") or "")[:500],
     }
     return features, cost

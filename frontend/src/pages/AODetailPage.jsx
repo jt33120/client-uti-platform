@@ -126,6 +126,26 @@ const SCORE_CATS = [
 const activeCats = (weights) =>
   SCORE_CATS.filter(c => !weights || (weights[c.wKey] ?? c.dflt) > 0)
 
+// Normalise un nom de langue pour comparaison (minuscule, sans accents).
+const _normLang = (s) => (s || '').toString().normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim()
+
+// La langue imposée par l'AO est-elle couverte par les langues détectées au CV ?
+// Renvoie null si l'AO n'exige rien ; sinon { matched, level }.
+function requiredLangStatus(langueRequise, langues) {
+  const req = _normLang(langueRequise)
+  if (!req) return null
+  const reqName = req.split(/[\s,;:/()]+/).find(w => w.length > 2) || req
+  const list = Array.isArray(langues) ? langues : []
+  const hit = list.find(l => {
+    const name = _normLang(l?.langue)
+    return name && (name.includes(reqName) || reqName.includes(name))
+  })
+  return { matched: !!hit, level: hit?.niveau || null }
+}
+
+// Rendu compact d'une langue détectée : « anglais (courant) ».
+const fmtLang = (l) => l?.niveau ? `${l.langue} (${l.niveau})` : l?.langue
+
 // Radar — score hybride par critère (une seule série, normalisée en %).
 // Le score global n'est PAS répété au centre : il est affiché dans l'anneau
 // (ScoreRing) en tête de carte.
@@ -532,6 +552,32 @@ function MatchCard({ result, rank, aoId, isAdmin, ao, onContact, expanded: expan
                 {c.justif && <p className="text-[11px] text-slate-500 mt-1">{c.justif}</p>}
               </div>
             ))}
+
+            {/* Langues détectées au CV + contrôle de la langue imposée par l'AO */}
+            {(() => {
+              const langues = Array.isArray(result.langues) ? result.langues : []
+              const req = requiredLangStatus(ao?.langue_requise, langues)
+              if (!langues.length && !req) return null
+              return (
+                <div className="pt-1">
+                  <div className="flex justify-between text-xs text-slate-400 mb-1">
+                    <span>Langues</span>
+                    {req && (
+                      req.matched
+                        ? <span className="inline-flex items-center gap-1 text-emerald-400">
+                            <CheckCircle size={11} /> {ao.langue_requise}{req.level ? ` · ${req.level}` : ''}
+                          </span>
+                        : <span className="inline-flex items-center gap-1 text-amber-400">
+                            <AlertTriangle size={11} /> {ao.langue_requise} non détecté
+                          </span>
+                    )}
+                  </div>
+                  {langues.length
+                    ? <p className="text-[11px] text-slate-300">{langues.map(fmtLang).filter(Boolean).join(' · ')}</p>
+                    : <p className="text-[11px] text-slate-500 italic">Aucune langue détectée sur le CV.</p>}
+                </div>
+              )
+            })()}
           </div>
           {result.cv_url && (
             <a href={result.cv_url} target="_blank" rel="noopener noreferrer"
@@ -1390,6 +1436,7 @@ function AOEditModal({ ao, onClose, onSaved }) {
     deadline: ao.deadline || '',
     status: ao.status || 'open',
     work_mode: ao.work_mode || '',
+    langue_requise: ao.langue_requise || '',
   })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -1442,6 +1489,7 @@ function AOEditModal({ ao, onClose, onSaved }) {
         duration: data.duration || p.duration,
         deadline: data.deadline || p.deadline,
         context: data.context || p.context,
+        langue_requise: data.langue_requise || p.langue_requise,
       }))
       if (data.scoring_stars && Object.keys(data.scoring_stars).length) {
         setStars(p => ({ ...p, ...data.scoring_stars })); setScoringTouched(true)
@@ -1627,6 +1675,15 @@ function AOEditModal({ ao, onClose, onSaved }) {
                 <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
               </div>
             </div>
+          </div>
+
+          <div>
+            <label className="label">Langue requise</label>
+            <input className="input" value={form.langue_requise} onChange={set('langue_requise')}
+                   placeholder="ex. Anglais courant (impératif)" />
+            <p className="text-[10px] text-slate-500 mt-1">
+              Si le client l'exige. Le matching signale les CV où cette langue n'est pas détectée.
+            </p>
           </div>
 
           <div>

@@ -179,6 +179,15 @@ def extract_text_from_xlsx(file_bytes: bytes) -> str:
     return clean_text("\n".join(parts))
 
 
+def guess_extension(filename: Optional[str], default: str = "pdf") -> str:
+    """Extension normalisée (sans point, minuscules) d'un nom de fichier CV,
+    repli sur `default` si absente/inconnue."""
+    if not filename or "." not in filename:
+        return default
+    ext = filename.rsplit(".", 1)[-1].lower().strip()
+    return ext or default
+
+
 def clean_text(text: str) -> str:
     """Clean and normalize extracted text."""
     # Remove excessive whitespace while preserving structure

@@ -2,7 +2,9 @@ from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, B
 from typing import Optional
 from services.supabase_client import supabase
 from services import storage
-from services.cv_parser import extract_text_from_pdf
+from services.cv_parser import (
+    extract_text_from_pdf, extract_text_from_docx, extract_text_from_xlsx, guess_extension,
+)
 from services.matching_runner import auto_rescore_ao
 from services.consultant_skills import auto_extract_skills
 from routers.auth import get_current_user, is_staff
@@ -10,7 +12,21 @@ import uuid
 
 router = APIRouter(prefix="/submissions", tags=["submissions"])
 
-ALLOWED_MIME_TYPES = {"application/pdf"}
+# Extension → (content-type de stockage, extracteur de texte). Le format réel
+# est déterminé par l'extension du nom de fichier (le content-type envoyé par
+# le navigateur est peu fiable pour docx/xlsx), même approche que la
+# génération d'AO à partir de pièces jointes (routers/aos.py).
+ALLOWED_CV_EXTENSIONS = {
+    "pdf": ("application/pdf", extract_text_from_pdf),
+    "docx": (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        extract_text_from_docx,
+    ),
+    "xlsx": (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        extract_text_from_xlsx,
+    ),
+}
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
 
 
@@ -78,11 +94,17 @@ async def create_submission(
             detail="Le consentement RGPD est requis pour soumettre un CV.",
         )
 
-    # Validate the uploaded file up-front (when one is provided).
+    # Validate the uploaded file up-front (when one is provided). Le format est
+    # déterminé par l'extension du nom de fichier (PDF, Word .docx, Excel .xlsx).
     file_bytes = None
+    cv_ext = None
     if cv_file is not None:
-        if cv_file.content_type not in ALLOWED_MIME_TYPES:
-            raise HTTPException(status_code=400, detail="Seuls les fichiers PDF sont acceptés")
+        cv_ext = guess_extension(cv_file.filename, default="")
+        if cv_ext not in ALLOWED_CV_EXTENSIONS:
+            raise HTTPException(
+                status_code=400,
+                detail="Seuls les fichiers PDF, Word (.docx) et Excel (.xlsx) sont acceptés",
+            )
         file_bytes = await cv_file.read()
         if len(file_bytes) > MAX_FILE_SIZE:
             raise HTTPException(status_code=400, detail="Fichier trop volumineux (max 10MB)")
@@ -98,7 +120,7 @@ async def create_submission(
     else:
         # Création d'un nouveau consultant : un CV est obligatoire.
         if file_bytes is None:
-            raise HTTPException(status_code=422, detail="Un CV (PDF) est requis pour un nouveau consultant.")
+            raise HTTPException(status_code=422, detail="Un CV (PDF, Word ou Excel) est requis pour un nouveau consultant.")
         if not name or not skills:
             raise HTTPException(status_code=400, detail="Nom et compétences requis pour créer un consultant")
         if employment_type and employment_type not in ("independant", "salarie"):
@@ -122,23 +144,24 @@ async def create_submission(
         raise HTTPException(status_code=409, detail="Ce consultant a déjà été soumis à cet AO")
 
     submission_uuid = str(uuid.uuid4())
-    storage_path = f"{ao_id}/{submission_uuid}.pdf"
 
     if file_bytes is not None:
-        # Nouveau PDF fourni : extraction + upload.
+        # Nouveau fichier fourni : extraction (selon l'extension) + upload.
+        content_type, extractor = ALLOWED_CV_EXTENSIONS[cv_ext]
         try:
-            cv_text = extract_text_from_pdf(file_bytes)
+            cv_text = extractor(file_bytes)
         except Exception as e:
-            raise HTTPException(status_code=422, detail=f"Impossible de lire le PDF: {str(e)}")
+            raise HTTPException(status_code=422, detail=f"Impossible de lire le fichier : {str(e)}")
         if not cv_text or len(cv_text) < 50:
-            raise HTTPException(status_code=422, detail="Le PDF semble vide ou illisible")
+            raise HTTPException(status_code=422, detail="Le fichier semble vide ou illisible")
         cv_filename = cv_file.filename
+        storage_path = f"{ao_id}/{submission_uuid}.{cv_ext}"
         try:
-            cv_url = storage.upload("cvs", storage_path, file_bytes, "application/pdf")
+            cv_url = storage.upload("cvs", storage_path, file_bytes, content_type)
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Erreur upload CV: {str(e)}")
     else:
-        # Pas de PDF : on réutilise le dernier CV du vivier pour ce consultant.
+        # Pas de fichier : on réutilise le dernier CV du vivier pour ce consultant.
         prior = supabase.table("submissions").select(
             "cv_url, cv_text, cv_filename"
         ).eq("consultant_id", consultant_id).order("submitted_at", desc=True).limit(5).execute().data or []
@@ -146,14 +169,19 @@ async def create_submission(
         if not src:
             raise HTTPException(
                 status_code=422,
-                detail="Aucun CV existant pour ce consultant au vivier : veuillez joindre un PDF.",
+                detail="Aucun CV existant pour ce consultant au vivier : veuillez joindre un fichier.",
             )
         cv_text = src["cv_text"]
         cv_filename = src.get("cv_filename") or "CV.pdf"
+        prior_ext = guess_extension(cv_filename)
+        if prior_ext not in ALLOWED_CV_EXTENSIONS:
+            prior_ext = "pdf"
+        content_type = ALLOWED_CV_EXTENSIONS[prior_ext][0]
+        storage_path = f"{ao_id}/{submission_uuid}.{prior_ext}"
         # Copie du fichier vers la nouvelle soumission (indépendant de l'original).
         try:
             data = storage.download("cvs", storage._object_path("cvs", src["cv_url"]))
-            cv_url = storage.upload("cvs", storage_path, data, "application/pdf")
+            cv_url = storage.upload("cvs", storage_path, data, content_type)
         except Exception:
             # Repli : on référence l'objet existant (best-effort).
             cv_url = src["cv_url"]
@@ -251,7 +279,7 @@ async def delete_submission(submission_id: str, user: dict = Depends(get_current
 
     # Attempt to delete the file from storage (best-effort)
     try:
-        path = f"{sub['ao_id']}/{submission_id}.pdf"
+        path = f"{sub['ao_id']}/{submission_id}.{guess_extension(sub.get('cv_filename'))}"
         storage.remove("cvs", [path])
     except Exception:
         pass

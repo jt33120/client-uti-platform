@@ -10,6 +10,7 @@ import re
 from typing import Optional
 from openai import AsyncOpenAI
 from config import settings
+from mip_rum_ai import record_ai_call
 
 _client: Optional[AsyncOpenAI] = (
     AsyncOpenAI(api_key=settings.openrouter_key, base_url="https://openrouter.ai/api/v1")
@@ -135,14 +136,20 @@ async def harmonize_cv(cv_text: str, lang: str = "fr") -> Optional[dict]:
     last_err = None
     for client, model, provider in candidates:
         try:
-            resp = await client.chat.completions.create(
-                model=model,
-                temperature=0.2,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": cv_text},
-                ],
-            )
+            with record_ai_call(provider=provider.lower(), model=model, route="cv/harmonize") as _call:
+                resp = await client.chat.completions.create(
+                    model=model,
+                    temperature=0.2,
+                    messages=[
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": cv_text},
+                    ],
+                )
+                _u = getattr(resp, "usage", None)
+                if _u:
+                    _call.usage(input_tokens=getattr(_u, "prompt_tokens", None),
+                                output_tokens=getattr(_u, "completion_tokens", None),
+                                cost=getattr(_u, "cost", None))
             data = _extract_json(resp.choices[0].message.content or "")
             if data:
                 return _sanitize(data)

@@ -30,6 +30,7 @@ from pydantic import BaseModel
 from openai import AsyncOpenAI
 
 from config import settings
+from mip_rum_ai import record_ai_call
 from services.supabase_client import supabase
 from services.ratelimit import rate_limit
 from routers.auth import get_current_user
@@ -740,7 +741,13 @@ async def chat(body: ChatRequest, user: dict = Depends(get_current_user)):
     convo += [{"role": m.role, "content": m.content} for m in body.messages[-10:]]
 
     try:
-        resp = await _client.chat.completions.create(model=MODEL, messages=convo, temperature=0.3, max_tokens=900)
+        with record_ai_call(provider="openrouter", model=MODEL, route="assistant/chat") as _call:
+            resp = await _client.chat.completions.create(model=MODEL, messages=convo, temperature=0.3, max_tokens=900)
+            _u = getattr(resp, "usage", None)
+            if _u:
+                _call.usage(input_tokens=getattr(_u, "prompt_tokens", None),
+                            output_tokens=getattr(_u, "completion_tokens", None),
+                            cost=getattr(_u, "cost", None))
         data = _parse_json(resp.choices[0].message.content or "")
         if data is None:
             print("[ASSISTANT] model output was not valid JSON — falling back")

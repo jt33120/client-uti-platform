@@ -45,6 +45,17 @@ sudo apt update
 sudo apt install -y python3-venv python3-pip nginx git
 ```
 
+> **Repli OCR (CV scannés)** : si un CV est un scan/photo sans texte
+> sélectionnable, l'extraction bascule automatiquement sur Tesseract OCR.
+> Ça reste dégradé sans ce paquet (le CV est alors refusé comme
+> « illisible », comme aujourd'hui) — installe-le pour l'activer :
+> ```bash
+> sudo apt install -y tesseract-ocr tesseract-ocr-fra tesseract-ocr-eng
+> ```
+> Rien à faire côté `requirements.txt` : les libs Python (`pytesseract`,
+> `pymupdf`, `Pillow`) sont déjà dedans, `pip install -r requirements.txt`
+> les installe avec le reste.
+
 ### 1.2 — Récupérer le code
 ```bash
 mkdir -p ~/app && cd ~/app

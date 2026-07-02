@@ -3,11 +3,24 @@ import io
 import re
 from typing import Optional
 
+# En dessous de ce nombre de caractères, un PDF est considéré comme dépourvu de
+# couche texte exploitable (scan/photo) et bascule sur le repli OCR. Aligné sur
+# le seuil « fichier illisible » de routers/submissions.py.
+MIN_TEXT_LEN = 50
+OCR_MAX_PAGES = 15  # borne le coût CPU d'un repli OCR sur un PDF scanné volumineux
+
 
 def extract_text_from_pdf(file_bytes: bytes) -> str:
     """
     Extract and clean text from a PDF file.
     Uses pdfplumber for accurate text extraction with layout awareness.
+
+    Si le PDF n'a pas de couche texte exploitable (scan/photo — cas typique
+    d'un CV imprimé puis re-scanné), bascule sur un repli OCR local
+    (`_ocr_pdf_pages`). Transparent pour les appelants : ceux-ci reçoivent du
+    texte utilisable dans les deux cas, ou une chaîne vide si ni l'un ni
+    l'autre n'a rien trouvé (comportement inchangé pour les PDF réellement
+    vides).
     """
     text_parts = []
 
@@ -37,7 +50,58 @@ def extract_text_from_pdf(file_bytes: bytes) -> str:
                         text_parts.append(f"[Table]\n{table_text}")
 
     raw_text = "\n\n".join(text_parts)
-    return clean_text(raw_text)
+    text = clean_text(raw_text)
+
+    if len(text) < MIN_TEXT_LEN:
+        ocr_text = _ocr_pdf_pages(file_bytes)
+        if len(ocr_text) >= len(text):
+            return ocr_text
+
+    return text
+
+
+def _ocr_pdf_pages(file_bytes: bytes) -> str:
+    """
+    Repli OCR pour un PDF sans couche texte (scan/photo) : rasterise chaque
+    page (PyMuPDF — pip pur, pas de binaire système requis) puis lit le texte
+    via Tesseract (pytesseract — nécessite le binaire système `tesseract-ocr`,
+    voir DEPLOYMENT_OVH.md).
+
+    Best-effort et silencieux : si PyMuPDF/pytesseract/Pillow ne sont pas
+    installés, ou si le binaire Tesseract est absent de l'hôte, renvoie ''
+    sans lever — l'appelant retombe alors sur le comportement actuel
+    (« fichier semble vide ou illisible »), aucune régression tant que la
+    dépendance système n'est pas provisionnée.
+    """
+    try:
+        import fitz  # PyMuPDF
+        import pytesseract
+        from PIL import Image
+    except ImportError:
+        return ""
+
+    try:
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+    except Exception:
+        return ""
+
+    parts = []
+    try:
+        for page_num, page in enumerate(doc):
+            if page_num >= OCR_MAX_PAGES:
+                break
+            try:
+                pixmap = page.get_pixmap(dpi=200)
+                image = Image.open(io.BytesIO(pixmap.tobytes("png")))
+                page_text = pytesseract.image_to_string(image, lang="fra+eng")
+            except Exception:
+                continue
+            if page_text and page_text.strip():
+                parts.append(f"[Page {page_num + 1} — OCR]\n{page_text.strip()}")
+    finally:
+        doc.close()
+
+    return clean_text("\n\n".join(parts))
 
 
 def extract_text_from_docx(file_bytes: bytes) -> str:

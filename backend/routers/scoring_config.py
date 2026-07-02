@@ -24,11 +24,18 @@ router = APIRouter(prefix="/scoring-config", tags=["scoring-config"])
 
 
 class StarConfig(BaseModel):
-    """Importance relative de chaque critère, notée de 1 à 5 étoiles."""
-    competences: int = Field(ge=1, le=5)
-    seniorite: int = Field(ge=1, le=5)
-    contexte: int = Field(ge=1, le=5)
-    tjm: int = Field(ge=1, le=5)
+    """
+    Importance relative de chaque critère, notée de 0 à 5 étoiles.
+    0★ = critère EXCLU du score (utile p. ex. pour le TJM, déjà borné par le
+    TJM max de l'AO). Les axes « points forts du CV » et « éléments
+    différenciants » sont notés par le 2e avis IA.
+    """
+    competences: int = Field(ge=0, le=5)
+    seniorite: int = Field(ge=0, le=5)
+    contexte: int = Field(ge=0, le=5)
+    points_forts_cv: int = Field(ge=0, le=5)
+    elements_differenciants: int = Field(ge=0, le=5)
+    tjm: int = Field(ge=0, le=5)
 
 
 class AOScoringOverrides(BaseModel):
@@ -77,9 +84,11 @@ async def get_scoring_config(user: dict = Depends(require_staff)):
     """Config effective (étoiles + poids dérivés + seuils) et métadonnées."""
     row = _stored_row()
 
+    # Fusion critère par critère : une config antérieure (4 axes) conserve ses
+    # étoiles enregistrées, les axes v2 absents retombent sur leur défaut.
     stars = {c: row[f"s_{c}"] for c in STAR_CRITERIA if row.get(f"s_{c}") is not None}
-    is_custom_stars = len(stars) == len(STAR_CRITERIA)
-    effective_stars = stars if is_custom_stars else dict(DEFAULT_STARS)
+    is_custom_stars = bool(stars)
+    effective_stars = {**DEFAULT_STARS, **stars}
 
     def _eff(key: str):
         return row[key] if row.get(key) is not None else DEFAULTS[key]
@@ -114,17 +123,14 @@ async def update_scoring_config(body: ScoringConfig, user: dict = Depends(requir
     _validate_thresholds(body.reco_fort_min, body.reco_moyen_min)
 
     weights = stars_to_weights(body.stars.model_dump())
-    payload = {
-        "s_competences": body.stars.competences,
-        "s_seniorite": body.stars.seniorite,
-        "s_contexte": body.stars.contexte,
-        "s_tjm": body.stars.tjm,
+    payload = {f"s_{c}": getattr(body.stars, c) for c in STAR_CRITERIA}
+    payload.update({
         **weights,  # poids dérivés stockés aussi (back-compat + lisibilité audit)
         "seniority_full_years": body.seniority_full_years,
         "reco_fort_min": body.reco_fort_min,
         "reco_moyen_min": body.reco_moyen_min,
         "updated_by": user["sub"],
-    }
+    })
 
     def _write(data: dict):
         existing = supabase.table("scoring_config").select("id").limit(1).execute().data or []

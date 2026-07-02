@@ -3,31 +3,44 @@ import { Radar, RadarChart, PolarGrid, PolarAngleAxis, ResponsiveContainer } fro
 import { ChevronDown, SlidersHorizontal } from 'lucide-react'
 import StarRating from './StarRating'
 
-// Les 4 axes du scoring, libellés non-techs + libellé court pour le radar.
+// Les 6 axes du scoring, libellés non-techs + libellé court pour le radar.
+// « Points forts du CV » et « Éléments différenciants » sont notés par l'IA
+// (2e avis), placés sous Contexte/domaine. Le TJM peut être mis à 0★ (exclu).
 export const CRITERIA = [
-  { key: 'competences', label: 'Compétences techniques', short: 'Compétences' },
+  { key: 'competences', label: 'Compétences techniques', short: 'Compét.' },
   { key: 'seniorite', label: 'Séniorité', short: 'Séniorité' },
   { key: 'contexte', label: 'Contexte / domaine', short: 'Contexte' },
+  { key: 'points_forts_cv', label: 'Points forts du CV', short: 'Atouts', ai: true },
+  { key: 'elements_differenciants', label: 'Éléments différenciants', short: 'Différ.', ai: true },
   { key: 'tjm', label: 'Compatibilité TJM', short: 'TJM' },
 ]
 
-// Étoiles par défaut = grille historique 40/20/20/20.
-export const DEFAULT_STARS = { competences: 4, seniorite: 2, contexte: 2, tjm: 2 }
+// Étoiles par défaut (grille v2). Un critère à 0★ est exclu du score.
+export const DEFAULT_STARS = {
+  competences: 4, seniorite: 2, contexte: 2,
+  points_forts_cv: 2, elements_differenciants: 2, tjm: 1,
+}
 
 // Miroir exact de services.scoring.stars_to_weights (somme garantie = 100).
+// Un critère à 0★ reçoit un poids nul et sort de la répartition.
 export function starsToWeights(stars) {
   const s = {}
   CRITERIA.forEach(({ key }) => {
     const v = parseInt(stars?.[key], 10)
-    s[key] = Number.isFinite(v) ? Math.max(1, Math.min(5, v)) : 3
+    s[key] = Number.isFinite(v) ? Math.max(0, Math.min(5, v)) : (DEFAULT_STARS[key] ?? 2)
   })
-  const total = CRITERIA.reduce((a, { key }) => a + s[key], 0) || 1
+  let active = CRITERIA.filter(({ key }) => s[key] > 0).map(c => c.key)
+  if (active.length === 0) { active = CRITERIA.map(c => c.key); CRITERIA.forEach(({ key }) => { s[key] = 1 }) }
+  const total = active.reduce((a, k) => a + s[k], 0) || 1
   const raw = {}
   const floor = {}
-  CRITERIA.forEach(({ key }) => { raw[key] = (s[key] / total) * 100; floor[key] = Math.floor(raw[key]) })
+  CRITERIA.forEach(({ key }) => {
+    raw[key] = active.includes(key) ? (s[key] / total) * 100 : 0
+    floor[key] = Math.floor(raw[key])
+  })
   const remainder = 100 - CRITERIA.reduce((a, { key }) => a + floor[key], 0)
-  const order = [...CRITERIA].sort((a, b) => (raw[b.key] - floor[b.key]) - (raw[a.key] - floor[a.key]))
-  for (let i = 0; i < remainder; i++) floor[order[i].key] += 1
+  const order = [...active].sort((a, b) => (raw[b] - floor[b]) - (raw[a] - floor[a]))
+  for (let i = 0; i < remainder; i++) floor[order[i]] += 1
   return floor
 }
 
@@ -75,12 +88,19 @@ export default function ScoringPriorities({ stars, onStarsChange, thresholds, on
     <div className="space-y-5">
       <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4 items-center">
         <div className="space-y-3.5">
-          {CRITERIA.map(({ key, label }) => (
+          {CRITERIA.map(({ key, label, ai }) => (
             <div key={key} className="flex items-center justify-between gap-3">
               <div className="min-w-0">
-                <div className="text-[13px]" style={{ color: 'var(--text)' }}>{label}</div>
+                <div className="text-[13px] flex items-center gap-1.5" style={{ color: 'var(--text)' }}>
+                  {label}
+                  {ai && (
+                    <span className="text-[9px] font-semibold px-1 py-px rounded"
+                          style={{ color: 'var(--accent-text)', background: 'var(--surface-2)' }}
+                          title="Critère évalué par l'IA (2e avis)">IA</span>
+                  )}
+                </div>
                 <div className="text-[11px] tabular" style={{ color: 'var(--text-faint)' }}>
-                  {weights[key]} % du score
+                  {weights[key] > 0 ? `${weights[key]} % du score` : 'Non pris en compte (0★)'}
                 </div>
               </div>
               <StarRating value={stars?.[key] ?? 0} onChange={onStarsChange ? setStar(key) : undefined} />

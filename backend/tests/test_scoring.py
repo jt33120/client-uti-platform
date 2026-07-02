@@ -6,8 +6,15 @@ Pures fonctions, sans réseau : exécutables en CI. Démontrent la reproductibil
 """
 from services.scoring import (
     score_consultant, GRID_VERSION, RECO_FORT_MIN, RECO_MOYEN_MIN,
+    DEFAULTS, NEUTRAL_RATIO,
 )
 from services.pseudonymize import strip_pii
+
+# Poids par défaut effectifs (grille v2, dérivés des étoiles) — les tests
+# s'appuient dessus plutôt que sur des constantes figées, pour rester valides
+# quand la grille évolue.
+W_COMP = DEFAULTS["w_competences"]
+W_TJM = DEFAULTS["w_tjm"]
 
 
 AO = {
@@ -61,7 +68,7 @@ def test_score_invariant_to_name_in_features():
 
 def test_full_skill_match_scores_high():
     res = score_consultant(_features(), _consultant(), AO)
-    assert res["breakdown"]["competences_techniques"] == 40
+    assert res["breakdown"]["competences_techniques"] == W_COMP
 
 
 def test_no_skill_match_scores_zero_competences():
@@ -77,17 +84,17 @@ def test_no_skill_match_scores_zero_competences():
 
 def test_tjm_within_budget_is_full():
     res = score_consultant(_features(), _consultant(tjm=600), AO)
-    assert res["breakdown"]["compatibilite_tjm"] == 20
+    assert res["breakdown"]["compatibilite_tjm"] == W_TJM
 
 
 def test_tjm_far_over_budget_is_penalised():
     res = score_consultant(_features(), _consultant(tjm=1200), AO)
-    assert res["breakdown"]["compatibilite_tjm"] < 20
+    assert res["breakdown"]["compatibilite_tjm"] < W_TJM
 
 
 def test_missing_tjm_is_neutral():
     res = score_consultant(_features(), _consultant(tjm=None), AO)
-    assert res["breakdown"]["compatibilite_tjm"] == 10  # NEUTRAL_RATIO * 20
+    assert res["breakdown"]["compatibilite_tjm"] == round(W_TJM * NEUTRAL_RATIO)
 
 
 # ── Recommandation ─────────────────────────────────────────────────
@@ -113,11 +120,33 @@ def test_empty_features_falls_back_to_declared():
     res = score_consultant({}, _consultant(), AO)
     assert 0 <= res["score_total"] <= 100
     # Les compétences déclarées suffisent à matcher.
-    assert res["breakdown"]["competences_techniques"] == 40
+    assert res["breakdown"]["competences_techniques"] == W_COMP
 
 
 def test_grid_version_exposed():
     assert isinstance(GRID_VERSION, str) and GRID_VERSION
+
+
+# ── Grille v2 : axes qualitatifs + critère désactivable ────────────
+
+def test_v2_qualitative_axes_present_and_neutral():
+    # Points forts / différenciation : pas de signal déterministe -> socle neutre.
+    res = score_consultant(_features(), _consultant(), AO)
+    bd = res["breakdown"]
+    assert "points_forts_cv" in bd and "elements_differenciants" in bd
+    assert bd["points_forts_cv"] == round(DEFAULTS["w_points_forts_cv"] * NEUTRAL_RATIO)
+    assert bd["elements_differenciants"] == round(DEFAULTS["w_elements_differenciants"] * NEUTRAL_RATIO)
+
+
+def test_tjm_disabled_at_zero_star_is_excluded():
+    # 0★ sur le TJM => poids nul, aucune contribution, total borné à 100.
+    stars = {"competences": 4, "seniorite": 2, "contexte": 2,
+             "points_forts_cv": 2, "elements_differenciants": 2, "tjm": 0}
+    res = score_consultant(_features(), _consultant(tjm=2000), AO, {"stars": stars})
+    assert res["breakdown"]["compatibilite_tjm"] == 0
+    assert sum(res["breakdown"].values()) == res["score_total"] <= 100
+    # Le TJM (même hors budget) n'apparaît plus dans les points faibles.
+    assert not any("TJM" in p for p in res["points_faibles"])
 
 
 # ── Pseudonymisation (Art. 10 + RGPD) ──────────────────────────────

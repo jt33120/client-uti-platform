@@ -5,11 +5,18 @@ Conformité AI Act : le score est calculé ici par une formule **explicite,
 versionnée et reproductible** (Art. 13 transparence, Art. 15 reproductibilité),
 sur des **features justifiables** (Art. 10 — pas de texte brut porteur de biais).
 
-Grille (total 100) :
-  competences_techniques : 40 — recouvrement compétences requises ∩ candidat
-  seniorite              : 20 — années d'expérience vs cible
-  contexte_domaine       : 20 — adéquation secteur/contexte de l'AO
-  compatibilite_tjm      : 20 — TJM consultant vs budget de l'AO
+Grille v2 (total 100, poids par défaut dérivés des étoiles) :
+  competences_techniques  : ~31 — recouvrement compétences requises ∩ candidat
+  seniorite               : ~16 — années d'expérience vs cible
+  contexte_domaine        : ~15 — adéquation secteur/contexte de l'AO
+  points_forts_cv         : ~15 — force des points forts du CV (noté par l'IA)
+  elements_differenciants : ~15 — ce qui distingue le profil (noté par l'IA)
+  compatibilite_tjm       : ~8  — TJM consultant vs budget de l'AO (0★ = exclu)
+
+Les deux axes qualitatifs (points_forts_cv / elements_differenciants) n'ont pas
+de signal déterministe : la grille les pose en NEUTRE et le 2e avis IA
+(services.llm_scoring) les note réellement. Un critère mis à 0★ est retiré du
+score (poids nul), utile p. ex. pour le TJM déjà borné par le TJM max de l'AO.
 
 ⚠️ Les seuils ci-dessous sont des VALEURS PAR DÉFAUT, à valider par le métier
 (cf. compliance/ai-act/phase-3-technique/02-spec-architecture-hybride.md).
@@ -21,9 +28,10 @@ import re
 import unicodedata
 from typing import Optional
 
-GRID_VERSION = "1.0.0"
+GRID_VERSION = "2.0.0"
 
-# Poids de la grille (somme = 100)
+# Poids de la grille (somme = 100). NB : depuis v2 la forme canonique est
+# « en étoiles » (cf. plus bas) ; ces poids par défaut en sont DÉRIVÉS.
 W_COMPETENCES = 40
 W_SENIORITE = 20
 W_CONTEXTE = 20
@@ -41,26 +49,44 @@ WEAK_RATIO = 0.40          # ratio d'un critère => point faible
 # valeur fournie via `config` surcharge le défaut correspondant. Garder la
 # traçabilité : un changement de config est journalisé (Art. 12).
 DEFAULTS = {
-    "w_competences": W_COMPETENCES,
-    "w_seniorite": W_SENIORITE,
-    "w_contexte": W_CONTEXTE,
-    "w_tjm": W_TJM,
+    # Les poids w_* sont complétés/dérivés des étoiles par défaut plus bas
+    # (source unique de vérité), pour rester cohérents avec DEFAULT_STARS.
     "seniority_full_years": SENIORITY_FULL_YEARS,
     "reco_fort_min": RECO_FORT_MIN,
     "reco_moyen_min": RECO_MOYEN_MIN,
 }
 
-# ── Importance « en étoiles » (1-5) ────────────────────────────────────────
+# ── Importance « en étoiles » (0-5) ────────────────────────────────────────
 # Forme pilotée par l'UI pour des utilisateurs non techniques : on note
-# l'importance RELATIVE de chaque critère (1★ = accessoire … 5★ = critique) et
-# les poids w_* (somme = 100) en sont DÉRIVÉS par normalisation. Cela supprime
-# la contrainte « la somme doit faire 100 » côté écran.
+# l'importance RELATIVE de chaque critère (0★ = exclu, 1★ = accessoire …
+# 5★ = critique) et les poids w_* (somme = 100) en sont DÉRIVÉS par
+# normalisation. Cela supprime la contrainte « la somme doit faire 100 » côté
+# écran. Mettre un critère à 0★ le RETIRE totalement du score (utile p. ex.
+# pour le TJM, déjà borné par le TJM max de l'AO).
 #
-# Les étoiles par défaut reproduisent EXACTEMENT la grille historique
-# 40/20/20/20 : 4/2/2/2 → normalisé → 40/20/20/20.
-STAR_CRITERIA = ("competences", "seniorite", "contexte", "tjm")
-DEFAULT_STARS = {"competences": 4, "seniorite": 2, "contexte": 2, "tjm": 2}
-STAR_MIN, STAR_MAX = 1, 5
+# v2 : deux axes qualitatifs supplémentaires — « points forts du CV » et
+# « éléments différenciants ». Ils n'ont pas de signal déterministe fiable
+# (jugement qualitatif) : la grille pose un socle neutre et le 2e avis IA
+# (services.llm_scoring) les note réellement.
+STAR_CRITERIA = (
+    "competences", "seniorite", "contexte",
+    "points_forts_cv", "elements_differenciants", "tjm",
+)
+DEFAULT_STARS = {
+    "competences": 4, "seniorite": 2, "contexte": 2,
+    "points_forts_cv": 2, "elements_differenciants": 2, "tjm": 1,
+}
+# Correspondance clé étoile → clé du breakdown déterministe (services.scoring)
+# et libellé humain (explicabilité). Ordre = ordre d'affichage.
+CRITERIA_META = (
+    ("competences", "competences_techniques", "compétences techniques"),
+    ("seniorite", "seniorite", "séniorité"),
+    ("contexte", "contexte_domaine", "adéquation au contexte"),
+    ("points_forts_cv", "points_forts_cv", "points forts du CV"),
+    ("elements_differenciants", "elements_differenciants", "éléments différenciants"),
+    ("tjm", "compatibilite_tjm", "compatibilité TJM"),
+)
+STAR_MIN, STAR_MAX = 0, 5
 
 
 def _clamp_star(v) -> Optional[int]:
@@ -82,23 +108,30 @@ def normalize_stars(stars: dict | None) -> dict:
 
 def stars_to_weights(stars: dict | None) -> dict:
     """
-    Convertit des étoiles d'importance (1-5) en poids entiers dont la somme fait
+    Convertit des étoiles d'importance (0-5) en poids entiers dont la somme fait
     EXACTEMENT 100. La méthode du plus fort reste absorbe les arrondis, de sorte
     que le total est garanti à 100 et que le scoring reste déterministe.
+
+    Un critère à 0★ est EXCLU : il reçoit un poids nul et n'entre pas dans la
+    répartition (les 100 points se distribuent sur les seuls critères ≥ 1★).
+    Si tous les critères sont à 0★, on retombe sur une répartition uniforme.
     """
     s = normalize_stars(stars)
-    total = sum(s.values()) or 1
-    raw = {c: s[c] / total * 100 for c in STAR_CRITERIA}
+    active = [c for c in STAR_CRITERIA if s[c] > 0]
+    if not active:  # garde-fou : aucune importance renseignée
+        active = list(STAR_CRITERIA)
+        s = {c: 1 for c in STAR_CRITERIA}
+    total = sum(s[c] for c in active) or 1
+    raw = {c: (s[c] / total * 100 if c in active else 0.0) for c in STAR_CRITERIA}
     floor = {c: int(raw[c]) for c in STAR_CRITERIA}
     remainder = 100 - sum(floor.values())
-    for c in sorted(STAR_CRITERIA, key=lambda k: raw[k] - floor[k], reverse=True)[:remainder]:
+    for c in sorted(active, key=lambda k: raw[k] - floor[k], reverse=True)[:remainder]:
         floor[c] += 1
-    return {
-        "w_competences": floor["competences"],
-        "w_seniorite": floor["seniorite"],
-        "w_contexte": floor["contexte"],
-        "w_tjm": floor["tjm"],
-    }
+    return {f"w_{c}": floor[c] for c in STAR_CRITERIA}
+
+
+# Poids par défaut = dérivés des étoiles par défaut (source unique de vérité).
+DEFAULTS.update(stars_to_weights(DEFAULT_STARS))
 
 _SPLIT = re.compile(r"[,;/|\n]+")
 # Mots vides FR/EN les plus courants, écartés des signaux de contexte.
@@ -169,6 +202,8 @@ def score_consultant(features: dict, consultant: dict, ao: dict, config: dict | 
     w_comp = cfg["w_competences"]
     w_sen = cfg["w_seniorite"]
     w_ctx = cfg["w_contexte"]
+    w_pf = cfg["w_points_forts_cv"]
+    w_ed = cfg["w_elements_differenciants"]
     w_tjm = cfg["w_tjm"]
     seniority_full = cfg["seniority_full_years"] or SENIORITY_FULL_YEARS
 
@@ -212,6 +247,16 @@ def score_consultant(features: dict, consultant: dict, ao: dict, config: dict | 
         ctx_ratio = _clamp01(len(hits) / len(ctx_signals) * 2)
     ctx_score = round(w_ctx * ctx_ratio)
 
+    # ── Points forts du CV / Éléments différenciants (qualitatifs) ─
+    # Aucun signal déterministe fiable (jugement qualitatif) : la grille pose
+    # un socle NEUTRE et laisse le 2e avis IA (services.llm_scoring) trancher.
+    # Le score hybride est alors l'avis IA ancré sur ce neutre ; si l'IA est
+    # indisponible, ces axes restent neutres (dégradation maîtrisée, Art. 15).
+    pf_ratio = NEUTRAL_RATIO
+    ed_ratio = NEUTRAL_RATIO
+    pf_score = round(w_pf * pf_ratio)
+    ed_score = round(w_ed * ed_ratio)
+
     # ── Compatibilité TJM (20) ─────────────────────────────────────
     budget = ao.get("budget_max")
     tjm = consultant.get("tjm")
@@ -223,30 +268,41 @@ def score_consultant(features: dict, consultant: dict, ao: dict, config: dict | 
         tjm_ratio = _clamp01(budget / tjm)
     tjm_score = round(w_tjm * tjm_ratio)
 
-    total = comp_score + sen_score + ctx_score + tjm_score
+    total = comp_score + sen_score + ctx_score + pf_score + ed_score + tjm_score
 
     breakdown = {
         "competences_techniques": comp_score,
         "seniorite": sen_score,
         "contexte_domaine": ctx_score,
+        "points_forts_cv": pf_score,
+        "elements_differenciants": ed_score,
         "compatibilite_tjm": tjm_score,
     }
 
     # ── Points forts / faibles dérivés des ratios (explicabilité) ──
+    # (label, ratio, poids) — un critère à poids nul (désactivé) est ignoré.
     criteria = [
-        ("compétences techniques", comp_ratio),
-        ("séniorité", sen_ratio),
-        ("adéquation au contexte", ctx_ratio),
-        ("compatibilité TJM", tjm_ratio),
+        ("compétences techniques", comp_ratio, w_comp),
+        ("séniorité", sen_ratio, w_sen),
+        ("adéquation au contexte", ctx_ratio, w_ctx),
+        ("points forts du CV", pf_ratio, w_pf),
+        ("éléments différenciants", ed_ratio, w_ed),
+        ("compatibilité TJM", tjm_ratio, w_tjm),
     ]
-    points_forts = [f"Bon niveau : {label}" for label, r in criteria if r >= STRONG_RATIO]
-    points_faibles = [f"À vérifier : {label}" for label, r in criteria if r <= WEAK_RATIO]
+    points_forts = [f"Bon niveau : {label}" for label, r, w in criteria if w > 0 and r >= STRONG_RATIO]
+    points_faibles = [f"À vérifier : {label}" for label, r, w in criteria if w > 0 and r <= WEAK_RATIO]
 
-    resume = (
-        f"Score {total}/100 — compétences {comp_score}/{w_comp}, "
-        f"séniorité {sen_score}/{w_sen}, contexte {ctx_score}/{w_ctx}, "
-        f"TJM {tjm_score}/{w_tjm}. Évaluation déterministe (grille v{GRID_VERSION})."
-    )
+    # Résumé : n'affiche que les axes actifs (poids > 0).
+    _resume_axes = [
+        ("compétences", comp_score, w_comp),
+        ("séniorité", sen_score, w_sen),
+        ("contexte", ctx_score, w_ctx),
+        ("points forts", pf_score, w_pf),
+        ("différenciation", ed_score, w_ed),
+        ("TJM", tjm_score, w_tjm),
+    ]
+    _detail = ", ".join(f"{label} {sc}/{w}" for label, sc, w in _resume_axes if w > 0)
+    resume = f"Score {total}/100 — {_detail}. Évaluation déterministe (grille v{GRID_VERSION})."
 
     return {
         "score_total": total,

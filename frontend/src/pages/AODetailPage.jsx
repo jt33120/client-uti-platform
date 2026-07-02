@@ -702,6 +702,7 @@ function SubmitModal({ aoId, vivier, onClose, onSubmitted, prefill, clientName }
     ...(prefill || {}),
   })
   const [cvFile, setCvFile] = useState(null)
+  const [aiAck, setAiAck] = useState(false)
   const [consent, setConsent] = useState(false)
   const [workedAtClient, setWorkedAtClient] = useState(false)
   const [exitDate, setExitDate] = useState('')
@@ -872,6 +873,24 @@ function SubmitModal({ aoId, vivier, onClose, onSubmitted, prefill, clientName }
             <label className="label">
               CV (PDF, Word, Excel) {mode === 'existing' ? <span className="text-slate-500 font-normal">· facultatif (le CV du vivier sera réutilisé)</span> : '*'}
             </label>
+
+            {!cvFile && (
+              <label
+                className="flex items-start gap-2 p-3 mb-3 rounded-lg border cursor-pointer"
+                style={{ background: 'rgba(245,158,11,0.08)', borderColor: 'rgba(245,158,11,0.3)' }}>
+                <input type="checkbox" checked={aiAck} onChange={e => setAiAck(e.target.checked)}
+                       className="mt-0.5 w-4 h-4 shrink-0" style={{ accentColor: '#f59e0b' }} />
+                <span className="text-xs text-slate-300 flex items-start gap-1.5">
+                  <AlertTriangle size={13} className="mt-0.5 shrink-0" style={{ color: '#f59e0b' }} />
+                  <span>
+                    Le CV importé sera traité par une IA (extraction, scoring, harmonisation).
+                    Merci de vérifier qu'il est <strong>anonymisé</strong> (nom, coordonnées retirés)
+                    avant de le déposer.
+                  </span>
+                </span>
+              </label>
+            )}
+
             {cvFile ? (
               <div className="flex items-center gap-3 p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-lg">
                 <CheckCircle size={18} className="text-emerald-400 shrink-0" />
@@ -887,21 +906,23 @@ function SubmitModal({ aoId, vivier, onClose, onSubmitted, prefill, clientName }
             ) : (
               <div
                 className={clsx(
-                  'border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-all duration-150',
-                  dragOver ? 'border-brand-500 bg-brand-500/5' : 'border-white/10 hover:border-white/20'
+                  'border-2 border-dashed rounded-xl p-6 text-center transition-all duration-150',
+                  !aiAck ? 'opacity-40 cursor-not-allowed border-white/5'
+                    : dragOver ? 'border-brand-500 bg-brand-500/5 cursor-pointer' : 'border-white/10 hover:border-white/20 cursor-pointer'
                 )}
-                onDragOver={e => { e.preventDefault(); setDragOver(true) }}
+                onDragOver={e => { e.preventDefault(); if (aiAck) setDragOver(true) }}
                 onDragLeave={() => setDragOver(false)}
-                onDrop={e => { e.preventDefault(); setDragOver(false); handleFile(e.dataTransfer.files[0]) }}
-                onClick={() => fileRef.current?.click()}>
+                onDrop={e => { e.preventDefault(); setDragOver(false); if (aiAck) handleFile(e.dataTransfer.files[0]) }}
+                onClick={() => { if (aiAck) fileRef.current?.click() }}>
                 <Upload size={24} className="mx-auto text-slate-600 mb-2" />
                 <p className="text-sm text-slate-400 font-medium">
-                  {mode === 'existing' ? 'Joindre un fichier à jour (optionnel)' : 'Glissez le fichier ou cliquez'}
+                  {!aiAck ? 'Cochez la case ci-dessus pour importer'
+                    : mode === 'existing' ? 'Joindre un fichier à jour (optionnel)' : 'Glissez le fichier ou cliquez'}
                 </p>
                 <p className="text-[10px] text-slate-700 mt-1">
                   {mode === 'existing' ? "Sinon le dernier CV du vivier sera utilisé · PDF, Word, Excel · Max 10MB" : 'PDF, Word, Excel · Max 10MB'}
                 </p>
-                <input ref={fileRef} type="file"
+                <input ref={fileRef} type="file" disabled={!aiAck}
                        accept=".pdf,application/pdf,.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                        className="hidden"
                        onChange={e => handleFile(e.target.files[0])} />

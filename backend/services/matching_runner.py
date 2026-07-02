@@ -16,7 +16,7 @@ import asyncio
 from typing import Optional
 from services.supabase_client import supabase
 from services.ai_matching import extract_features, EXTRACTION_MODEL
-from services.scoring import score_consultant, GRID_VERSION, DEFAULTS, stars_to_weights
+from services.scoring import score_consultant, GRID_VERSION, DEFAULTS, stars_to_weights, STAR_CRITERIA
 from services.llm_scoring import llm_score, combine_hybrid
 from services.scoring_settings import get_config
 from services.pseudonymize import strip_pii
@@ -38,7 +38,7 @@ def _weights_from_config(config: dict) -> dict:
     stars = (config or {}).get("stars")
     if stars:
         cfg.update(stars_to_weights(stars))
-    return {k: cfg[k] for k in ("w_competences", "w_seniorite", "w_contexte", "w_tjm")}
+    return {f"w_{c}": cfg[f"w_{c}"] for c in STAR_CRITERIA}
 
 
 # Colonnes ajoutées par supabase_migration_hybrid_scoring.sql. Si la migration

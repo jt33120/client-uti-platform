@@ -15,6 +15,7 @@ from openai import AsyncOpenAI
 
 from config import settings
 from mip_rum_ai import record_ai_call
+from services.scoring import STAR_CRITERIA
 
 _client: Optional[AsyncOpenAI] = (
     AsyncOpenAI(api_key=settings.openrouter_key, base_url="https://openrouter.ai/api/v1")
@@ -119,17 +120,17 @@ def _sanitize(d: dict, ao_types: list[str]) -> dict:
 
 
 def _stars(imp) -> Optional[dict]:
-    """Normalise la suggestion d'importance (1-5 par critère) renvoyée par le LLM."""
+    """Normalise la suggestion d'importance (0-5 par critère) renvoyée par le LLM."""
     if not isinstance(imp, dict):
         return None
     out = {}
-    for c in ("competences", "seniorite", "contexte", "tjm"):
+    for c in STAR_CRITERIA:
         v = imp.get(c)
         try:
             v = int(v)
         except (TypeError, ValueError):
             continue
-        out[c] = max(1, min(5, v))
+        out[c] = max(0, min(5, v))
     return out or None
 
 
@@ -190,11 +191,12 @@ async def draft_ao_fields(source: str, ao_types: list[str]) -> Optional[dict]:
         '- "deadline": date limite de réponse au format "YYYY-MM-DD" (sur un modèle '
         'de marché : la « Date de limite de remise des offres »), sinon ""\n'
         '- "context": éléments de contexte utiles (secteur, contraintes, urgence, environnement technique)\n'
-        '- "importance": objet notant de 1 (accessoire) à 5 (critique) l\'importance '
+        '- "importance": objet notant de 0 (exclu) à 5 (critique) l\'importance '
         'RELATIVE de chaque critère DÉDUITE du texte, avec les clés exactes '
-        '"competences", "seniorite", "contexte", "tjm". Ex. : un AO qui insiste sur '
-        'un "profil senior expert" met "seniorite" à 5 ; un AO très contraint en '
-        'budget met "tjm" haut. En l\'absence de signal clair, mets 3.\n\n'
+        '"competences", "seniorite", "contexte", "points_forts_cv", '
+        '"elements_differenciants", "tjm". Ex. : un AO qui insiste sur un '
+        '"profil senior expert" met "seniorite" à 5 ; si le TJM est déjà borné '
+        'par un TJM max, "tjm" peut être 0. En l\'absence de signal clair, mets 3.\n\n'
         f'Contenu source :\n"""\n{source}\n"""'
     )
 

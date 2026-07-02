@@ -1,6 +1,8 @@
 import { Star } from 'lucide-react'
 
-// Notation d'importance 1-5. `onChange` absent => lecture seule.
+// Notation d'importance 0-5. `onChange` absent => lecture seule.
+// Re-cliquer l'étoile active la décrémente ; cliquer la 1re quand elle est
+// seule active met la note à 0 (critère exclu du score).
 export default function StarRating({ value = 0, onChange, size = 18 }) {
   const readOnly = !onChange
   return (
@@ -15,7 +17,7 @@ export default function StarRating({ value = 0, onChange, size = 18 }) {
             aria-checked={n === value}
             aria-label={`${n} étoile${n > 1 ? 's' : ''}`}
             disabled={readOnly}
-            onClick={() => onChange?.(n)}
+            onClick={() => onChange?.(n === value ? n - 1 : n)}
             className={readOnly ? 'cursor-default' : 'cursor-pointer transition-transform hover:scale-110'}
             style={{ lineHeight: 0 }}
           >

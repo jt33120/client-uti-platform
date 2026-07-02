@@ -111,18 +111,26 @@ function BreakdownBar({ label, value, max }) {
 }
 
 // Catégories de score : libellé, clé du breakdown déterministe, clé côté LLM, poids par défaut.
+// v2 : deux axes qualitatifs notés par l'IA (points forts / différenciation),
+// placés sous Contexte. Le TJM peut être désactivé (poids 0) côté réglages.
 const SCORE_CATS = [
-  { label: 'Compétences', short: 'Compét.', det: 'competences_techniques', llm: 'competences', wKey: 'w_competences', dflt: 40 },
-  { label: 'Séniorité', short: 'Séniorité', det: 'seniorite', llm: 'seniorite', wKey: 'w_seniorite', dflt: 20 },
-  { label: 'Contexte / domaine', short: 'Contexte', det: 'contexte_domaine', llm: 'contexte', wKey: 'w_contexte', dflt: 20 },
-  { label: 'Compatibilité TJM', short: 'TJM', det: 'compatibilite_tjm', llm: 'tjm', wKey: 'w_tjm', dflt: 20 },
+  { label: 'Compétences', short: 'Compét.', det: 'competences_techniques', llm: 'competences', wKey: 'w_competences', dflt: 31 },
+  { label: 'Séniorité', short: 'Séniorité', det: 'seniorite', llm: 'seniorite', wKey: 'w_seniorite', dflt: 15 },
+  { label: 'Contexte / domaine', short: 'Contexte', det: 'contexte_domaine', llm: 'contexte', wKey: 'w_contexte', dflt: 15 },
+  { label: 'Points forts du CV', short: 'Atouts', det: 'points_forts_cv', llm: 'points_forts_cv', wKey: 'w_points_forts_cv', dflt: 15 },
+  { label: 'Éléments différenciants', short: 'Différ.', det: 'elements_differenciants', llm: 'elements_differenciants', wKey: 'w_elements_differenciants', dflt: 16 },
+  { label: 'Compatibilité TJM', short: 'TJM', det: 'compatibilite_tjm', llm: 'tjm', wKey: 'w_tjm', dflt: 8 },
 ]
+
+// Axes réellement pondérés (masque un critère désactivé à 0★ côté réglages).
+const activeCats = (weights) =>
+  SCORE_CATS.filter(c => !weights || (weights[c.wKey] ?? c.dflt) > 0)
 
 // Radar — score hybride par critère (une seule série, normalisée en %).
 // Le score global n'est PAS répété au centre : il est affiché dans l'anneau
 // (ScoreRing) en tête de carte.
 function ScoreRadar({ breakdown, hybridBreakdown, weights }) {
-  const data = SCORE_CATS.map(c => {
+  const data = activeCats(weights).map(c => {
     const max = (weights && weights[c.wKey]) || c.dflt || 1
     // Priorité : hybrid > det (si pas encore de résultat hybride stocké)
     const val = hybridBreakdown?.[c.det] ?? breakdown?.[c.det] ?? 0
@@ -436,7 +444,7 @@ function MatchCard({ result, rank, aoId, isAdmin, ao, onContact, expanded: expan
   const headlineScore = result.score_hybride ?? result.score_total
   // Reco cohérente avec le score affiché (hybride) — seuils par défaut 75 / 50.
   const reco = headlineScore >= 75 ? 'FORT' : headlineScore >= 50 ? 'MOYEN' : 'FAIBLE'
-  const cats = SCORE_CATS.map(c => ({
+  const cats = activeCats(weights).map(c => ({
     key: c.det,
     label: c.label,
     max: (weights && weights[c.wKey]) || c.dflt,
@@ -1386,8 +1394,10 @@ function AOEditModal({ ao, onClose, onSaved }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
-  // Priorités de matching (mêmes étoiles qu'à la création).
-  const [stars, setStars] = useState(ao.scoring_overrides?.stars || DEFAULT_STARS)
+  // Priorités de matching (mêmes étoiles qu'à la création). Fusion sur les
+  // défauts : un AO d'avant-v2 (4 axes) hérite des nouveaux axes sans casser
+  // la validation (StarConfig attend désormais les 6 critères).
+  const [stars, setStars] = useState({ ...DEFAULT_STARS, ...(ao.scoring_overrides?.stars || {}) })
   const [scoringTouched, setScoringTouched] = useState(false)
   const onStars = (s) => { setStars(s); setScoringTouched(true) }
 

@@ -39,31 +39,48 @@ SCORING_MODEL = settings.scoring_model
 _MISTRAL_SCORING_MODEL = settings.mistral_model
 
 # Correspondance clés LLM ↔ clés du breakdown déterministe (`services.scoring`).
+# Depuis v2 : deux axes qualitatifs supplémentaires (points forts / différenciation)
+# que SEUL le LLM sait noter (la grille déterministe les pose en neutre).
 _CATS = [
     ("competences", "competences_techniques", "w_competences"),
     ("seniorite", "seniorite", "w_seniorite"),
     ("contexte", "contexte_domaine", "w_contexte"),
+    ("points_forts_cv", "points_forts_cv", "w_points_forts_cv"),
+    ("elements_differenciants", "elements_differenciants", "w_elements_differenciants"),
     ("tjm", "compatibilite_tjm", "w_tjm"),
 ]
 
 _SYSTEM = """Tu es un évaluateur de candidatures pour des missions IT (ESN).
 
 On te donne un appel d'offres et le profil ANONYMISÉ d'un consultant. Tu dois
-noter l'adéquation du profil sur 4 critères, CHACUN sur son barème propre fourni
-dans la requête, puis justifier brièvement.
+noter l'adéquation du profil sur 6 critères, CHACUN sur son barème propre fourni
+dans la requête (0 = nul … MAX = parfait), puis justifier brièvement.
+
+Critères :
+- competences : adéquation des compétences techniques aux compétences attendues.
+- seniorite : niveau d'expérience au regard de la séniorité attendue.
+- contexte : proximité du secteur / contexte de la mission avec le vécu du profil.
+- points_forts_cv : force et pertinence des points forts du CV pour CETTE mission
+  (réalisations concrètes, certifications, expertises marquantes).
+- elements_differenciants : ce qui distingue ce profil d'un candidat générique pour
+  cette mission (spécialisations rares, combinaisons de compétences, expériences peu communes).
+- tjm : compatibilité du TJM avec le budget de l'AO.
 
 Retourne UNIQUEMENT un JSON valide (sans markdown) au format EXACT :
 {
-  "competences": {"score": <entier 0..MAX_COMPETENCES>, "justification": "<1 phrase concrète>"},
-  "seniorite":   {"score": <entier 0..MAX_SENIORITE>,   "justification": "<1 phrase>"},
-  "contexte":    {"score": <entier 0..MAX_CONTEXTE>,    "justification": "<1 phrase>"},
-  "tjm":         {"score": <entier 0..MAX_TJM>,          "justification": "<1 phrase>"},
+  "competences":             {"score": <entier 0..MAX_COMPETENCES>, "justification": "<1 phrase concrète>"},
+  "seniorite":               {"score": <entier 0..MAX_SENIORITE>,   "justification": "<1 phrase>"},
+  "contexte":                {"score": <entier 0..MAX_CONTEXTE>,    "justification": "<1 phrase>"},
+  "points_forts_cv":         {"score": <entier 0..MAX_POINTS_FORTS_CV>,         "justification": "<1 phrase : le point fort majeur>"},
+  "elements_differenciants": {"score": <entier 0..MAX_ELEMENTS_DIFFERENCIANTS>, "justification": "<1 phrase : ce qui différencie>"},
+  "tjm":                     {"score": <entier 0..MAX_TJM>,          "justification": "<1 phrase>"},
   "global": "<2 à 3 phrases : qui contacter et pourquoi, points forts et réserves>"
 }
 
 Règles :
 - Reste factuel, fondé sur les données fournies. N'invente pas d'expérience absente.
 - Si une information manque, note prudemment au milieu du barème et dis-le dans la justification.
+- Si un critère a un MAX de 0, il est désactivé : renvoie score 0 et justification vide.
 - Ne mentionne jamais de nom, contact ou donnée personnelle.
 """
 
@@ -147,14 +164,11 @@ async def llm_score(features: dict, consultant: dict, ao: dict, weights: dict) -
     (→ fallback déterministe, dégradation maîtrisée Art. 15).
     """
     maxes = {llm_k: int(weights.get(w_k, 0)) for llm_k, _det_k, w_k in _CATS}
+    bareme = "\n".join(f"- MAX_{llm_k.upper()} = {maxes[llm_k]}" for llm_k, _d, _w in _CATS)
     user = (
         "APPEL D'OFFRES :\n" + _ao_brief(ao) + "\n\n"
         "PROFIL CONSULTANT (anonymisé) :\n" + _candidate_brief(features, consultant) + "\n\n"
-        "Barèmes (scores entiers, maximum par critère) :\n"
-        f"- MAX_COMPETENCES = {maxes['competences']}\n"
-        f"- MAX_SENIORITE = {maxes['seniorite']}\n"
-        f"- MAX_CONTEXTE = {maxes['contexte']}\n"
-        f"- MAX_TJM = {maxes['tjm']}\n"
+        "Barèmes (scores entiers, maximum par critère) :\n" + bareme + "\n"
     )
 
     candidates = []

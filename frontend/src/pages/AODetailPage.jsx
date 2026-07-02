@@ -1210,6 +1210,7 @@ function ValidationTab({ aoId, submissions, clientId, scores }) {
                   title="Sélectionner pour une action groupée" />
                 <UserCircle2 size={26} className="text-slate-500 shrink-0" />
                 <div className="min-w-0 flex-1">
+                  {/* Identité + score (mis en avant) */}
                   <div className="flex items-center gap-2 flex-wrap">
                     {s.submitter?.name && (
                       <span className="text-sm font-semibold text-brand-300 inline-flex items-center gap-1">
@@ -1226,24 +1227,25 @@ function ValidationTab({ aoId, submissions, clientId, scores }) {
                         {scores[s.consultant_id]}
                       </span>
                     )}
+                  </div>
+                  {/* Méta + liens (discret, hiérarchie visuelle) */}
+                  <div className="flex items-center gap-2.5 flex-wrap mt-1 text-[11px]" style={{ color: 'var(--text-faint)' }}>
                     {c.employment_type && (
-                      <span className="badge bg-white/5 text-slate-400 text-[10px]">
-                        {c.employment_type === 'salarie' ? 'Salarié' : 'Indépendant'}
-                      </span>
+                      <span>{c.employment_type === 'salarie' ? 'Salarié' : 'Indépendant'}</span>
                     )}
                     {c.tjm && (
-                      <span className="text-[10px] text-emerald-400 inline-flex items-center gap-0.5"><Euro size={9} />{c.tjm}/j</span>
+                      <span className="inline-flex items-center gap-0.5 text-emerald-400"><Euro size={11} />{c.tjm}/j</span>
                     )}
                     {s.cv_url && (
                       <a href={s.cv_url} target="_blank" rel="noopener noreferrer"
-                         className="text-xs text-slate-400 hover:text-brand-400 inline-flex items-center gap-1">
-                        <FileText size={12} /> CV
+                         className="inline-flex items-center gap-1 hover:text-brand-400 transition-colors">
+                        <FileText size={11} /> CV
                       </a>
                     )}
                     <button onClick={() => setCvModalSub(s)}
-                      className="text-xs text-brand-300 hover:text-brand-200 inline-flex items-center gap-1"
+                      className="inline-flex items-center gap-1 text-brand-300 hover:text-brand-200 transition-colors"
                       title="Régénérer au format Groupement-IT (FR / EN)">
-                      <Sparkles size={12} /> CV GRP-IT
+                      <Sparkles size={11} /> CV GRP-IT
                     </button>
                   </div>
                 </div>

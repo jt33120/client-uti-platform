@@ -18,6 +18,7 @@ import httpx
 
 from services.supabase_client import supabase
 from services import storage
+from services.cv_parser import guess_extension
 from routers.auth import require_admin
 from config import settings
 
@@ -82,7 +83,7 @@ async def gdpr_erase_user(user_id: str, user: dict = Depends(require_admin)):
                 "consultant_id", consultant_ids
             ).execute().data or []):
                 sub_rows[s["id"]] = s
-        for s in (supabase.table("submissions").select("id, ao_id").eq(
+        for s in (supabase.table("submissions").select("id, ao_id, cv_filename").eq(
             "submitted_by", user_id
         ).execute().data or []):
             sub_rows[s["id"]] = s
@@ -98,7 +99,10 @@ async def gdpr_erase_user(user_id: str, user: dict = Depends(require_admin)):
     counts["matchings"] = matchings_deleted
 
     # 3. Remove CV files from object storage (no DB cascade reaches the bucket).
-    cv_paths = [f"{s['ao_id']}/{sid}.pdf" for sid, s in sub_rows.items() if s.get("ao_id")]
+    cv_paths = [
+        f"{s['ao_id']}/{sid}.{guess_extension(s.get('cv_filename'))}"
+        for sid, s in sub_rows.items() if s.get("ao_id")
+    ]
     if cv_paths:
         try:
             storage.remove("cvs", cv_paths)

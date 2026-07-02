@@ -712,11 +712,12 @@ function SubmitModal({ aoId, vivier, onClose, onSubmitted, prefill, clientName }
   const [error, setError] = useState('')
 
   const handleFile = (file) => {
-    if (file && file.type === 'application/pdf') {
+    const ext = file?.name?.split('.').pop()?.toLowerCase()
+    if (file && ['pdf', 'docx', 'xlsx'].includes(ext)) {
       setCvFile(file)
       setError('')
     } else {
-      setError('Seuls les fichiers PDF sont acceptés')
+      setError('Seuls les fichiers PDF, Word (.docx) et Excel (.xlsx) sont acceptés')
     }
   }
 
@@ -725,7 +726,7 @@ function SubmitModal({ aoId, vivier, onClose, onSubmitted, prefill, clientName }
     setError('')
     // En mode « vivier », le CV est facultatif : le backend réutilise celui
     // déjà présent au vivier pour ce consultant.
-    if (!cvFile && mode !== 'existing') { setError('Veuillez joindre un CV PDF'); return }
+    if (!cvFile && mode !== 'existing') { setError('Veuillez joindre un CV (PDF, Word ou Excel)'); return }
     if (!consent) { setError('Vous devez accepter la notice de confidentialité (RGPD)'); return }
     if (!pointsForts.trim() || !elementsDiff.trim()) {
       setError('Merci de renseigner les points forts et les éléments différenciants du CV.'); return
@@ -869,7 +870,7 @@ function SubmitModal({ aoId, vivier, onClose, onSubmitted, prefill, clientName }
 
           <div>
             <label className="label">
-              CV (PDF) {mode === 'existing' ? <span className="text-slate-500 font-normal">· facultatif (le CV du vivier sera réutilisé)</span> : '*'}
+              CV (PDF, Word, Excel) {mode === 'existing' ? <span className="text-slate-500 font-normal">· facultatif (le CV du vivier sera réutilisé)</span> : '*'}
             </label>
             {cvFile ? (
               <div className="flex items-center gap-3 p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-lg">
@@ -895,12 +896,14 @@ function SubmitModal({ aoId, vivier, onClose, onSubmitted, prefill, clientName }
                 onClick={() => fileRef.current?.click()}>
                 <Upload size={24} className="mx-auto text-slate-600 mb-2" />
                 <p className="text-sm text-slate-400 font-medium">
-                  {mode === 'existing' ? 'Joindre un PDF à jour (optionnel)' : 'Glissez le PDF ou cliquez'}
+                  {mode === 'existing' ? 'Joindre un fichier à jour (optionnel)' : 'Glissez le fichier ou cliquez'}
                 </p>
                 <p className="text-[10px] text-slate-700 mt-1">
-                  {mode === 'existing' ? "Sinon le dernier CV du vivier sera utilisé · PDF · Max 10MB" : 'PDF · Max 10MB'}
+                  {mode === 'existing' ? "Sinon le dernier CV du vivier sera utilisé · PDF, Word, Excel · Max 10MB" : 'PDF, Word, Excel · Max 10MB'}
                 </p>
-                <input ref={fileRef} type="file" accept=".pdf,application/pdf" className="hidden"
+                <input ref={fileRef} type="file"
+                       accept=".pdf,application/pdf,.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                       className="hidden"
                        onChange={e => handleFile(e.target.files[0])} />
               </div>
             )}

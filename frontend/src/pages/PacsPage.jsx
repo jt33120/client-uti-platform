@@ -356,7 +356,7 @@ export default function PacsPage({ embedded = false }) {
 
       {filtered.length === 0 ? (
         <div className="card p-10 text-center">
-          <Package size={30} className="mx-auto text-slate-700 mb-3" />
+          <Package size={32} className="mx-auto text-slate-700 mb-3" />
           <p className="text-slate-400 text-sm">
             {search ? 'Aucun résultat.' : 'Aucun PAC créé.'}
           </p>

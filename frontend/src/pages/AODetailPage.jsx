@@ -1208,7 +1208,7 @@ function ValidationTab({ aoId, submissions, clientId, scores }) {
                   onChange={() => toggleSel(s.consultant_id)}
                   className="shrink-0 w-4 h-4 cursor-pointer" style={{ accentColor: 'var(--accent)' }}
                   title="Sélectionner pour une action groupée" />
-                <UserCircle2 size={26} className="text-slate-500 shrink-0" />
+                <UserCircle2 size={24} className="text-slate-500 shrink-0" />
                 <div className="min-w-0 flex-1">
                   {/* Identité + score (mis en avant) */}
                   <div className="flex items-center gap-2 flex-wrap">

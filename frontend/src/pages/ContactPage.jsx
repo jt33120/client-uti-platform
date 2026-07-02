@@ -39,7 +39,7 @@ export default function ContactPage() {
 
         {sent ? (
           <div className="card p-8 text-center">
-            <CheckCircle size={34} className="mx-auto mb-3" style={{ color: 'var(--accent-text)' }} />
+            <CheckCircle size={32} className="mx-auto mb-3" style={{ color: 'var(--accent-text)' }} />
             <h1 className="text-lg font-semibold text-[var(--text)] mb-1">Demande envoyée</h1>
             <p className="text-[13px] text-[var(--text-muted)]">
               Merci ! Votre demande a bien été transmise à notre équipe. Nous vous recontacterons rapidement.

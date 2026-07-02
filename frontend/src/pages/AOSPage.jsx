@@ -5,9 +5,10 @@ import { useAuth } from '../contexts/AuthContext'
 import { useConfirm } from '../contexts/ConfirmContext'
 import {
   FileText, Plus, Euro, MapPin, Clock, ArrowRight, Search,
-  Building2, Users, Star, ListChecks, Calendar, CalendarClock,
+  Building2, Users, Calendar, CalendarClock,
   Pencil, X, Loader2, ChevronDown, Check, Trash2, ArrowDownUp, Sparkles,
 } from 'lucide-react'
+import { TierBadge } from '../components/badges'
 
 // Parse date-only strings as local to avoid the UTC off-by-one.
 const parseDateLocal = (iso) => {
@@ -49,22 +50,6 @@ const deadlineSortKey = (ao) => {
   return d ? d.getTime() : Infinity // AO sans échéance en dernier
 }
 import clsx from 'clsx'
-
-function TierBadge({ tier }) {
-  if (!tier) return null
-  const map = {
-    list_1: { cls: 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20', label: 'Liste 1', icon: Star },
-    list_2: { cls: 'bg-brand-500/10 text-brand-300 border border-brand-500/20', label: 'Liste 2', icon: ListChecks },
-  }
-  const c = map[tier]
-  if (!c) return null
-  const Icon = c.icon
-  return (
-    <span className={clsx('badge text-[10px]', c.cls)}>
-      <Icon size={9} /> {c.label}
-    </span>
-  )
-}
 
 // ── Edit modal ────────────────────────────────────────────────────────────────
 function AOEditModal({ ao, onClose, onSaved }) {

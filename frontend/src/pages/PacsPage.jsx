@@ -3,31 +3,17 @@ import api from '../lib/api'
 import { useConfirm } from '../contexts/ConfirmContext'
 import {
   Package, Plus, Loader2, Trash2, Pencil, X, Search,
-  Building2, Star, ListChecks, AlertCircle, ChevronDown,
+  Building2, ChevronDown,
   Save, Sparkles,
 } from 'lucide-react'
 import clsx from 'clsx'
+import { TierBadge } from '../components/badges'
 
 const TIER_OPTIONS = [
   { value: 'list_1', label: 'Liste 1 (prioritaire)' },
   { value: 'list_2', label: 'Liste 2' },
   { value: 'suspended', label: 'Suspendu' },
 ]
-
-function TierBadge({ tier }) {
-  const map = {
-    list_1: { cls: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20', label: 'Liste 1', Icon: Star },
-    list_2: { cls: 'bg-brand-500/10 text-brand-300 border-brand-500/20', label: 'Liste 2', Icon: ListChecks },
-    suspended: { cls: 'bg-red-500/10 text-red-400 border-red-500/20', label: 'Suspendu', Icon: AlertCircle },
-  }
-  const c = map[tier]
-  if (!c) return null
-  return (
-    <span className={clsx('badge border text-[10px] flex items-center gap-1', c.cls)}>
-      <c.Icon size={9} /> {c.label}
-    </span>
-  )
-}
 
 // ── Modal: create PAC ────────────────────────────────────────────────────────
 function CreatePacModal({ onClose, onCreated }) {

@@ -70,6 +70,47 @@ _HYBRID_COLS = (
     # si la migration n'est pas encore appliquée.
     "langues",
 )
+# Colonnes non essentielles : leur absence (schéma non migré OU cache PostgREST
+# périmé, erreur PGRST204) ne doit jamais faire perdre le score déterministe.
+_OPTIONAL_COLS = _HYBRID_COLS + ("cost_usd",)
+# Colonnes sans lesquelles une ligne de matching n'a aucun sens.
+_ESSENTIAL_COLS = frozenset({"ao_id", "consultant_id", "score_total", "rank"})
+
+
+def _insert_matchings(rows: list[dict]) -> set:
+    """Insert résilient. PostgREST renvoie PGRST204 « Could not find the 'X'
+    column » quand une colonne manque du schéma OU que son cache est périmé
+    (cas vu en prod sur `cost_usd`). On retire alors la colonne nommée et on
+    réessaie — jamais on ne perd le score déterministe. Retourne les colonnes
+    retirées."""
+    import re
+    dropped: set = set()
+
+    def _pruned():
+        return [{k: v for k, v in r.items() if k not in dropped} for r in rows]
+
+    while True:
+        try:
+            supabase.table("matchings").insert(_pruned()).execute()
+            return dropped
+        except Exception as e:  # noqa: BLE001
+            m = re.search(r"'([a-z0-9_]+)' column", str(e))
+            col = m.group(1) if m else None
+            if col and col not in _ESSENTIAL_COLS and col not in dropped:
+                dropped.add(col)
+                _record_err(
+                    "matching.persist",
+                    f"Colonne '{col}' absente du schéma/cache PostgREST — insert sans elle "
+                    f"(rafraîchir le cache : NOTIFY pgrst, 'reload schema')",
+                    level="warning",
+                )
+                continue
+            # Erreur non liée à une colonne, ou colonne essentielle : dernier
+            # recours = retirer d'un coup toutes les colonnes optionnelles.
+            if not dropped.issuperset(_OPTIONAL_COLS):
+                dropped.update(_OPTIONAL_COLS)
+                continue
+            raise
 
 
 def _persist(ao_id: str, results: list[dict], cost_usd: float, ran_by: Optional[str]):
@@ -111,13 +152,9 @@ def _persist(ao_id: str, results: list[dict], cost_usd: float, ran_by: Optional[
         (supabase.table("matchings").select("id").eq("ao_id", ao_id).execute().data or [])
     ]
 
-    try:
-        supabase.table("matchings").insert(rows).execute()
-    except Exception as e:
-        print(f"[MATCHING] insert complet échoué ({e}); repli sans colonnes hybrides")
-        _record_err("matching.persist", "Insert hybride échoué — repli score déterministe seul (migration hybride appliquée ?)", exc=e, level="warning")
-        trimmed = [{k: v for k, v in row.items() if k not in _HYBRID_COLS} for row in rows]
-        supabase.table("matchings").insert(trimmed).execute()
+    # Insert résilient : retire à la volée toute colonne absente du schéma/cache
+    # (jamais de perte du score déterministe).
+    _insert_matchings(rows)
 
     if old_ids:
         # Si ce delete échoue, l'ancien ET le nouveau classement coexistent dans

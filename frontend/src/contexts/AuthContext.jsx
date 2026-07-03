@@ -56,12 +56,14 @@ export function AuthProvider({ children }) {
     return data.user
   }
 
+  // L'inscription NE connecte PLUS directement : le backend ne renvoie pas de
+  // jeton (sinon la MFA obligatoire serait contournée). On renvoie l'accusé
+  // { registered, email } ; l'appelant redirige vers /login.
   const register = async (email, password, name, role, inviteToken = null) => {
     setLoading(true)
     try {
       const { data } = await api.post('/auth/register', { email, password, name, role, invite_token: inviteToken || undefined })
-      startSession(data)
-      return data.user
+      return data
     } finally {
       setLoading(false)
     }

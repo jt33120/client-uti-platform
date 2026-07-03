@@ -149,7 +149,10 @@ async def _call_scoring(c: AsyncOpenAI, model: str, user: str, maxes: dict) -> t
     if getattr(choice, "finish_reason", None) == "length":
         # JSON coupé par max_tokens : provider suivant plutôt qu'un avis partiel.
         raise ValueError("avis IA tronqué (max_tokens atteint)")
-    data = json.loads(choice.message.content)
+    content = (choice.message.content or "").strip()
+    if not content:
+        raise ValueError("réponse LLM vide (modèle indisponible ou format non supporté)")
+    data = json.loads(content)
     usage = resp.usage
     # Après le parsing : un usage manquant ne doit pas invalider un avis réussi.
     cost = calculate_cost(getattr(usage, "prompt_tokens", None), getattr(usage, "completion_tokens", None))

@@ -7,7 +7,7 @@ import api from '../lib/api'
 // Account creation is invitation-only: without a valid invite token there is
 // no form at all — the role always comes from the invitation server-side.
 export default function RegisterPage() {
-  const { register, loading } = useAuth()
+  const { register, loading, user, logout } = useAuth()
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const inviteToken = searchParams.get('invite')
@@ -36,7 +36,9 @@ export default function RegisterPage() {
     setError('')
     try {
       await register(form.email, form.password, form.name, form.role, inviteToken)
-      navigate('/dashboard')
+      // L'inscription n'ouvre pas de session : on renvoie vers /login, où la
+      // double authentification obligatoire s'applique à la 1re connexion.
+      navigate(`/login?registered=1&email=${encodeURIComponent(form.email)}`)
     } catch (err) {
       setError(err.response?.data?.detail || 'Erreur lors de l\'inscription')
     }
@@ -53,7 +55,26 @@ export default function RegisterPage() {
           </div>
         </div>
 
-        {inviteStatus === 'missing' ? (
+        {user ? (
+          // Session déjà active : un lien d'invitation ne redirige plus en
+          // silence (bug #3). On explique et on propose de se déconnecter.
+          <div className="text-center py-6">
+            <MailQuestion size={28} className="mx-auto mb-3" style={{ color: 'var(--text-faint)' }} />
+            <h1 className="text-[18px] font-semibold tracking-tightest text-[var(--text)] mb-1.5">
+              Vous êtes déjà connecté
+            </h1>
+            <p className="text-[13px] text-[var(--text-muted)] leading-relaxed mb-5">
+              Vous êtes connecté en tant que <span className="font-medium text-[var(--text)]">{user.email}</span>.
+              Pour créer le compte lié à cette invitation, déconnectez-vous d'abord.
+            </p>
+            <button onClick={() => logout()} className="btn-primary w-full justify-center !h-10">
+              Se déconnecter et continuer l'inscription
+            </button>
+            <button onClick={() => navigate('/dashboard')} className="btn-ghost w-full justify-center !h-9 mt-2 text-[13px]">
+              Revenir à mon espace
+            </button>
+          </div>
+        ) : inviteStatus === 'missing' ? (
           <div className="text-center py-6">
             <MailQuestion size={28} className="mx-auto mb-3" style={{ color: 'var(--text-faint)' }} />
             <h1 className="text-[18px] font-semibold tracking-tightest text-[var(--text)] mb-1.5">

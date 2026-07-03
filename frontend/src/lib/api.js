@@ -3,7 +3,11 @@ import axios from 'axios'
 
 const api = axios.create({
   baseURL: '/api',
-  timeout: 60000, // 60s — AI matching can take time
+  // 120s — aligné sur le proxy nginx (proxy_read_timeout 120s). Un matching IA
+  // peut durer plus d'une minute : on ne coupe pas la requête côté navigateur
+  // avant le serveur, sinon l'utilisateur voit une erreur alors que le
+  // traitement aboutit côté backend.
+  timeout: 120000,
 })
 
 // Attach JWT token automatically

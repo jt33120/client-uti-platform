@@ -9,14 +9,38 @@
 [Unit]
 Description=UTI Platform FastAPI backend
 After=network.target
+# Anti crash-loop : si le service redémarre en boucle (ex. .env cassé, dépendance
+# manquante), on l'arrête au bout de 5 échecs en 60 s au lieu de marteler le VPS.
+# Pour le relancer après correction : `sudo systemctl reset-failed uti-backend`.
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
 User=julian.talou
 WorkingDirectory=/home/julian.talou/app/backend
+# ⚠️ UN SEUL worker uvicorn (pas de --workers) : le rate-limit (mémoire) et le
+# planificateur de notifications (services/scheduler.py) supposent un process
+# unique. Passer en multi-worker dupliquerait le scheduler → risque de
+# double-envoi d'e-mails (atténué par un claim en base, mais à éviter). Pour
+# encaisser plus de charge, préférer un reverse-proxy/plus de RAM à --workers,
+# ou externaliser rate-limit + scheduler (Redis / worker dédié) au préalable.
 ExecStart=/home/julian.talou/app/backend/venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000
 Restart=always
 RestartSec=3
+# Arrêt propre : laisse uvicorn terminer les requêtes en cours (un matching IA
+# peut durer ~1-2 min) avant le SIGKILL, pour ne pas couper un traitement.
+TimeoutStopSec=90
+# Redémarre le service aussi s'il est tué par manque de mémoire (OOM).
+OOMPolicy=continue
+
+# ── Garde-fous mémoire (optionnels) ─────────────────────────────────
+# Un CV volumineux + OCR peut faire grimper la RAM. Décommente et AJUSTE selon
+# la RAM réelle du VPS (garde de la marge pour nginx + l'OS) pour éviter qu'un
+# pic emporte tout le VPS. Ex. VPS 2 Go : High≈1200M / Max≈1500M.
+# MemoryHigh (limite douce : throttle) doit rester < MemoryMax (limite dure : kill).
+# MemoryHigh=1200M
+# MemoryMax=1500M
 
 [Install]
 WantedBy=multi-user.target

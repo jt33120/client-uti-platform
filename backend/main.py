@@ -138,9 +138,32 @@ def health():
     return {"status": "ok"}
 
 
+# ── Contrôle de connexion à la base au démarrage (non bloquant) ───
+async def _check_db_ready() -> None:
+    """Sonde Supabase au boot avec quelques essais. NE bloque JAMAIS le démarrage :
+    en cas d'échec réseau transitoire au reboot du VPS, l'app démarre quand même
+    (elle sert /health pour le proxy), et systemd/nginx n'interprètent pas ça
+    comme un crash. On journalise juste l'état pour le diagnostic."""
+    import asyncio
+    from services.supabase_client import supabase
+    for attempt in range(1, 6):
+        try:
+            supabase.table("profiles").select("id").limit(1).execute()
+            print("[STARTUP] connexion Supabase OK")
+            return
+        except Exception as e:  # noqa: BLE001
+            print(f"[STARTUP] Supabase injoignable (essai {attempt}/5): {e}")
+            await asyncio.sleep(min(2 ** attempt, 20))
+    print("[STARTUP] ⚠️  Supabase toujours injoignable — l'app démarre quand "
+          "même ; les requêtes échoueront proprement (500) tant que la base ne "
+          "répond pas.")
+
+
 # ── Planificateur de notifications (mono-worker uvicorn) ──────────
 @app.on_event("startup")
-async def _start_scheduler():
+async def _startup():
     import asyncio
     from services.scheduler import run_scheduler
+    # Contrôle DB en tâche de fond : ne retarde pas la disponibilité de /health.
+    asyncio.create_task(_check_db_ready())
     asyncio.create_task(run_scheduler())

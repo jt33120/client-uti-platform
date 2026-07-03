@@ -11,8 +11,6 @@ class Settings(BaseSettings):
     # Drives /docs exposure, security headers and the JWT-secret guard below.
     app_env: str = "production"
     frontend_url: str = "https://git-alpha-hazel.vercel.app"
-    resend_key: Optional[str] = None
-    resend_from: str = "UTI Group <onboarding@resend.dev>"
     admin_email: Optional[str] = None  # recipient for support/contact notifications
 
     # SMTP (Infomaniak) — transactional email delivery

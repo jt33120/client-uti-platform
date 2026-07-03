@@ -32,7 +32,7 @@ export default function RegisterPage() {
 
   const handleSubmit = async (e) => {
     e.preventDefault()
-    if (form.password.length < 6) { setError('Mot de passe trop court (min 6 caractères)'); return }
+    if (form.password.length < 8) { setError('Mot de passe trop court (min 8 caractères)'); return }
     setError('')
     try {
       await register(form.email, form.password, form.name, form.role, inviteToken)
@@ -124,7 +124,7 @@ export default function RegisterPage() {
                     <input
                       type={showPassword ? 'text' : 'password'}
                       className="input pr-9"
-                      placeholder="Min. 6 caractères"
+                      placeholder="Min. 8 caractères"
                       value={form.password}
                       onChange={e => setForm(p => ({ ...p, password: e.target.value }))}
                       required

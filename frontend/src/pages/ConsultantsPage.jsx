@@ -186,6 +186,7 @@ export default function ConsultantsPage() {
   const navigate = useNavigate()
   const [consultants, setConsultants] = useState([])
   const [loading, setLoading] = useState(true)
+  const [fetchError, setFetchError] = useState(null)
   const [search, setSearch] = useState('')
   const [contactFor, setContactFor] = useState(null)
   const [advanced, setAdvanced] = useState(false)
@@ -206,9 +207,15 @@ export default function ConsultantsPage() {
   }
 
   const fetchConsultants = async () => {
+    setLoading(true)
+    setFetchError(null)
     try {
       const { data } = await api.get('/consultants')
       setConsultants(data)
+    } catch (e) {
+      // Sans ce catch, un échec réseau affichait « Aucun consultant dans votre
+      // vivier » — un faux état vide.
+      setFetchError(e.response?.data?.detail || 'Impossible de charger le vivier.')
     } finally {
       setLoading(false)
     }
@@ -425,6 +432,11 @@ export default function ConsultantsPage() {
         <div className="flex-1 min-w-0">
           {loading ? (
             <div className="text-center py-16 text-slate-500 text-sm">Chargement...</div>
+          ) : fetchError ? (
+            <div className="text-center py-16 text-sm" style={{ color: 'var(--text-muted)' }}>
+              <p className="mb-3">{fetchError}</p>
+              <button onClick={fetchConsultants} className="btn-ghost !h-8 !px-3 text-[12px]">Réessayer</button>
+            </div>
           ) : filtered.length === 0 ? (
             <EmptyState
               icon={Users}

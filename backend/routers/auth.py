@@ -11,14 +11,42 @@ from services import email_templates
 from config import settings
 import io
 import base64
+import time
 import traceback
 import httpx
 import pyotp
 import qrcode
 import qrcode.image.svg
+from collections import defaultdict, deque
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 security = HTTPBearer()
+
+# ── Anti brute-force (mono-worker, en mémoire) ──────────────────────────────
+# Fenêtre glissante par clé (IP ou user). Protège login / MFA / reset : sans
+# elle, un code TOTP (10^6 possibilités, fenêtre de 10 min) se brute-force.
+_ATTEMPTS: dict[str, deque] = defaultdict(deque)
+_ATTEMPTS_MAX_KEYS = 10_000
+
+
+def _throttle(key: str, max_calls: int, per_seconds: int) -> None:
+    """Lève 429 si `key` a dépassé `max_calls` sur la fenêtre `per_seconds`."""
+    now = time.time()
+    if len(_ATTEMPTS) > _ATTEMPTS_MAX_KEYS:  # garde-fou mémoire
+        for k in [k for k, d in list(_ATTEMPTS.items()) if not d]:
+            _ATTEMPTS.pop(k, None)
+    hits = _ATTEMPTS[key]
+    cutoff = now - per_seconds
+    while hits and hits[0] < cutoff:
+        hits.popleft()
+    if len(hits) >= max_calls:
+        retry = int(hits[0] + per_seconds - now) + 1
+        raise HTTPException(
+            status_code=429,
+            detail="Trop de tentatives — patientez avant de réessayer.",
+            headers={"Retry-After": str(max(retry, 1))},
+        )
+    hits.append(now)
 
 ALGORITHM = "HS256"
 # Déconnexion automatique après 3 h d'utilisation (durée de vie du jeton de
@@ -63,12 +91,54 @@ def decode_token(token: str) -> dict:
         raise HTTPException(status_code=401, detail="Token invalide ou expiré")
 
 
+# Cache court des profils (id -> (ts, row|None)) : permet de re-vérifier le
+# statut/rôle en base à chaque requête sans doubler la charge DB. TTL 60 s =
+# une suspension/suppression de compte prend effet en ≤ 1 min au lieu de
+# rester valide jusqu'à l'expiration du jeton (3 h).
+_PROFILE_STATE_CACHE: dict[str, tuple[float, Optional[dict]]] = {}
+_PROFILE_STATE_TTL = 60.0
+_PROFILE_STATE_MAX = 5_000
+
+
+def _live_profile_state(user_id: str) -> Optional[dict]:
+    """État live du compte ({role, status} | None si supprimé).
+    Best-effort : si la base est injoignable, renvoie {"_unverified": True}
+    (on ne déconnecte pas tout le monde pour un hoquet DB)."""
+    now = time.time()
+    hit = _PROFILE_STATE_CACHE.get(user_id)
+    if hit and now - hit[0] < _PROFILE_STATE_TTL:
+        return hit[1]
+    try:
+        rows = supabase.table("profiles").select("id, role, status").eq("id", user_id).execute().data
+    except Exception:
+        try:  # colonne status pas migrée — on vérifie au moins l'existence + le rôle
+            rows = supabase.table("profiles").select("id, role").eq("id", user_id).execute().data
+        except Exception:
+            return hit[1] if hit else {"_unverified": True}
+    state = rows[0] if rows else None
+    if len(_PROFILE_STATE_CACHE) > _PROFILE_STATE_MAX:
+        _PROFILE_STATE_CACHE.clear()
+    _PROFILE_STATE_CACHE[user_id] = (now, state)
+    return state
+
+
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> dict:
     payload = decode_token(credentials.credentials)
     # Un jeton de défi MFA (stage présent) n'est PAS une session ouverte :
     # il ne doit jamais authentifier un appel API.
     if payload.get("stage"):
         raise HTTPException(status_code=401, detail="Validation en deux étapes requise")
+    # Le JWT (3 h) n'est pas révocable : on re-vérifie l'état du compte en base
+    # (cache 60 s) pour qu'une suspension/suppression/rétrogradation prenne
+    # effet immédiatement, pas au prochain login.
+    state = _live_profile_state(payload.get("sub"))
+    if state is None:
+        raise HTTPException(status_code=401, detail="Compte introuvable ou supprimé.")
+    if not state.get("_unverified"):
+        if (state.get("status") or "active") in ("suspended", "disabled"):
+            raise HTTPException(status_code=403, detail="Compte suspendu ou désactivé. Contactez un administrateur.")
+        if state.get("role") in VALID_ROLES:
+            payload["role"] = state["role"]  # le rôle live prime sur celui figé dans le jeton
     return payload
 
 
@@ -114,10 +184,14 @@ def _clean_code(code: str) -> str:
 
 
 def _client_ip(request: Optional[Request]) -> Optional[str]:
-    """IP publique de l'appelant. Derrière le reverse-proxy (nginx/OVH) la vraie
-    IP est dans X-Forwarded-For ; on prend la première (le client d'origine)."""
+    """IP publique de l'appelant. On privilégie X-Real-IP, posé par NOTRE nginx
+    (non falsifiable de l'extérieur), puis X-Forwarded-For en repli — sa
+    première IP est déclarative et peut être forgée par le client."""
     if request is None:
         return None
+    real_ip = request.headers.get("x-real-ip")
+    if real_ip and real_ip.strip():
+        return real_ip.strip()
     xff = request.headers.get("x-forwarded-for")
     if xff:
         return xff.split(",")[0].strip() or None
@@ -190,7 +264,7 @@ def _parse_supabase_error(error_msg: str) -> tuple[int, str]:
         return 409, "Un compte existe déjà avec cet email."
 
     if "password should be at least" in msg or "password is too short" in msg:
-        return 422, "Le mot de passe est trop court (minimum 6 caractères)."
+        return 422, "Le mot de passe est trop court (minimum 8 caractères)."
 
     if "unable to validate email address" in msg or "invalid email" in msg:
         return 422, "L'adresse email semble invalide."
@@ -262,8 +336,8 @@ async def register(body: RegisterRequest):
     if body.role not in VALID_ROLES:
         raise HTTPException(status_code=400, detail="Rôle invalide. Utilisez 'admin', 'commerce' ou 'ao'.")
 
-    if len(body.password) < 6:
-        raise HTTPException(status_code=422, detail="Le mot de passe doit contenir au moins 6 caractères.")
+    if len(body.password) < 8:
+        raise HTTPException(status_code=422, detail="Le mot de passe doit contenir au moins 8 caractères.")
 
     if len(body.name.strip()) < 2:
         raise HTTPException(status_code=422, detail="Le nom doit contenir au moins 2 caractères.")
@@ -412,6 +486,9 @@ def _verify_credentials(email: str, password: str) -> Optional[dict]:
 
 @router.post("/login")
 async def login(body: LoginRequest, request: Request):
+    # Anti brute-force : par IP (large) + par compte visé (plus strict).
+    _throttle(f"login:ip:{_client_ip(request)}", 15, 300)
+    _throttle(f"login:email:{body.email.lower()}", 8, 300)
     # ── Step 1: vérifier les identifiants via GoTrue ──────────────
     # NB: on N'utilise PAS supabase.auth.sign_in_with_password (cela lierait la
     # session au client service_role partagé → lectures suivantes en role
@@ -475,6 +552,10 @@ async def login(body: LoginRequest, request: Request):
         }
 
     # Colonnes MFA absentes (migration non encore appliquée) : connexion classique.
+    # Signalé à l'admin : en prod, la MFA est censée être active — si ce chemin
+    # s'exécute, c'est que la migration MFA manque (2e facteur silencieusement absent).
+    from services.error_log import record as _record_err
+    _record_err("auth", "Connexion SANS MFA : colonnes MFA absentes de profiles (migration non appliquée)", level="warning")
     return _finalize_login(user_id, body.email, profile, _client_ip(request))
 
 
@@ -488,6 +569,10 @@ async def mfa_verify(body: MfaCodeRequest, request: Request):
     """Étape 2 (compte enrôlé) : valide le code TOTP et ouvre la session."""
     payload = _decode_mfa_challenge(body.challenge_token, "verify")
     user_id, email = payload["sub"], payload["email"]
+    # Anti brute-force du code TOTP : 5 essais / 5 min par compte. Sans cette
+    # borne, un attaquant qui a le mot de passe peut rejouer le challenge
+    # (10 min de validité) et énumérer des codes à haute cadence.
+    _throttle(f"mfa:verify:{user_id}", 5, 300)
     try:
         profile = supabase.table("profiles").select("*").eq("id", user_id).single().execute().data
     except Exception:
@@ -505,6 +590,7 @@ async def mfa_enroll(body: MfaCodeRequest, request: Request):
     """Premier enrôlement : confirme le QR scanné puis active la MFA."""
     payload = _decode_mfa_challenge(body.challenge_token, "enroll")
     user_id, email = payload["sub"], payload["email"]
+    _throttle(f"mfa:enroll:{user_id}", 5, 300)
     secret = payload.get("mfa_secret")
     if not secret:
         raise HTTPException(status_code=400, detail="Session d'enrôlement invalide. Reconnectez-vous.")
@@ -513,7 +599,8 @@ async def mfa_enroll(body: MfaCodeRequest, request: Request):
     try:
         supabase.table("profiles").update({"mfa_secret": secret, "mfa_enabled": True}).eq("id", user_id).execute()
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Impossible d'activer la MFA : {e}")
+        print(f"[AUTH] activation MFA échouée pour {user_id}: {e}")
+        raise HTTPException(status_code=500, detail="Impossible d'activer la MFA (colonnes MFA migrées ?). Réessayez ou contactez un administrateur.")
     try:
         profile = supabase.table("profiles").select("*").eq("id", user_id).single().execute().data
     except Exception:
@@ -589,7 +676,7 @@ def _send_reset_email(to_email: str, reset_url: str) -> tuple[bool, Optional[str
 
 
 @router.post("/forgot-password")
-async def forgot_password(body: ForgotPasswordRequest):
+async def forgot_password(body: ForgotPasswordRequest, request: Request):
     """
     Generates a Supabase recovery link (admin generate_link, which does NOT send
     any email) and delivers it ourselves via Infomaniak SMTP — so the message
@@ -597,6 +684,9 @@ async def forgot_password(body: ForgotPasswordRequest):
 
     Always returns 200 to avoid leaking whether the email exists in the system.
     """
+    # Anti-abus : cet endpoint public déclenche des e-mails sortants.
+    _throttle(f"fp:ip:{_client_ip(request)}", 5, 900)
+    _throttle(f"fp:email:{body.email.lower()}", 3, 900)
     try:
         with httpx.Client(timeout=10) as client:
             link_resp = client.post(
@@ -630,13 +720,14 @@ async def forgot_password(body: ForgotPasswordRequest):
 
 
 @router.post("/reset-password")
-async def reset_password(body: ResetPasswordRequest):
+async def reset_password(body: ResetPasswordRequest, request: Request):
     """
     Validates the Supabase recovery token and updates the password.
     The access_token comes from the URL hash after the user clicks the reset link.
     """
-    if len(body.new_password) < 6:
-        raise HTTPException(status_code=422, detail="Le mot de passe doit contenir au moins 6 caractères.")
+    _throttle(f"rp:ip:{_client_ip(request)}", 10, 900)
+    if len(body.new_password) < 8:
+        raise HTTPException(status_code=422, detail="Le mot de passe doit contenir au moins 8 caractères.")
     try:
         # Verify the recovery token by calling Supabase /auth/v1/user with it
         with httpx.Client(timeout=10) as client:
@@ -698,8 +789,8 @@ async def update_profile(body: UpdateProfileRequest, user: dict = Depends(get_cu
         if not verified:
             raise HTTPException(status_code=401, detail="Mot de passe actuel incorrect.")
 
-        if body.new_password and len(body.new_password) < 6:
-            raise HTTPException(status_code=422, detail="Le nouveau mot de passe doit contenir au moins 6 caractères.")
+        if body.new_password and len(body.new_password) < 8:
+            raise HTTPException(status_code=422, detail="Le nouveau mot de passe doit contenir au moins 8 caractères.")
 
         auth_update: dict = {}
         if body.email:

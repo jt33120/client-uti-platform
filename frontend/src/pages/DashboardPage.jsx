@@ -64,16 +64,19 @@ export default function DashboardPage() {
   const [ai, setAi] = useState({ matchings: null, model: null })
   const [submissions, setSubmissions] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState(false)
+  const [reloadKey, setReloadKey] = useState(0)
 
   useEffect(() => {
     const settle = (p) => p.then(r => ({ ok: true, data: r.data })).catch(() => ({ ok: false, data: null }))
     const run = async () => {
+      setLoadError(false)
       const [c, a, cl, subs, m] = await Promise.all([
         settle(api.get('/consultants')),
         settle(api.get('/aos')),
         settle(api.get('/clients')),
-        isStaff ? Promise.resolve({ ok: false }) : settle(api.get('/submissions/mine')),
-        isStaff ? settle(api.get('/matching/stats')) : Promise.resolve({ ok: false }),
+        isStaff ? Promise.resolve({ ok: false, skipped: true }) : settle(api.get('/submissions/mine')),
+        isStaff ? settle(api.get('/matching/stats')) : Promise.resolve({ ok: false, skipped: true }),
       ])
       if (c.ok) setConsultants(c.data)
       if (a.ok) setAos(a.data)
@@ -82,10 +85,13 @@ export default function DashboardPage() {
       // Le coût IA n'est volontairement pas exposé ici : ce n'est pas une
       // métrique commerciale. Il est réservé aux admins (page /admin).
       if (m.ok) setAi({ matchings: m.data.total_matchings, model: m.data.extraction_model, aosMatched: m.data.aos_matched })
+      // Un des blocs de base a échoué → le dire, sinon les « 0 » et donuts
+      // vides se lisent comme des vraies valeurs.
+      if (!c.ok || !a.ok || !cl.ok) setLoadError(true)
       setLoading(false)
     }
     run()
-  }, [isStaff])
+  }, [isStaff, reloadKey])
 
   const d = useMemo(() => {
     const open = aos.filter(a => a.status === 'open').length
@@ -141,6 +147,16 @@ export default function DashboardPage() {
           {isStaff ? "Pilotez vos appels d'offres et le scoring IA en un coup d'œil." : 'Soumettez des consultants et suivez les appels d\'offres.'}
         </p>
       </div>
+
+      {loadError && (
+        <div className="mb-6 px-4 py-3 rounded-lg text-[13px] flex items-center justify-between gap-3"
+          style={{ background: 'var(--surface-2)', color: 'var(--text-muted)', border: '1px solid var(--border)' }}>
+          <span>Certaines données n'ont pas pu être chargées — les chiffres affichés sont incomplets.</span>
+          <button onClick={() => { setLoading(true); setReloadKey(k => k + 1) }} className="btn-ghost !h-7 !px-2.5 text-[12px] shrink-0">
+            Réessayer
+          </button>
+        </div>
+      )}
 
       {/* Stat band — no boxes. Numbers carry the weight; hairlines do the splitting.
           While data loads, a quiet shimmer holds each number's place. */}

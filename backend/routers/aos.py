@@ -1,7 +1,7 @@
 import secrets
 from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, BackgroundTasks
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 from services.supabase_client import supabase
 from services.cv_parser import extract_text_from_pdf, extract_text_from_docx, extract_text_from_xlsx
@@ -97,7 +97,7 @@ class AOCreate(BaseModel):
     description: str
     skills_required: str
     reference: Optional[str] = None  # référence client / de la consultation
-    budget_max: Optional[int] = None
+    budget_max: Optional[int] = Field(default=None, ge=0, le=100_000)  # TJM max €/j
     location: Optional[str] = None
     duration: Optional[str] = None
     context: Optional[str] = None
@@ -114,7 +114,7 @@ class AOUpdate(BaseModel):
     description: Optional[str] = None
     skills_required: Optional[str] = None
     reference: Optional[str] = None  # référence client / de la consultation
-    budget_max: Optional[int] = None
+    budget_max: Optional[int] = Field(default=None, ge=0, le=100_000)
     location: Optional[str] = None
     duration: Optional[str] = None
     context: Optional[str] = None
@@ -245,8 +245,9 @@ async def create_ao(body: AOCreate, background_tasks: BackgroundTasks, user: dic
         # Géocodage de la localisation pour la carte (sauf full remote).
         background_tasks.add_task(_geocode_and_store_ao, ao["id"], body.location, body.work_mode)
         return ao
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # Détail loggé côté serveur ; réponse 500 générique (handler global).
+        raise
 
 
 @router.get("")
@@ -289,8 +290,9 @@ async def list_aos(user: dict = Depends(get_current_user)):
                 ao["tier"] = tiers.get(ao["client_id"])
 
         return aos
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # Détail loggé côté serveur ; réponse 500 générique (handler global).
+        raise
 
 
 @router.get("/{ao_id}")
@@ -337,18 +339,32 @@ async def add_ao_sources(
     except Exception:
         raise HTTPException(status_code=404, detail="AO introuvable")
 
+    # Bornes alignées sur les autres uploads (CV 10 Mo) : sans elles, n'importe
+    # quel compte staff peut saturer le bucket avec des fichiers arbitraires.
+    MAX_SOURCE_BYTES = 10 * 1024 * 1024
+    MAX_SOURCE_FILES = 10
+    ALLOWED_SOURCE_EXT = (".pdf", ".docx", ".doc", ".xlsx", ".xls", ".csv",
+                          ".txt", ".eml", ".msg", ".png", ".jpg", ".jpeg")
+    if len(files) > MAX_SOURCE_FILES:
+        raise HTTPException(status_code=422, detail=f"Maximum {MAX_SOURCE_FILES} pièces jointes par envoi.")
+
     storage.ensure_bucket(AO_SOURCES_BUCKET, public=False)
     current = list(ao.get("source_files") or [])
     for f in files:
+        name = f.filename or "fichier"
+        if not name.lower().endswith(ALLOWED_SOURCE_EXT):
+            raise HTTPException(status_code=422, detail=f"Type de fichier non autorisé : {name}")
         data = await f.read()
         if not data:
             continue
-        name = f.filename or "fichier"
+        if len(data) > MAX_SOURCE_BYTES:
+            raise HTTPException(status_code=422, detail=f"Fichier trop volumineux (max 10 Mo) : {name}")
         path = f"{ao_id}/{secrets.token_hex(8)}-{name}"
         try:
             storage.upload(AO_SOURCES_BUCKET, path, data, f.content_type or "application/octet-stream")
         except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Échec d'upload de la pièce jointe : {e}")
+            print(f"[AO] upload pièce jointe échoué ({name}): {e}")
+            raise HTTPException(status_code=502, detail="Échec d'upload de la pièce jointe. Réessayez.")
         current.append({"name": name, "path": path, "content_type": f.content_type, "size": len(data)})
 
     try:
@@ -500,8 +516,9 @@ async def update_ao(ao_id: str, body: AOUpdate, background_tasks: BackgroundTask
         return response.data[0]
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # Détail loggé côté serveur ; réponse 500 générique (handler global).
+        raise
 
 
 def _fetch_ao_for_notify(ao_id: str) -> dict:
@@ -611,8 +628,9 @@ async def bulk_delete_aos(body: BulkDeleteRequest, user: dict = Depends(require_
     try:
         supabase.table("appels_offres").delete().in_("id", body.ids).execute()
         return {"message": f"{len(body.ids)} AO(s) supprimé(s)", "count": len(body.ids)}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # Détail loggé côté serveur ; réponse 500 générique (handler global).
+        raise
 
 
 @router.delete("/{ao_id}")
@@ -628,5 +646,6 @@ async def delete_ao(ao_id: str, user: dict = Depends(require_staff)):
             pass
         supabase.table("appels_offres").delete().eq("id", ao_id).execute()
         return {"message": "AO supprimé"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # Détail loggé côté serveur ; réponse 500 générique (handler global).
+        raise

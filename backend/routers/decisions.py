@@ -79,5 +79,6 @@ async def list_decisions(ao_id: str, user: dict = Depends(require_staff)):
         return supabase.table("human_decision").select("*").eq(
             "ao_id", ao_id
         ).order("decided_at", desc=True).execute().data or []
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # Détail loggé côté serveur ; réponse 500 générique (handler global).
+        raise

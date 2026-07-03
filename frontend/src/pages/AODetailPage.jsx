@@ -2113,8 +2113,14 @@ export default function AODetailPage() {
       message: 'L\'AO et ses données associées seront supprimés définitivement.',
       confirmLabel: 'Supprimer',
     }))) return
-    await api.delete(`/aos/${id}`)
-    navigate('/aos')
+    try {
+      await api.delete(`/aos/${id}`)
+      navigate('/aos')
+    } catch (e) {
+      // Action destructive : un échec silencieux laissait l'utilisateur croire
+      // que la suppression avait eu lieu (ou ne rien comprendre).
+      alert(e.response?.data?.detail || "La suppression de l'AO a échoué. Réessayez.")
+    }
   }
 
   const handleDeleteSubmission = async (sid) => {
@@ -2123,9 +2129,13 @@ export default function AODetailPage() {
       message: 'Le CV soumis sera retiré de cet AO.',
       confirmLabel: 'Retirer',
     }))) return
-    await api.delete(`/submissions/${sid}`)
-    setSubmissions(p => p.filter(s => s.id !== sid))
-    clearMatchCache(id)  // le classement en cache n'est plus à jour
+    try {
+      await api.delete(`/submissions/${sid}`)
+      setSubmissions(p => p.filter(s => s.id !== sid))
+      clearMatchCache(id)  // le classement en cache n'est plus à jour
+    } catch (e) {
+      alert(e.response?.data?.detail || 'Le retrait de la soumission a échoué. Réessayez.')
+    }
   }
 
   const handleSubmissionSuccess = async () => {

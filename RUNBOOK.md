@@ -92,7 +92,10 @@ ssh julian.talou@164.132.44.212 'bash ~/app/backend/deploy.sh'
 ```
 
 `deploy.sh` fait : `git pull` + `pip install -r requirements.txt` +
-`systemctl restart uti-backend` + affiche le statut.
+`systemctl restart uti-backend`, puis **vérifie `/health`** ; si le backend ne
+répond pas sous 30 s, il **revient automatiquement au commit précédent** et
+redémarre (le déploiement échoue alors avec un code ≠ 0 et t'indique les logs
+à regarder).
 
 > Le frontend, lui, se redéploie **tout seul** sur Vercel au push `master`.
 

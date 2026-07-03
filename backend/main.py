@@ -29,9 +29,13 @@ app.add_middleware(
     api_key=settings.mip_rum_api_key,
 )
 
-# Vercel previews for THIS project/account only — scoping to the team slug
-# avoids "any *.vercel.app site can call us with credentials".
-_VERCEL_PREVIEW_MARKERS = ("utiplatform-", "julian-talou")
+# Vercel previews for THIS project/account only. Anchored regex — a substring
+# check ("julian-talou" in origin) was bypassable by registering e.g.
+# x-julian-talou.vercel.app on a free Vercel account.
+import re
+_VERCEL_PREVIEW_RE = re.compile(
+    r"^https://(utiplatform|uti-platform)-[a-z0-9-]+-julian-talous-projects\.vercel\.app$"
+)
 
 
 def is_allowed_origin(origin: str) -> bool:
@@ -46,14 +50,7 @@ def is_allowed_origin(origin: str) -> bool:
     ]
     if origin in allowed:
         return True
-    # Scoped Vercel previews (not any *.vercel.app)
-    if (
-        origin.startswith("https://")
-        and origin.endswith(".vercel.app")
-        and any(m in origin for m in _VERCEL_PREVIEW_MARKERS)
-    ):
-        return True
-    return False
+    return bool(_VERCEL_PREVIEW_RE.match(origin))
 
 
 def _apply_security_headers(response: Response) -> None:
@@ -75,7 +72,10 @@ def _apply_security_headers(response: Response) -> None:
 async def _unhandled(request: Request, exc: Exception):
     """En prod : message générique, jamais de stack trace au client."""
     import traceback
+    from services.error_log import record
     print(f"[ERROR] {request.method} {request.url.path}: {exc}\n{traceback.format_exc()}")
+    # Rend le 500 visible dans la console admin (GET /admin/errors).
+    record("http", f"{request.method} {request.url.path}", exc=exc, path=request.url.path)
     resp = JSONResponse(status_code=500, content={"detail": "Erreur interne du serveur."})
     _apply_security_headers(resp)
     return resp

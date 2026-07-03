@@ -44,8 +44,9 @@ async def list_pacs(user: dict = Depends(require_admin)):
         for p in pacs:
             p["client_count"] = counts.get(p["id"], 0)
         return pacs
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # Détail loggé côté serveur ; réponse 500 générique (handler global).
+        raise
 
 
 @router.post("")
@@ -77,8 +78,9 @@ async def create_pac(body: PacCreate, user: dict = Depends(require_admin)):
         return pac
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # Détail loggé côté serveur ; réponse 500 générique (handler global).
+        raise
 
 
 @router.get("/{pac_id}")
@@ -134,8 +136,9 @@ async def update_pac(pac_id: str, body: PacUpdate, user: dict = Depends(require_
         return response.data[0]
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # Détail loggé côté serveur ; réponse 500 générique (handler global).
+        raise
 
 
 @router.delete("/{pac_id}")
@@ -144,8 +147,9 @@ async def delete_pac(pac_id: str, user: dict = Depends(require_admin)):
     try:
         supabase.table("pacs").delete().eq("id", pac_id).execute()
         return {"message": "PAC supprimé"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # Détail loggé côté serveur ; réponse 500 générique (handler global).
+        raise
 
 
 @router.put("/{pac_id}/clients")
@@ -167,8 +171,9 @@ async def upsert_pac_client(pac_id: str, body: PacClientUpsert, user: dict = Dep
                 "tier": body.tier,
             }).execute()
         return response.data[0] if response.data else {"status": "ok"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # Détail loggé côté serveur ; réponse 500 générique (handler global).
+        raise
 
 
 @router.delete("/{pac_id}/clients/{client_id}")
@@ -179,5 +184,6 @@ async def remove_pac_client(pac_id: str, client_id: str, user: dict = Depends(re
             "client_id", client_id
         ).execute()
         return {"message": "Client retiré du PAC"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # Détail loggé côté serveur ; réponse 500 générique (handler global).
+        raise

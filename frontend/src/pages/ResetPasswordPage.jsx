@@ -104,11 +104,11 @@ export default function ResetPasswordPage() {
                   name="new-password"
                   autoComplete="new-password"
                   className="input pr-9"
-                  placeholder="Min. 6 caractères"
+                  placeholder="Min. 8 caractères"
                   value={password}
                   onChange={e => setPassword(e.target.value)}
                   required
-                  minLength={6}
+                  minLength={8}
                   autoFocus
                   disabled={!accessToken}
                 />
@@ -134,7 +134,7 @@ export default function ResetPasswordPage() {
                   value={confirmPassword}
                   onChange={e => setConfirmPassword(e.target.value)}
                   required
-                  minLength={6}
+                  minLength={8}
                   disabled={!accessToken}
                 />
                 <button

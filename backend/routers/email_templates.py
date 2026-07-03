@@ -21,7 +21,9 @@ _IMG_BUCKET = "email-assets"
 _MAX_IMG_BYTES = 5 * 1024 * 1024  # 5 Mo
 _IMG_EXT = {
     "image/png": "png", "image/jpeg": "jpg", "image/jpg": "jpg",
-    "image/gif": "gif", "image/webp": "webp", "image/svg+xml": "svg",
+    # SVG retiré : il peut embarquer du JavaScript → XSS stocké dans un
+    # bucket public. Les formats raster suffisent pour un logo d'e-mail.
+    "image/gif": "gif", "image/webp": "webp",
 }
 
 
@@ -152,7 +154,7 @@ async def upload_image(file: UploadFile = File(...), user: dict = Depends(requir
     """Héberge une image utilisée dans un template et renvoie son URL publique."""
     ext = _IMG_EXT.get((file.content_type or "").lower())
     if not ext:
-        raise HTTPException(status_code=422, detail="Format image non supporté (png, jpg, gif, webp, svg).")
+        raise HTTPException(status_code=422, detail="Format image non supporté (png, jpg, gif, webp).")
     content = await file.read()
     if len(content) > _MAX_IMG_BYTES:
         raise HTTPException(status_code=413, detail="Image trop lourde (max 5 Mo).")

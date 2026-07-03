@@ -33,8 +33,9 @@ async def list_partners(user: dict = Depends(require_staff)):
                 "id, email, name, role, created_at"
             ).eq("role", "ao").order("name").execute()
         return response.data
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # Détail loggé côté serveur ; réponse 500 générique (handler global).
+        raise
 
 
 @router.get("/access")
@@ -43,8 +44,9 @@ async def list_all_access(user: dict = Depends(require_staff)):
     try:
         response = supabase.table("partner_clients").select("*").execute()
         return response.data
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # Détail loggé côté serveur ; réponse 500 générique (handler global).
+        raise
 
 
 @router.get("/{partner_id}/clients")
@@ -81,8 +83,9 @@ async def list_clients_for_partner(partner_id: str, user: dict = Depends(require
         return {"partner": partner.data, "clients": clients}
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # Détail loggé côté serveur ; réponse 500 générique (handler global).
+        raise
 
 
 @router.put("/access")
@@ -111,8 +114,9 @@ async def upsert_access(body: AccessUpsert, user: dict = Depends(require_admin))
             }).execute()
 
         return response.data[0] if response.data else {"status": "ok"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # Détail loggé côté serveur ; réponse 500 générique (handler global).
+        raise
 
 
 @router.post("/{partner_id}/apply-pac/{pac_id}")
@@ -175,8 +179,9 @@ async def apply_pac_to_partner(partner_id: str, pac_id: str, user: dict = Depend
         }
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # Détail loggé côté serveur ; réponse 500 générique (handler global).
+        raise
 
 
 @router.post("/{partner_id}/suspend")
@@ -188,8 +193,9 @@ async def suspend_partner_globally(partner_id: str, user: dict = Depends(require
             "assigned_by": user["sub"],
         }).eq("partner_id", partner_id).execute()
         return {"message": "Partenaire suspendu sur tous les clients"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # Détail loggé côté serveur ; réponse 500 générique (handler global).
+        raise
 
 
 @router.delete("/access")
@@ -200,8 +206,9 @@ async def remove_access(partner_id: str, client_id: str, user: dict = Depends(re
             "partner_id", partner_id
         ).eq("client_id", client_id).execute()
         return {"message": "Accès retiré"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # Détail loggé côté serveur ; réponse 500 générique (handler global).
+        raise
 
 
 @router.patch("/{partner_id}")
@@ -219,8 +226,9 @@ async def update_partner(partner_id: str, body: PartnerUpdate, user: dict = Depe
         return response.data[0]
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # Détail loggé côté serveur ; réponse 500 générique (handler global).
+        raise
 
 
 @router.delete("/{partner_id}")
@@ -244,5 +252,6 @@ async def delete_partner(partner_id: str, user: dict = Depends(require_admin)):
         return {"message": "Partenaire supprimé"}
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # Détail loggé côté serveur ; réponse 500 générique (handler global).
+        raise

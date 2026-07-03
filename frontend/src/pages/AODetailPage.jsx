@@ -1107,6 +1107,24 @@ function SubmissionRow({ sub, onDelete, canDelete, isAdmin, aoSkillsRequired }) 
           )}
         </div>
       )}
+      {/* Analyse du CV renseignée par le partenaire à la soumission (demande Sullyvan :
+          affichée ici, dans l'analyse du CV, plutôt que dans l'onglet Validation). */}
+      {(sub.points_forts || sub.elements_differenciants) && (
+        <div className="mt-2 pl-10 space-y-1.5">
+          {sub.points_forts && (
+            <div>
+              <div className="text-[10px] font-medium text-slate-500 uppercase tracking-wide">Points forts du CV</div>
+              <p className="text-[11px] text-slate-300 whitespace-pre-wrap mt-0.5">{sub.points_forts}</p>
+            </div>
+          )}
+          {sub.elements_differenciants && (
+            <div>
+              <div className="text-[10px] font-medium text-slate-500 uppercase tracking-wide">Éléments différenciants</div>
+              <p className="text-[11px] text-slate-300 whitespace-pre-wrap mt-0.5">{sub.elements_differenciants}</p>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -1372,24 +1390,8 @@ function ValidationTab({ aoId, submissions, clientId, scores }) {
                   Affaire perdue
                 </button>
               </div>
-
-              {/* Évaluation renseignée par le partenaire à la soumission (lecture seule) */}
-              {(s.points_forts || s.elements_differenciants) && (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-3 sm:pl-9">
-                  {s.points_forts && (
-                    <div>
-                      <div className="text-[11px] font-medium text-slate-400">Points forts du CV</div>
-                      <p className="text-xs text-slate-300 whitespace-pre-wrap mt-0.5">{s.points_forts}</p>
-                    </div>
-                  )}
-                  {s.elements_differenciants && (
-                    <div>
-                      <div className="text-[11px] font-medium text-slate-400">Éléments différenciants</div>
-                      <p className="text-xs text-slate-300 whitespace-pre-wrap mt-0.5">{s.elements_differenciants}</p>
-                    </div>
-                  )}
-                </div>
-              )}
+              {/* Points forts / éléments différenciants : déplacés dans l'onglet
+                  « Analyse & CV » (carte du CV reçu), demande Sullyvan. */}
             </div>
           )
         })}

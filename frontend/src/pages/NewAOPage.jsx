@@ -104,6 +104,10 @@ export default function NewAOPage() {
     api.get('/clients').then(r => {
       setClients(r.data)
       if (r.data.length === 1) setForm(p => ({ ...p, client_id: r.data[0].id }))
+    }).catch(() => {
+      // Sans ce catch, un échec affichait « Aucun client disponible : créez-en
+      // un d'abord » — trompeur, le vrai problème étant réseau/serveur.
+      setError('Impossible de charger la liste des clients. Rechargez la page ou réessayez plus tard.')
     })
   }, [])
 

@@ -274,12 +274,17 @@ export default function PacsPage({ embedded = false }) {
   const [showCreate, setShowCreate] = useState(false)
   const [editingPacId, setEditingPacId] = useState(null)
   const [deleting, setDeleting] = useState(null)
+  const [fetchError, setFetchError] = useState(null)
 
   const fetchAll = async () => {
     setLoading(true)
+    setFetchError(null)
     try {
       const { data } = await api.get('/pacs')
       setPacs(data)
+    } catch (e) {
+      // Sans catch, un échec affichait « Aucun PAC créé » (faux état vide).
+      setFetchError(e.response?.data?.detail || 'Impossible de charger les modèles.')
     } finally {
       setLoading(false)
     }
@@ -312,6 +317,15 @@ export default function PacsPage({ embedded = false }) {
     return (
       <div className="flex items-center justify-center h-64">
         <Loader2 size={24} className="animate-spin text-brand-400" />
+      </div>
+    )
+  }
+
+  if (fetchError) {
+    return (
+      <div className="text-center py-16 text-sm" style={{ color: 'var(--text-muted)' }}>
+        <p className="mb-3">{fetchError}</p>
+        <button onClick={fetchAll} className="btn-ghost !h-8 !px-3 text-[12px]">Réessayer</button>
       </div>
     )
   }

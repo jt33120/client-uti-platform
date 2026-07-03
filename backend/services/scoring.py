@@ -157,14 +157,25 @@ def _tokens(value: Optional[str]) -> list[str]:
     out: list[str] = []
     for p in parts:
         t = _norm(p)
-        if len(t) > 2 and t not in _STOPWORDS:
+        # Pas de filtre de longueur : la découpe est par virgule/ligne, donc un
+        # token court est un vrai libellé (« Go », « C# », « R », « BI ») — le
+        # bruit est écarté par la liste de mots vides.
+        if t and t not in _STOPWORDS:
             out.append(t)
     return out
 
 
 def _match(needle: str, haystack: set[str]) -> bool:
-    """Correspondance lâche : égalité ou inclusion mutuelle (ex. 'react' ⊂ 'react.js')."""
-    return any(needle == h or needle in h or h in needle for h in haystack)
+    """Correspondance lâche : égalité ou inclusion mutuelle (ex. 'react' ⊂ 'react.js').
+    L'inclusion est réservée aux libellés de plus de 3 caractères : sur un
+    libellé court elle fabrique des faux positifs (« r » ⊂ « docker »,
+    « go » ⊂ « django ») — un skill court ne matche qu'à l'exact."""
+    for h in haystack:
+        if needle == h:
+            return True
+        if len(needle) > 3 and len(h) > 3 and (needle in h or h in needle):
+            return True
+    return False
 
 
 def _clamp01(x: float) -> float:

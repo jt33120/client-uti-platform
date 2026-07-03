@@ -18,7 +18,7 @@ from mip_rum_ai import record_ai_call
 from services.scoring import STAR_CRITERIA
 
 _client: Optional[AsyncOpenAI] = (
-    AsyncOpenAI(api_key=settings.openrouter_key, base_url="https://openrouter.ai/api/v1")
+    AsyncOpenAI(api_key=settings.openrouter_key, base_url="https://openrouter.ai/api/v1", timeout=60, max_retries=1)
     if settings.openrouter_key
     else None
 )
@@ -26,7 +26,7 @@ _client: Optional[AsyncOpenAI] = (
 # indisponible — clé révoquée/expirée (401 « User not found »), quota, panne —
 # la génération d'AO continue de fonctionner au lieu d'échouer sèchement.
 _mistral_client: Optional[AsyncOpenAI] = (
-    AsyncOpenAI(api_key=settings.mistral_key, base_url="https://api.mistral.ai/v1")
+    AsyncOpenAI(api_key=settings.mistral_key, base_url="https://api.mistral.ai/v1", timeout=60, max_retries=1)
     if settings.mistral_key
     else None
 )

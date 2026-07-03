@@ -11,15 +11,21 @@ const fmtDateTime = (iso) => iso
 export default function TicketsPage() {
   const [tickets, setTickets] = useState([])
   const [loading, setLoading] = useState(true)
+  const [fetchError, setFetchError] = useState(null)
   const [ticketBusy, setTicketBusy] = useState(null)
   const [filter, setFilter] = useState('open')
 
-  useEffect(() => {
+  const load = () => {
+    setLoading(true)
+    setFetchError(null)
     api.get('/admin/tickets')
       .then(r => setTickets(r.data))
-      .catch(() => {})
+      // Sans ce catch, un échec affichait « Aucun ticket 🎉 » — un faux état
+      // vide qui masquait la panne.
+      .catch(e => setFetchError(e.response?.data?.detail || 'Impossible de charger les tickets.'))
       .finally(() => setLoading(false))
-  }, [])
+  }
+  useEffect(load, [])
 
   const setTicketStatus = async (ticket, status) => {
     setTicketBusy(ticket.id)
@@ -61,6 +67,11 @@ export default function TicketsPage() {
 
       {loading ? (
         <div className="py-20 text-center text-sm" style={{ color: 'var(--text-faint)' }}>Chargement des tickets…</div>
+      ) : fetchError ? (
+        <div className="py-16 text-center text-[13px]" style={{ color: 'var(--text-muted)' }}>
+          <p className="mb-3">{fetchError}</p>
+          <button onClick={load} className="btn-ghost !h-8 !px-3 text-[12px]">Réessayer</button>
+        </div>
       ) : shown.length === 0 ? (
         <div className="py-16 text-center text-[13px]" style={{ color: 'var(--text-faint)' }}>
           <Inbox size={28} className="mx-auto mb-2 opacity-50" />

@@ -20,16 +20,23 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 
 @router.get("/overview")
 async def overview(user: dict = Depends(require_admin)):
-    """KPIs for the supervision page. Each block is best-effort."""
+    """KPIs for the supervision page. Each block is best-effort — mais un bloc
+    en échec est désormais listé dans `degraded` : un None doit se lire
+    « indisponible », jamais « zéro »."""
     since = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    degraded: list[str] = []
 
-    def _count(table, **filters):
+    def _count(table, since_col=None, **filters):
+        """COUNT côté base (count=exact) : aucune ligne rapatriée, tient la volumétrie."""
         try:
-            q = supabase.table(table).select("id")
+            q = supabase.table(table).select("id", count="exact").limit(1)
             for k, v in filters.items():
                 q = q.eq(k, v)
-            return len(q.execute().data or [])
+            if since_col:
+                q = q.gte(since_col, since)
+            return q.execute().count
         except Exception:
+            degraded.append(table)
             return None
 
     profiles = []
@@ -39,7 +46,7 @@ async def overview(user: dict = Depends(require_admin)):
         try:
             profiles = supabase.table("profiles").select("id, role").execute().data or []
         except Exception:
-            pass
+            degraded.append("profiles")
 
     by_role = {}
     active_30d = 0
@@ -48,49 +55,43 @@ async def overview(user: dict = Depends(require_admin)):
         if p.get("last_login_at") and p["last_login_at"] >= since:
             active_30d += 1
 
-    def _count_since(table, ts_col):
-        try:
-            rows = supabase.table(table).select("id").gte(ts_col, since).execute().data
-            return len(rows or [])
-        except Exception:
-            return None
-
     tickets_open = None
     try:
-        rows = supabase.table("support_messages").select("id, status").execute().data or []
-        tickets_open = sum(1 for r in rows if r.get("status", "open") != "resolved")
+        tickets_open = supabase.table("support_messages").select(
+            "id", count="exact"
+        ).neq("status", "resolved").limit(1).execute().count
     except Exception:
         try:
-            tickets_open = len(supabase.table("support_messages").select("id").execute().data or [])
+            tickets_open = supabase.table("support_messages").select(
+                "id", count="exact"
+            ).limit(1).execute().count
         except Exception:
-            pass
+            degraded.append("support_messages")
 
     # Coût IA cumulé — métrique sensible réservée aux admins (cet endpoint est
     # require_admin). Elle n'apparaît volontairement pas sur le dashboard staff.
-    matchings_total = None
+    matchings_total = _count("matchings")
     matching_cost_usd = None
     try:
         rows = supabase.table("matchings").select("cost_usd").execute().data or []
-        matchings_total = len(rows)
         matching_cost_usd = round(sum(float(r.get("cost_usd") or 0) for r in rows), 2)
     except Exception:
-        try:
-            matchings_total = len(supabase.table("matchings").select("id").execute().data or [])
-        except Exception:
-            pass
+        degraded.append("matchings.cost")
 
     return {
-        "accounts_total": len(profiles),
+        "accounts_total": len(profiles) if "profiles" not in degraded else None,
         "accounts_by_role": by_role,
         "active_accounts_30d": active_30d,
         "aos_total": _count("appels_offres"),
         "aos_open": _count("appels_offres", status="open"),
-        "aos_30d": _count_since("appels_offres", "created_at"),
-        "submissions_30d": _count_since("submissions", "submitted_at"),
-        "matchings_30d": _count_since("matchings", "created_at"),
+        "aos_30d": _count("appels_offres", since_col="created_at"),
+        "submissions_30d": _count("submissions", since_col="submitted_at"),
+        "matchings_30d": _count("matchings", since_col="created_at"),
         "matchings_total": matchings_total,
         "matching_cost_usd": matching_cost_usd,
         "tickets_open": tickets_open,
+        # Blocs dont la lecture a échoué — l'UI doit dire « indisponible », pas 0.
+        "degraded": sorted(set(degraded)) or None,
     }
 
 
@@ -231,8 +232,9 @@ async def delete_account(account_id: str, user: dict = Depends(require_admin)):
                 },
             )
         return {"message": "Compte supprimé"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # Détail loggé côté serveur ; réponse 500 générique (handler global).
+        raise
 
 
 class NotificationSettings(BaseModel):
@@ -257,14 +259,25 @@ async def update_notif_settings(body: NotificationSettings, user: dict = Depends
     return {"notifications": set_notification_settings(patch)}
 
 
+@router.get("/errors")
+async def list_errors(limit: int = 100, level: Optional[str] = None, user: dict = Depends(require_admin)):
+    """Journal des erreurs/dégradations récentes du backend (ring buffer en
+    mémoire — voir services/error_log.py). `level` : error | warning.
+    Se vide au redémarrage du service ; l'historique complet vit dans journald
+    (RUNBOOK §3)."""
+    from services.error_log import recent
+    return {"events": recent(limit=limit, level=level)}
+
+
 @router.get("/tickets")
 async def list_tickets(user: dict = Depends(require_admin)):
     try:
         return supabase.table("support_messages").select("*").order(
             "created_at", desc=True
         ).execute().data or []
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # Détail loggé côté serveur ; réponse 500 générique (handler global).
+        raise
 
 
 class TicketUpdate(BaseModel):
@@ -282,5 +295,6 @@ async def update_ticket(ticket_id: str, body: TicketUpdate, user: dict = Depends
         return response.data[0]
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # Détail loggé côté serveur ; réponse 500 générique (handler global).
+        raise

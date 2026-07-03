@@ -1,8 +1,9 @@
-fastapi==0.115.0
+# fastapi >= 0.115.6 pour tirer starlette >= 0.40 (CVE-2024-47874, DoS multipart)
+fastapi==0.115.6
 uvicorn[standard]==0.30.6
-python-multipart==0.0.9
+# >= 0.0.18 : corrige CVE-2024-53981 (DoS CPU via multipart malformé) — nos endpoints d'upload y sont exposés
+python-multipart==0.0.20
 python-jose[cryptography]==3.3.0
-passlib[bcrypt]==1.7.4
 pdfplumber==0.11.4
 python-docx==1.1.2
 openpyxl==3.1.5

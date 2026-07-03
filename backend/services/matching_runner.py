@@ -21,9 +21,28 @@ from services.llm_scoring import llm_score, combine_hybrid
 from services.scoring_settings import get_config
 from services.pseudonymize import strip_pii
 from services import audit
+from services.error_log import record as _record_err
 
 # Keep vivier runs bounded — most recent consultants first
 VIVIER_MAX_CONSULTANTS = 20
+
+# Bride la concurrence des appels LLM d'un run (extraction + 2e avis) : sans
+# borne, un vivier de 20 candidats tire 40 requêtes simultanées — rate-limits
+# provider et pics mémoire assurés.
+_LLM_MAX_CONCURRENCY = 4
+
+
+async def _gather_bounded(coros):
+    """asyncio.gather avec au plus _LLM_MAX_CONCURRENCY coroutines actives.
+    Le sémaphore est créé ici (et pas au niveau module) pour rester lié à la
+    boucle d'événements courante."""
+    sem = asyncio.Semaphore(_LLM_MAX_CONCURRENCY)
+
+    async def _run(coro):
+        async with sem:
+            return await coro
+
+    return await asyncio.gather(*[_run(c) for c in coros])
 
 
 async def _features_for(item: dict) -> tuple[dict, float]:
@@ -96,11 +115,25 @@ def _persist(ao_id: str, results: list[dict], cost_usd: float, ran_by: Optional[
         supabase.table("matchings").insert(rows).execute()
     except Exception as e:
         print(f"[MATCHING] insert complet échoué ({e}); repli sans colonnes hybrides")
+        _record_err("matching.persist", "Insert hybride échoué — repli score déterministe seul (migration hybride appliquée ?)", exc=e, level="warning")
         trimmed = [{k: v for k, v in row.items() if k not in _HYBRID_COLS} for row in rows]
         supabase.table("matchings").insert(trimmed).execute()
 
     if old_ids:
-        supabase.table("matchings").delete().in_("id", old_ids).execute()
+        # Si ce delete échoue, l'ancien ET le nouveau classement coexistent dans
+        # la table (doublons à l'écran) : on retente une fois puis on alerte.
+        try:
+            supabase.table("matchings").delete().in_("id", old_ids).execute()
+        except Exception as e:
+            try:
+                supabase.table("matchings").delete().in_("id", old_ids).execute()
+            except Exception:
+                _record_err(
+                    "matching.persist",
+                    f"Ancien classement non purgé pour l'AO {ao_id} — doublons possibles à l'écran",
+                    exc=e,
+                )
+                raise
 
 
 def _effective_config(ao: dict) -> dict:
@@ -128,14 +161,21 @@ async def _score_all(
     """Extrait (concurremment) puis score chaque candidat ; journalise chaque score."""
     config = _effective_config(ao)  # grille globale + priorités propres à l'AO
     weights = _weights_from_config(config)
-    extracted = await asyncio.gather(*[_features_for(it) for it in items])
+    extracted = await _gather_bounded([_features_for(it) for it in items])
 
     # Étape déterministe (synchrone) puis 2e avis IA (concurrent sur tous les CV).
     base = []
     for it, (features, ex_cost) in zip(items, extracted):
         score = score_consultant(features, it, ao, config)
+        if features.get("extraction_failed"):
+            # La lecture IA du CV a totalement échoué : le score repose sur la
+            # seule fiche déclarée. On le DIT (UI + audit) au lieu de présenter
+            # un score plausible comme un matching complet.
+            score["extraction_failed"] = True
+            warn = "⚠️ Lecture IA du CV indisponible — score fondé sur la fiche déclarée uniquement"
+            score["points_faibles"] = [warn] + list(score.get("points_faibles") or [])
         base.append((it, features, score, ex_cost))
-    llm_outs = await asyncio.gather(*[
+    llm_outs = await _gather_bounded([
         llm_score(features, it, ao, weights) for (it, features, _s, _c) in base
     ])
 
@@ -161,6 +201,7 @@ async def _score_all(
             payload={
                 "submission_id": it.get("submission_id"),
                 "consultant_id": it.get("consultant_id"),
+                "extraction_failed": bool(features.get("extraction_failed")),
                 "score_total": score["score_total"],
                 "score_llm": score.get("score_llm"),
                 "score_hybride": score.get("score_hybride"),
@@ -240,6 +281,7 @@ async def run_submission_matching(ao_id: str, ran_by: Optional[str], top_n: int 
         "score": r.get("score_hybride") if r.get("score_hybride") is not None else r.get("score_total"),
         "score_total": r.get("score_total"),
         "tjm": r.get("consultant_tjm"),
+        "extraction_failed": bool(r.get("extraction_failed")),
     } for r in results]
 
     return {
@@ -322,6 +364,7 @@ async def run_vivier_matching(ao_id: str, ran_by: Optional[str], top_n: int = 3)
         return {"ao_id": ao_id, "results": top_results}
     except Exception as e:
         print(f"[MATCHING] vivier matching failed for AO {ao_id}: {e}")
+        _record_err("matching.vivier", f"Recommandations vivier en échec pour l'AO {ao_id}", exc=e, level="warning")
         return None
 
 
@@ -330,5 +373,9 @@ async def auto_rescore_ao(ao_id: str, ran_by: Optional[str]):
     try:
         await run_submission_matching(ao_id, ran_by)
         print(f"[MATCHING] auto re-score done for AO {ao_id}")
+    except (LookupError, ValueError) as e:
+        # Cas fonctionnels attendus (pas de CV lisible…) — pas une panne.
+        print(f"[MATCHING] auto re-score skipped for AO {ao_id}: {e}")
     except Exception as e:
         print(f"[MATCHING] auto re-score skipped for AO {ao_id}: {e}")
+        _record_err("matching.rescore", f"Re-score automatique en échec pour l'AO {ao_id}", exc=e)

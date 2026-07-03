@@ -60,9 +60,9 @@ async def create_submission(
     ao_id: str = Form(...),
     consultant_id: Optional[str] = Form(None),
     name: Optional[str] = Form(None),
-    tjm: Optional[int] = Form(None),
+    tjm: Optional[int] = Form(None, ge=0, le=100_000),
     skills: Optional[str] = Form(None),
-    experience_years: Optional[int] = Form(None),
+    experience_years: Optional[int] = Form(None, ge=0, le=70),
     employment_type: Optional[str] = Form(None),
     availability: Optional[str] = Form(None),
     worked_at_client: Optional[bool] = Form(None),
@@ -252,8 +252,9 @@ async def list_submissions_for_ao(ao_id: str, user: dict = Depends(get_current_u
             if row.get("cv_url"):
                 row["cv_url"] = storage.signed_cv_url(row["cv_url"])
         return rows
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # Détail loggé côté serveur ; réponse 500 générique (handler global).
+        raise
 
 
 @router.get("/mine")
@@ -263,8 +264,9 @@ async def list_my_submissions(user: dict = Depends(get_current_user)):
         return supabase.table("submissions").select(
             "id, ao_id, submitted_at, appels_offres(title)"
         ).eq("submitted_by", user["sub"]).order("submitted_at", desc=True).execute().data
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # Détail loggé côté serveur ; réponse 500 générique (handler global).
+        raise
 
 
 @router.delete("/{submission_id}")

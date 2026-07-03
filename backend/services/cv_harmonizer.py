@@ -13,11 +13,11 @@ from config import settings
 from mip_rum_ai import record_ai_call
 
 _client: Optional[AsyncOpenAI] = (
-    AsyncOpenAI(api_key=settings.openrouter_key, base_url="https://openrouter.ai/api/v1")
+    AsyncOpenAI(api_key=settings.openrouter_key, base_url="https://openrouter.ai/api/v1", timeout=60, max_retries=1)
     if settings.openrouter_key else None
 )
 _mistral: Optional[AsyncOpenAI] = (
-    AsyncOpenAI(api_key=settings.mistral_key, base_url="https://api.mistral.ai/v1")
+    AsyncOpenAI(api_key=settings.mistral_key, base_url="https://api.mistral.ai/v1", timeout=60, max_retries=1)
     if settings.mistral_key else None
 )
 HARMONIZE_MODEL = settings.draft_model
@@ -152,7 +152,13 @@ async def harmonize_cv(cv_text: str, lang: str = "fr") -> Optional[dict]:
                                 cost=getattr(_u, "cost", None))
             data = _extract_json(resp.choices[0].message.content or "")
             if data:
-                return _sanitize(data)
+                out = _sanitize(data)
+                # Un JSON valide mais quasi vide (refus poli / hallucination)
+                # n'est PAS un succès : sans titre NI expérience, on tente le
+                # provider suivant plutôt que de présenter un CV « harmonisé » vide.
+                if out.get("title") or out.get("experiences"):
+                    return out
+                print(f"[CV_HARMONIZER] {provider} : sortie vide, provider suivant")
         except Exception as e:  # noqa: BLE001
             last_err = e
             print(f"[CV_HARMONIZER] {provider} échec: {e}")

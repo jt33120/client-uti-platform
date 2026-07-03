@@ -41,11 +41,25 @@ export default function NotificationSettings() {
   const [saved, setSaved] = useState(false)
   const [err, setErr] = useState('')
 
-  useEffect(() => {
+  const load = () => {
+    setCfg(null)
     api.get('/admin/settings').then(r => setCfg(r.data.notifications)).catch(() => setCfg(false))
-  }, [])
+  }
+  useEffect(load, [])
 
-  if (cfg === null || cfg === false) return null
+  // cfg === false = échec de chargement : on l'AFFICHE (avant : return null →
+  // onglet totalement blanc, sans explication).
+  if (cfg === false) {
+    return (
+      <div className="card p-4 max-w-xl text-[13px]" style={{ color: 'var(--text-muted)' }}>
+        Impossible de charger les réglages d'envoi.
+        <button onClick={load} className="btn-ghost !h-7 !px-2.5 text-[12px] ml-2">Réessayer</button>
+      </div>
+    )
+  }
+  if (cfg === null) {
+    return <div className="text-[13px] py-6" style={{ color: 'var(--text-faint)' }}>Chargement des réglages…</div>
+  }
   const upd = (k, v) => { setCfg(p => ({ ...p, [k]: v })); setSaved(false) }
   const save = async () => {
     setSaving(true); setErr('')

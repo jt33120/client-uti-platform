@@ -162,3 +162,22 @@ def test_strip_pii_removes_email_and_phone():
 
 def test_strip_pii_handles_none():
     assert strip_pii(None) == ""
+
+
+# ── Compétences courtes (Go, C#, R…) ───────────────────────────────
+
+def test_short_skills_are_scored():
+    # « Go » et « C# » (≤ 2 caractères) doivent compter dans le ratio compétences.
+    ao = {**AO, "skills_required": "Go, C#"}
+    full = score_consultant(
+        _features(skills=["Go", "C#"]), _consultant(skills="Go, C#"), ao, None
+    )
+    assert full["breakdown"]["competences_techniques"] == W_COMP
+
+    # Et un profil sans rapport ne doit PAS matcher par inclusion accidentelle
+    # (« r »/« go » contenus dans « docker »/« django »).
+    ao_r = {**AO, "skills_required": "R, Go"}
+    none = score_consultant(
+        _features(skills=["Docker", "Django"]), _consultant(skills="Docker, Django"), ao_r, None
+    )
+    assert none["breakdown"]["competences_techniques"] == 0

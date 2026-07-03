@@ -39,13 +39,17 @@ def _send_support_email(
     if not settings.admin_email:
         return False, "ADMIN_EMAIL non configurée"
 
+    # Contenu fourni par l'utilisateur → échappé (même règle que partner_request) :
+    # sans cela, un compte authentifié injecte du HTML dans la boîte de l'admin.
+    import html as _html
+    e_name, e_subject, e_message = _html.escape(from_name), _html.escape(subject), _html.escape(message)
     body_html = (
         '<table cellpadding="0" cellspacing="0" style="width:100%;font-size:13px;color:#1d1d1f;margin-bottom:12px;">'
-        f'<tr><td style="padding:4px 0;color:#6e6e73;width:90px;">De</td><td>{from_name} &lt;{from_email}&gt;</td></tr>'
-        f'<tr><td style="padding:4px 0;color:#6e6e73;">Sujet</td><td>{subject}</td></tr>'
+        f'<tr><td style="padding:4px 0;color:#6e6e73;width:90px;">De</td><td>{e_name} &lt;{_html.escape(from_email)}&gt;</td></tr>'
+        f'<tr><td style="padding:4px 0;color:#6e6e73;">Sujet</td><td>{e_subject}</td></tr>'
         f'<tr><td style="padding:4px 0;color:#6e6e73;">Type</td><td>{type_label}</td></tr>'
         '</table>'
-        f'<div style="background:#f5f5f7;border-radius:8px;padding:16px;font-size:14px;line-height:1.6;color:#1d1d1f;white-space:pre-wrap;">{message}</div>'
+        f'<div style="background:#f5f5f7;border-radius:8px;padding:16px;font-size:14px;line-height:1.6;color:#1d1d1f;white-space:pre-wrap;">{e_message}</div>'
     )
     html = render_email_html(
         title=f"Nouveau message : {type_label}",

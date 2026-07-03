@@ -32,6 +32,8 @@ async def extract_and_store_skills(consultant_id: str, *, only_if_empty: bool = 
     c = supabase.table("consultants").select("id, skills").eq(
         "id", consultant_id
     ).single().execute().data
+    if not c:
+        raise ValueError("Consultant introuvable")
     if only_if_empty and (c.get("skills") or "").strip():
         return c.get("skills") or ""
 

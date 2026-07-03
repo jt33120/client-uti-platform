@@ -53,8 +53,8 @@ export default function SettingsModal({ onClose }) {
       setError('Les nouveaux mots de passe ne correspondent pas.')
       return
     }
-    if (newPassword && newPassword.length < 6) {
-      setError('Le nouveau mot de passe doit contenir au moins 6 caractères.')
+    if (newPassword && newPassword.length < 8) {
+      setError('Le nouveau mot de passe doit contenir au moins 8 caractères.')
       return
     }
     if (needsCurrentPassword && !currentPassword) {

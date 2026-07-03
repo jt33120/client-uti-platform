@@ -22,17 +22,22 @@ from typing import Optional
 from openai import AsyncOpenAI
 from config import settings
 from mip_rum_ai import record_ai_call
-from services.ai_matching import calculate_cost
+from services.ai_matching import calculate_cost, _LLM_TIMEOUT
+from services.error_log import record as _record_err
 
 _client = AsyncOpenAI(
     api_key=settings.openrouter_key,
     base_url="https://openrouter.ai/api/v1",
+    timeout=_LLM_TIMEOUT,
+    max_retries=1,
 ) if settings.openrouter_key else None
 
 # Fallback : Mistral La Plateforme
 _mistral_client = AsyncOpenAI(
     api_key=settings.mistral_key,
     base_url="https://api.mistral.ai/v1",
+    timeout=_LLM_TIMEOUT,
+    max_retries=1,
 ) if settings.mistral_key else None
 
 SCORING_MODEL = settings.scoring_model
@@ -134,15 +139,20 @@ async def _call_scoring(c: AsyncOpenAI, model: str, user: str, maxes: dict) -> t
             ],
             response_format={"type": "json_object"},
             temperature=0,
-            max_tokens=700,
+            max_tokens=1200,
         )
         _u = resp.usage
         _call.usage(input_tokens=getattr(_u, "prompt_tokens", None),
                     output_tokens=getattr(_u, "completion_tokens", None),
                     cost=getattr(_u, "cost", None))
-    data = json.loads(resp.choices[0].message.content)
+    choice = resp.choices[0]
+    if getattr(choice, "finish_reason", None) == "length":
+        # JSON coupé par max_tokens : provider suivant plutôt qu'un avis partiel.
+        raise ValueError("avis IA tronqué (max_tokens atteint)")
+    data = json.loads(choice.message.content)
     usage = resp.usage
-    cost = calculate_cost(usage.prompt_tokens, usage.completion_tokens)
+    # Après le parsing : un usage manquant ne doit pas invalider un avis réussi.
+    cost = calculate_cost(getattr(usage, "prompt_tokens", None), getattr(usage, "completion_tokens", None))
     breakdown = {}
     score_llm = 0
     for llm_k, _det_k, _w_k in _CATS:
@@ -182,7 +192,11 @@ async def llm_score(features: dict, consultant: dict, ao: dict, weights: dict) -
             return await _call_scoring(c, model, user, maxes)
         except Exception as e:  # noqa: BLE001
             print(f"[LLM_SCORING] {provider} échec ({model}): {e}")
+            _record_err("llm.scoring", f"{provider} ({model}) en échec", exc=e, level="warning")
 
+    # Pas bloquant (le déterministe reste l'ancre) mais l'admin doit le voir :
+    # sans 2e avis IA, le score affiché n'est plus « hybride ».
+    _record_err("llm.scoring", "Second avis IA indisponible (tous providers en échec) — score déterministe seul", level="warning")
     return None, 0.0
 
 
@@ -218,7 +232,10 @@ def combine_hybrid(deterministic: dict, llm: Optional[dict], weights: dict) -> d
         hybrid_bd[det_k] = round(a * (IA_WEIGHT * l + (1 - IA_WEIGHT) * d) + (1 - a) * d)
 
     score_hybride = sum(hybrid_bd.values())
-    agreement = round(100 * (1 - diff_sum / 100))  # somme des poids = 100
+    # Normalise par la somme RÉELLE des poids (aujourd'hui 100 par construction,
+    # mais on ne code pas cette hypothèse en dur).
+    total_w = sum(int(weights.get(w_k, 0)) for _l, _d, w_k in _CATS) or 100
+    agreement = round(100 * (1 - diff_sum / total_w))
     return {
         "score_llm": int(llm.get("score_llm") or 0),
         "score_hybride": int(score_hybride),

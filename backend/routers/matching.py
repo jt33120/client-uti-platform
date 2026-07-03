@@ -92,8 +92,9 @@ async def get_matching_stats(user: dict = Depends(require_staff)):
             "total_cost_usd": round(total_cost, 2),
             "status": "active",
         }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # Détail loggé côté serveur ; réponse 500 générique (handler global).
+        raise
 
 
 def _contact_targets(results: list[dict]) -> dict:
@@ -193,8 +194,9 @@ async def get_matching_results(ao_id: str, user: dict = Depends(get_current_user
         # L'humain a le dernier mot : son classement prime, sinon le rang IA.
         results.sort(key=lambda r: (r.get("human_rank") is None, r.get("human_rank") or 0, r.get("rank") or 0))
         return {"ao_id": ao_id, "results": results}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # Détail loggé côté serveur ; réponse 500 générique (handler global).
+        raise
 
 
 class RankRequest(BaseModel):
@@ -413,8 +415,9 @@ async def get_ao_states(ao_id: str, user: dict = Depends(require_staff)):
             "sent_to_client_at, commercial_exchange, deal_status, "
             "eval_points_forts, eval_differenciants"
         ).eq("ao_id", ao_id).execute().data or []
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # Détail loggé côté serveur ; réponse 500 générique (handler global).
+        raise
     return {"states": {r["consultant_id"]: r for r in rows if r.get("consultant_id")}}
 
 

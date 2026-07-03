@@ -99,6 +99,8 @@ export default function ClientDetailPage() {
   const [loadingPartners, setLoadingPartners] = useState(true)
   const [showEdit, setShowEdit] = useState(false)
   const [savingPartner, setSavingPartner] = useState(null) // partner id being updated
+  const [aosError, setAosError] = useState(false)
+  const [partnersError, setPartnersError] = useState(false)
 
   const fetchClient = useCallback(async () => {
     try {
@@ -112,11 +114,13 @@ export default function ClientDetailPage() {
   }, [id, navigate])
 
   const fetchAos = useCallback(async () => {
+    setAosError(false)
     try {
       const { data } = await api.get('/aos')
       setAos(data.filter(ao => ao.client_id === id))
     } catch {
-      // ignore
+      // Distinguer « échec de chargement » de « vraiment aucun AO ».
+      setAosError(true)
     } finally {
       setLoadingAos(false)
     }
@@ -125,11 +129,12 @@ export default function ClientDetailPage() {
   const fetchPartners = useCallback(async () => {
     // Staff only — commerce gets the same view in read-only
     if (!isStaff) { setLoadingPartners(false); return }
+    setPartnersError(false)
     try {
       const { data } = await api.get(`/clients/${id}/partners`)
       setPartners(data)
     } catch {
-      // ignore
+      setPartnersError(true)
     } finally {
       setLoadingPartners(false)
     }
@@ -244,6 +249,11 @@ export default function ClientDetailPage() {
 
             {loadingAos ? (
               <div className="text-center py-6 text-slate-500 text-sm">Chargement...</div>
+            ) : aosError ? (
+              <div className="text-center py-8">
+                <p className="text-slate-500 text-sm mb-2">Impossible de charger les AO.</p>
+                <button onClick={fetchAos} className="btn-ghost !h-7 !px-2.5 text-[11px]">Réessayer</button>
+              </div>
             ) : aos.length === 0 ? (
               <div className="text-center py-8">
                 <FileText size={24} className="mx-auto text-slate-700 mb-2" />
@@ -279,6 +289,11 @@ export default function ClientDetailPage() {
               {loadingPartners ? (
                 <div className="text-center py-6">
                   <Loader2 size={16} className="animate-spin text-brand-400 mx-auto" />
+                </div>
+              ) : partnersError ? (
+                <div className="text-center py-6">
+                  <p className="text-slate-500 text-xs mb-2">Impossible de charger les partenaires.</p>
+                  <button onClick={fetchPartners} className="btn-ghost !h-7 !px-2.5 text-[11px]">Réessayer</button>
                 </div>
               ) : partners.length === 0 ? (
                 <div className="text-center py-6">

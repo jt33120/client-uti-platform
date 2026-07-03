@@ -45,6 +45,17 @@ def render_email_html(
     brand_grad = "linear-gradient(135deg,#6366f1,#4f46e5)"
     band = "#eef2ff"   # indigo très clair (bandeau d'en-tête)
 
+    # Le titre et le CTA peuvent contenir des valeurs issues d'utilisateurs
+    # (nom de profil…) : échappés systématiquement — le body_html, lui, est
+    # construit par les appelants qui échappent leurs propres champs.
+    import html as _html
+    title = _html.escape(str(title or ""))
+    if footer_note:
+        footer_note = _html.escape(str(footer_note))
+    if cta:
+        cta = {"label": _html.escape(str(cta.get("label") or "")),
+               "url": _html.escape(str(cta.get("url") or ""), quote=True)}
+
     cta_html = ""
     if cta:
         cta_html = f"""

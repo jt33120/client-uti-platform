@@ -56,8 +56,9 @@ async def create_client(body: ClientCreate, user: dict = Depends(require_admin))
         return response.data[0]
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # Détail loggé côté serveur ; réponse 500 générique (handler global).
+        raise
 
 
 @router.get("")
@@ -87,8 +88,9 @@ async def list_clients(user: dict = Depends(get_current_user)):
         for c in clients.data:
             c["tier"] = tiers.get(c["id"])
         return clients.data
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # Détail loggé côté serveur ; réponse 500 générique (handler global).
+        raise
 
 
 @router.get("/{client_id}/partners")
@@ -110,17 +112,33 @@ async def list_partners_for_client(client_id: str, user: dict = Depends(require_
         for p in partners:
             p["tier"] = tiers.get(p["id"])
         return partners
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # Détail loggé côté serveur ; réponse 500 générique (handler global).
+        raise
 
 
 @router.get("/{client_id}")
 async def get_client(client_id: str, user: dict = Depends(get_current_user)):
-    try:
-        response = supabase.table("clients").select("*").eq("id", client_id).single().execute()
-        return response.data
-    except Exception:
+    # Un partenaire ne peut lire que les clients auxquels il a accès
+    # (même règle que list_clients) — sinon l'UUID suffirait à lire la fiche
+    # (nom, contacts) de n'importe quel client du groupement.
+    tier = None
+    if not is_staff(user):
+        access = supabase.table("partner_clients").select("tier").eq(
+            "partner_id", user["sub"]
+        ).eq("client_id", client_id).in_("tier", ["list_1", "list_2"]).execute().data
+        if not access:
+            # 404 (et non 403) : ne pas confirmer l'existence de l'UUID.
+            raise HTTPException(status_code=404, detail="Client introuvable")
+        tier = access[0]["tier"]
+
+    response = supabase.table("clients").select("*").eq("id", client_id).execute()
+    if not response.data:
         raise HTTPException(status_code=404, detail="Client introuvable")
+    client = response.data[0]
+    if tier:
+        client["tier"] = tier
+    return client
 
 
 @router.patch("/{client_id}")
@@ -144,8 +162,9 @@ async def update_client(client_id: str, body: ClientUpdate, user: dict = Depends
         return response.data[0]
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # Détail loggé côté serveur ; réponse 500 générique (handler global).
+        raise
 
 
 @router.delete("/{client_id}")
@@ -153,5 +172,6 @@ async def delete_client(client_id: str, user: dict = Depends(require_admin)):
     try:
         supabase.table("clients").delete().eq("id", client_id).execute()
         return {"message": "Client supprimé"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # Détail loggé côté serveur ; réponse 500 générique (handler global).
+        raise

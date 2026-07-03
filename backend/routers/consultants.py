@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, Literal
 from services.supabase_client import supabase
 from services.email import send_email, render_email_html
@@ -14,8 +14,8 @@ router = APIRouter(prefix="/consultants", tags=["consultants"])
 class ConsultantCreate(BaseModel):
     name: str
     skills: str
-    tjm: Optional[int] = None
-    experience_years: Optional[int] = None
+    tjm: Optional[int] = Field(default=None, ge=0, le=100_000)
+    experience_years: Optional[int] = Field(default=None, ge=0, le=70)
     availability: Optional[str] = None
     employment_type: Optional[Literal["independant", "salarie"]] = None
     email: Optional[str] = None
@@ -26,8 +26,8 @@ class ConsultantCreate(BaseModel):
 class ConsultantUpdate(BaseModel):
     name: Optional[str] = None
     skills: Optional[str] = None
-    tjm: Optional[int] = None
-    experience_years: Optional[int] = None
+    tjm: Optional[int] = Field(default=None, ge=0, le=100_000)
+    experience_years: Optional[int] = Field(default=None, ge=0, le=70)
     availability: Optional[str] = None
     employment_type: Optional[Literal["independant", "salarie"]] = None
     email: Optional[str] = None
@@ -77,8 +77,9 @@ async def create_consultant(body: ConsultantCreate, user: dict = Depends(get_cur
             record["longitude"] = geo["longitude"]
         response = _insert_with_geo_fallback("consultants", record)
         return response.data[0]
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # Détail loggé côté serveur ; réponse 500 générique (handler global).
+        raise
 
 
 @router.get("")
@@ -97,8 +98,9 @@ async def list_consultants(user: dict = Depends(get_current_user)):
         if user["role"] == "ao":
             query = query.eq("created_by", user["sub"])
         return query.execute().data
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # Détail loggé côté serveur ; réponse 500 générique (handler global).
+        raise
 
 
 @router.post("/{consultant_id}/extract-skills")
@@ -275,8 +277,9 @@ async def update_consultant(consultant_id: str, body: ConsultantUpdate, user: di
         return response.data[0]
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # Détail loggé côté serveur ; réponse 500 générique (handler global).
+        raise
 
 
 class ContactPartnerRequest(BaseModel):
@@ -317,11 +320,12 @@ async def contact_partner(consultant_id: str, body: ContactPartnerRequest, user:
     except Exception:
         sender_name = sender_email
 
+    import html as _html
     html = render_email_html(
         title=f"À propos de votre consultant {consultant['name']}",
         body_html=(
             f'<div style="background:#f5f5f7;border-radius:8px;padding:16px;font-size:14px;'
-            f'line-height:1.6;color:#1d1d1f;white-space:pre-wrap;">{body.message.strip()}</div>'
+            f'line-height:1.6;color:#1d1d1f;white-space:pre-wrap;">{_html.escape(body.message.strip())}</div>'
         ),
         footer_note=f"Message envoyé par {sender_name} ({sender_email}). Répondez directement à cet email.",
     )
@@ -348,5 +352,6 @@ async def delete_consultant(consultant_id: str, user: dict = Depends(get_current
         return {"message": "Consultant supprimé"}
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # Détail loggé côté serveur ; réponse 500 générique (handler global).
+        raise

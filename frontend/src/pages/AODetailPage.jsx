@@ -9,7 +9,7 @@ import {
   Loader2, FileText, Trash2, RotateCcw, Building2, Plus,
   Upload, X, UserCircle2, Briefcase, Calendar, Pencil,
   CalendarClock, AlertTriangle, BarChart3, Sparkles,
-  UploadCloud, Download, Target, Hash, Send, Bell, Mail, MessageSquareWarning
+  UploadCloud, Download, Target, Hash, Send, Bell, Mail, MessageSquareWarning, Languages
 } from 'lucide-react'
 import ScoringPriorities, { DEFAULT_STARS } from '../components/ScoringPriorities'
 import HarmonizedCvModal from '../components/HarmonizedCvModal'
@@ -2255,6 +2255,12 @@ export default function AODetailPage() {
           <div className="card p-4 flex flex-col gap-1">
             <span className="text-xs text-slate-500 flex items-center gap-1"><Clock size={11} className="text-amber-400" />Durée</span>
             <span className="text-lg font-bold text-white">{ao.duration}</span>
+          </div>
+        )}
+        {ao.langue_requise && (
+          <div className="card p-4 flex flex-col gap-1">
+            <span className="text-xs text-slate-500 flex items-center gap-1"><Languages size={11} className="text-violet-400" />Langue requise</span>
+            <span className="text-lg font-bold text-white leading-tight">{ao.langue_requise}</span>
           </div>
         )}
         <div className="card p-4 flex flex-col gap-1">

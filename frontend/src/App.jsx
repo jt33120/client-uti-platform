@@ -45,7 +45,13 @@ const ADMIN = ['admin']
 
 function GuestRoute({ children }) {
   const { user } = useAuth()
-  if (user) return <Navigate to="/dashboard" replace />
+  // Exception : un lien d'invitation (/register?invite=…) ouvert alors qu'une
+  // session est active doit s'AFFICHER (RegisterPage propose de se déconnecter)
+  // au lieu de rediriger silencieusement vers le dashboard.
+  const hasInvite = typeof window !== 'undefined'
+    && window.location.pathname.startsWith('/register')
+    && new URLSearchParams(window.location.search).has('invite')
+  if (user && !hasInvite) return <Navigate to="/dashboard" replace />
   return children
 }
 

@@ -148,7 +148,13 @@ async def _call_extraction(c: AsyncOpenAI, model: str, cv_text: str) -> tuple[di
     # silencieusement une extraction partielle.
     if getattr(choice, "finish_reason", None) == "length":
         raise ValueError("extraction tronquée (max_tokens atteint)")
-    data = json.loads(choice.message.content)
+    content = (choice.message.content or "").strip()
+    # Réponse vide (modèle indisponible via OpenRouter, response_format non
+    # supporté par ce modèle, quota…) : erreur lisible + repli, plutôt qu'un
+    # JSONDecodeError cryptique sur une chaîne vide.
+    if not content:
+        raise ValueError("réponse LLM vide (modèle indisponible ou format non supporté)")
+    data = json.loads(content)
     features = {
         "skills": _as_list(data.get("skills")),
         "experience_years": _as_int(data.get("experience_years")),

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
-import { Eye, EyeOff, ArrowRight, ShieldCheck, ArrowLeft, Loader2, Clock } from 'lucide-react'
+import { Eye, EyeOff, ArrowRight, ShieldCheck, ArrowLeft, Loader2, Clock, CheckCircle } from 'lucide-react'
 
 function CodeInput({ value, onChange, autoFocus }) {
   return (
@@ -95,7 +95,10 @@ export default function LoginPage() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const sessionExpired = searchParams.get('reason') === 'expired'
-  const [form, setForm] = useState({ email: '', password: '' })
+  // Retour depuis l'inscription : compte créé, on invite à se connecter (la
+  // double authentification s'enclenche à cette 1re connexion).
+  const justRegistered = searchParams.get('registered') === '1'
+  const [form, setForm] = useState({ email: searchParams.get('email') || '', password: '' })
   const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState('')
   const [mfa, setMfa] = useState(null) // { mode, challenge, qr, secret }
@@ -152,6 +155,16 @@ export default function LoginPage() {
                 <span>
                   <strong className="font-semibold">Vous avez été déconnecté.</strong><br />
                   Votre session a expiré après 3 heures (pour des raisons de sécurité). Reconnectez-vous pour continuer.
+                </span>
+              </div>
+            )}
+            {justRegistered && (
+              <div className="mb-5 flex items-start gap-2.5 rounded-lg px-3.5 py-3 text-[13px]"
+                style={{ background: 'var(--success-soft, rgba(16,163,74,0.10))', color: 'var(--success, #16a34a)', border: '1px solid var(--border)' }}>
+                <CheckCircle size={15} className="shrink-0 mt-0.5" />
+                <span>
+                  <strong className="font-semibold">Compte créé.</strong><br />
+                  Connectez-vous pour activer la double authentification et accéder à votre espace.
                 </span>
               </div>
             )}

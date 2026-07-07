@@ -435,17 +435,14 @@ async def register(body: RegisterRequest):
         except Exception as e:
             print(f"[AUTH] Warning: could not mark invitation as used: {e}")
 
-    token = create_token(user_id, body.email, body.role)
-
+    # ⚠️ SÉCURITÉ : on N'ouvre PAS de session ici (pas de jeton renvoyé).
+    # Renvoyer un token connecterait l'utilisateur en contournant la MFA
+    # obligatoire, qui n'est appliquée qu'au /login. L'utilisateur est donc
+    # renvoyé vers /login, où l'enrôlement/vérification MFA s'applique.
     return {
-        "token": token,
-        "user": {
-            "id": user_id,
-            "email": body.email,
-            "name": body.name.strip(),
-            "role": body.role,
-            "org": org,
-        }
+        "registered": True,
+        "email": body.email,
+        "role": body.role,
     }
 
 

@@ -9,11 +9,32 @@ import {
   Loader2, FileText, Trash2, RotateCcw, Building2, Plus,
   Upload, X, UserCircle2, Briefcase, Calendar, Pencil,
   CalendarClock, AlertTriangle, BarChart3, Sparkles,
-  UploadCloud, Download, Target, Hash, Send, Bell, Mail, MessageSquareWarning, Languages, GripVertical
+  UploadCloud, Download, Target, Hash, Send, Bell, Mail, MessageSquareWarning, Languages, GripVertical, HelpCircle
 } from 'lucide-react'
 import ScoringPriorities, { DEFAULT_STARS } from '../components/ScoringPriorities'
 import HarmonizedCvModal from '../components/HarmonizedCvModal'
+import OnboardingTour from '../components/OnboardingTour'
 import { Radar, RadarChart, PolarGrid, PolarAngleAxis, ResponsiveContainer } from 'recharts'
+
+// Tutoriel « lire & utiliser le matching CV » — lancé par le bouton « ? » de la
+// page. Chaque étape éclaire un élément [data-tour=…] ; une étape dont la cible
+// est absente (carte réduite, aucun résultat) est ignorée automatiquement.
+const MATCH_TOUR_STEPS = [
+  { title: 'Lire le matching CV',
+    text: "En 6 écrans : comment l’IA classe les candidats, comment lire un profil, et comment reprendre la main (classement, contact, désaccord). L’IA propose — vous décidez." },
+  { selector: '[data-tour="match-selector"]', title: 'Le classement des candidats',
+    text: "Une vignette par candidat (trigramme + score), du meilleur au moins bon. Cliquez-en une pour afficher son détail ; la barre reste visible quand vous faites défiler. Glissez une vignette pour imposer VOTRE ordre — il prime sur celui de l'IA." },
+  { selector: '[data-tour="match-score"]', title: 'Le score d’adéquation',
+    text: "Note sur 100 combinant la grille déterministe (auditable) et l’avis de l’IA. Vert = fort, orange = moyen, rouge = faible. Le libellé (Fort / À considérer / Faible) résume la reco." },
+  { selector: '[data-tour="match-ia"]', title: 'L’analyse IA',
+    text: "En 2-3 phrases : qui contacter et pourquoi, points forts et réserves — en citant des éléments concrets du CV. C’est un 2ᵉ avis : la grille reste l’ancre." },
+  { selector: '[data-tour="match-criteria"]', title: 'Le détail par critère',
+    text: "Chaque critère (compétences, séniorité, contexte, points forts, éléments différenciants, TJM) est noté sur son barème, avec une justification citée du CV. Les langues détectées et la langue exigée par l’AO sont contrôlées ici." },
+  { selector: '[data-tour="match-contact"]', title: 'Contacter le partenaire',
+    text: "Juste à côté du nom : ouvre un brouillon d’e-mail pré-rempli vers le partenaire porteur. Le suivi (contacté / proposé au client) est mémorisé." },
+  { selector: '[data-tour="match-decision"]', title: 'Votre décision (et le désaccord)',
+    text: "Retenir, écarter, ou SIGNALER UN DÉSACCORD avec un commentaire. Ce commentaire est réinjecté dans l’analyse : au prochain « Relancer », l’IA réévalue le profil en tenant compte de votre retour." },
+]
 
 // Parse date-only strings ("YYYY-MM-DD") as *local* dates to avoid the UTC
 // off-by-one; full timestamps fall back to native parsing.
@@ -206,7 +227,7 @@ function DecisionBar({ aoId, result, rank }) {
   }
 
   return (
-    <div className="border-t border-white/5 pt-3 mt-1">
+    <div className="border-t border-white/5 pt-3 mt-1" data-tour="match-decision">
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide">
           Décision humaine
@@ -493,7 +514,7 @@ function MatchCard({ result, rank, aoId, isAdmin, ao, onContact, expanded: expan
         <div className="w-7 h-7 rounded-full bg-white/5 border border-white/10 flex items-center justify-center text-xs font-bold text-slate-400 shrink-0">
           {rank}
         </div>
-        <ScoreRing score={headlineScore} size={64} />
+        <span data-tour="match-score" className="inline-flex"><ScoreRing score={headlineScore} size={64} /></span>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <h3 className="text-sm font-semibold text-white">{result.consultant_name}</h3>
@@ -502,6 +523,7 @@ function MatchCard({ result, rank, aoId, isAdmin, ao, onContact, expanded: expan
                 plutôt qu'un bouton pleine largeur en bas de carte. */}
             {isAdmin && (
               <a
+                data-tour="match-contact"
                 href={buildMailto(result, ao)}
                 onClick={(e) => { e.stopPropagation(); if (contactStatus === 'none') { setContactStatus('contacted'); onContact?.(result, 'contacted') } }}
                 title={`${contactLabel(result.contact_kind)}${result.partner_name ? ` · ${result.partner_name}` : ''}`}
@@ -546,7 +568,7 @@ function MatchCard({ result, rank, aoId, isAdmin, ao, onContact, expanded: expan
               <ScoreRadar breakdown={bd} hybridBreakdown={hbd} weights={weights} />
             </div>
             {/* Auto-justification rédigée par l'IA */}
-            <div>
+            <div data-tour="match-ia">
               <p className="text-xs font-semibold text-violet-300 uppercase tracking-wide mb-2 flex items-center gap-1">
                 <Sparkles size={11} /> Analyse IA
               </p>
@@ -557,7 +579,7 @@ function MatchCard({ result, rank, aoId, isAdmin, ao, onContact, expanded: expan
           </div>
 
           {/* Détail par critère : barre hybride + justification IA */}
-          <div className="space-y-3">
+          <div className="space-y-3" data-tour="match-criteria">
             <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Détail par critère</p>
             {cats.map(c => (
               <div key={c.key}>
@@ -701,7 +723,7 @@ function MatchCarousel({ results: incoming, aoId, isAdmin, ao }) {
     <div>
       {/* Barre de sélection COLLANTE : on navigue entre candidats sans devoir
           remonter en haut après avoir scrollé le détail. */}
-      <div className="sticky top-0 z-20 pt-2 pb-2.5 mb-1 bg-[var(--bg)]/95 backdrop-blur-sm border-b border-white/5 rounded-b-lg">
+      <div data-tour="match-selector" className="sticky top-0 z-20 pt-2 pb-2.5 mb-1 bg-[var(--bg)]/95 backdrop-blur-sm border-b border-white/5 rounded-b-lg">
         <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
           <div className="flex items-center gap-2 text-xs text-slate-500">
             <TrendingUp size={12} className="text-brand-400" />
@@ -1929,6 +1951,7 @@ export default function AODetailPage() {
   const [loading, setLoading] = useState(true)
   const [matching, setMatching] = useState(false)
   const [matchError, setMatchError] = useState('')
+  const [showMatchTour, setShowMatchTour] = useState(false)  // tutoriel « lire le matching »
   const [showSubmitModal, setShowSubmitModal] = useState(false)
   const [showEditModal, setShowEditModal] = useState(false)
   // Assistant can deep-link here to open the "propose consultant" flow,
@@ -2474,6 +2497,12 @@ export default function AODetailPage() {
                     <p className="text-sm font-semibold text-white flex items-center gap-2">
                       <Zap size={15} className="text-brand-400" />
                       Scoring automatique
+                      {/* Tutoriel : comment lire & utiliser le matching CV. */}
+                      <button onClick={() => setShowMatchTour(true)}
+                              title="Comment lire ce matching ? Lancer le tutoriel"
+                              className="h-6 w-6 rounded-md inline-flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 transition-colors">
+                        <HelpCircle size={15} strokeWidth={1.75} />
+                      </button>
                     </p>
                     <p className="text-xs text-slate-500 mt-0.5">
                       {submissions.length === 0
@@ -2588,6 +2617,9 @@ export default function AODetailPage() {
             if (isAdmin && submissions.length > 0) await runMatching()
           }}
         />
+      )}
+      {showMatchTour && (
+        <OnboardingTour steps={MATCH_TOUR_STEPS} onClose={() => setShowMatchTour(false)} />
       )}
     </div>
   )

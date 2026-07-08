@@ -73,17 +73,22 @@ Critères :
 
 Retourne UNIQUEMENT un JSON valide (sans markdown) au format EXACT :
 {
-  "competences":             {"score": <entier 0..MAX_COMPETENCES>, "justification": "<1 phrase concrète>"},
-  "seniorite":               {"score": <entier 0..MAX_SENIORITE>,   "justification": "<1 phrase>"},
-  "contexte":                {"score": <entier 0..MAX_CONTEXTE>,    "justification": "<1 phrase>"},
-  "points_forts_cv":         {"score": <entier 0..MAX_POINTS_FORTS_CV>,         "justification": "<1 phrase : le point fort majeur>"},
-  "elements_differenciants": {"score": <entier 0..MAX_ELEMENTS_DIFFERENCIANTS>, "justification": "<1 phrase : ce qui différencie>"},
+  "competences":             {"score": <entier 0..MAX_COMPETENCES>, "justification": "<1 phrase ancrée dans le CV>"},
+  "seniorite":               {"score": <entier 0..MAX_SENIORITE>,   "justification": "<1 phrase ancrée dans le CV>"},
+  "contexte":                {"score": <entier 0..MAX_CONTEXTE>,    "justification": "<1 phrase ancrée dans le CV>"},
+  "points_forts_cv":         {"score": <entier 0..MAX_POINTS_FORTS_CV>,         "justification": "<1 phrase : le point fort majeur, cité du CV>"},
+  "elements_differenciants": {"score": <entier 0..MAX_ELEMENTS_DIFFERENCIANTS>, "justification": "<1 phrase : ce qui différencie, cité du CV>"},
   "tjm":                     {"score": <entier 0..MAX_TJM>,          "justification": "<1 phrase>"},
   "global": "<2 à 3 phrases : qui contacter et pourquoi, points forts et réserves>"
 }
 
 Règles :
-- Reste factuel, fondé sur les données fournies. N'invente pas d'expérience absente.
+- CITE LE CV. Quand un EXTRAIT DU CV est fourni, chaque justification (sauf tjm)
+  doit s'appuyer sur un élément CONCRET repris du CV : intitulé de poste, mission,
+  technologie, certification, chiffre, secteur. Mets l'élément repris entre
+  guillemets « … ». Une justification vague, sans ancrage dans le CV, est proscrite.
+- Reste factuel, fondé sur les données fournies. N'invente JAMAIS un élément absent
+  du CV (ni expérience, ni compétence, ni chiffre) : cite uniquement ce qui y figure.
 - Si une information manque, note prudemment au milieu du barème et dis-le dans la justification.
 - Si un critère a un MAX de 0, il est désactivé : renvoie score 0 et justification vide.
 - Ne mentionne jamais de nom, contact ou donnée personnelle.
@@ -170,19 +175,40 @@ async def _call_scoring(c: AsyncOpenAI, model: str, user: str, maxes: dict) -> t
     }, cost
 
 
-async def llm_score(features: dict, consultant: dict, ao: dict, weights: dict) -> tuple[Optional[dict], float]:
+async def llm_score(
+    features: dict, consultant: dict, ao: dict, weights: dict,
+    cv_excerpt: Optional[str] = None, human_feedback: Optional[str] = None,
+) -> tuple[Optional[dict], float]:
     """
     Second avis IA. Essaie OpenRouter en premier, puis Mistral en fallback.
     Retourne (resultat, cost_usd) ou (None, 0.0) si tous les providers échouent
     (→ fallback déterministe, dégradation maîtrisée Art. 15).
+
+    `cv_excerpt`     : texte pseudonymisé du CV → l'IA cite des éléments concrets.
+    `human_feedback` : désaccord signalé par un opérateur → réinjecté au ré-scoring.
     """
     maxes = {llm_k: int(weights.get(w_k, 0)) for llm_k, _det_k, w_k in _CATS}
     bareme = "\n".join(f"- MAX_{llm_k.upper()} = {maxes[llm_k]}" for llm_k, _d, _w in _CATS)
-    user = (
-        "APPEL D'OFFRES :\n" + _ao_brief(ao) + "\n\n"
-        "PROFIL CONSULTANT (anonymisé) :\n" + _candidate_brief(features, consultant) + "\n\n"
-        "Barèmes (scores entiers, maximum par critère) :\n" + bareme + "\n"
-    )
+    parts = [
+        "APPEL D'OFFRES :\n" + _ao_brief(ao),
+        "PROFIL CONSULTANT (anonymisé) :\n" + _candidate_brief(features, consultant),
+    ]
+    # Extrait du CV (déjà pseudonymisé) : permet à l'IA de CITER des éléments
+    # concrets (intitulés de poste, missions, technos, chiffres) au lieu de rester
+    # générique. Borné pour tenir dans le contexte.
+    if cv_excerpt and cv_excerpt.strip():
+        parts.append("EXTRAIT DU CV (anonymisé — cite-le dans tes justifications) :\n"
+                     + cv_excerpt.strip()[:3500])
+    # Retour humain : un opérateur a signalé un désaccord avec une évaluation
+    # précédente ; l'IA doit en tenir compte (supervision effective, Art. 14).
+    if human_feedback and human_feedback.strip():
+        parts.append(
+            "⚠️ RETOUR D'UN OPÉRATEUR sur une évaluation précédente de ce profil "
+            "(prends-le en compte, réévalue en conséquence et dis dans le \"global\" "
+            "comment tu l'as intégré) :\n« " + human_feedback.strip()[:600] + " »"
+        )
+    parts.append("Barèmes (scores entiers, maximum par critère) :\n" + bareme)
+    user = "\n\n".join(parts) + "\n"
 
     candidates = []
     if _client:

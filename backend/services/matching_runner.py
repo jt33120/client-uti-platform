@@ -45,10 +45,34 @@ async def _gather_bounded(coros):
     return await asyncio.gather(*[_run(c) for c in coros])
 
 
-async def _features_for(item: dict) -> tuple[dict, float]:
-    """Extraction pseudonymisée des features d'un candidat (best-effort)."""
+async def _features_for(item: dict) -> tuple[dict, float, str]:
+    """Extraction pseudonymisée des features d'un candidat (best-effort).
+    Retourne aussi le TEXTE pseudonymisé du CV, réutilisé par le 2e avis IA pour
+    citer des éléments concrets dans sa justification (sans PII)."""
     clean = strip_pii(item.get("cv_text"), item.get("name"))
-    return await extract_features(clean)
+    features, cost = await extract_features(clean)
+    return features, cost, clean
+
+
+def _human_feedback_map(ao_id: str) -> dict:
+    """Derniers désaccords humains signalés pour cet AO, par consultant_id.
+    Ce texte est réinjecté dans le prompt du 2e avis IA au ré-scoring : l'humain
+    corrige, l'IA en tient compte (AI Act Art. 14 — supervision effective)."""
+    try:
+        rows = supabase.table("human_decision").select(
+            "consultant_id, justification, decided_at"
+        ).eq("ao_id", ao_id).eq("decision", "overridden").order(
+            "decided_at", desc=True
+        ).execute().data or []
+    except Exception:  # noqa: BLE001
+        return {}
+    out: dict = {}
+    for r in rows:  # trié du plus récent au plus ancien → on garde le 1er par consultant
+        cid = r.get("consultant_id")
+        just = (r.get("justification") or "").strip()
+        if cid and just and cid not in out:
+            out[cid] = just
+    return out
 
 
 def _weights_from_config(config: dict) -> dict:
@@ -198,11 +222,12 @@ async def _score_all(
     """Extrait (concurremment) puis score chaque candidat ; journalise chaque score."""
     config = _effective_config(ao)  # grille globale + priorités propres à l'AO
     weights = _weights_from_config(config)
+    feedback = _human_feedback_map(ao.get("id"))  # désaccords humains à réinjecter
     extracted = await _gather_bounded([_features_for(it) for it in items])
 
     # Étape déterministe (synchrone) puis 2e avis IA (concurrent sur tous les CV).
     base = []
-    for it, (features, ex_cost) in zip(items, extracted):
+    for it, (features, ex_cost, clean_cv) in zip(items, extracted):
         score = score_consultant(features, it, ao, config)
         if features.get("extraction_failed"):
             # La lecture IA du CV a totalement échoué : le score repose sur la
@@ -211,14 +236,16 @@ async def _score_all(
             score["extraction_failed"] = True
             warn = "⚠️ Lecture IA du CV indisponible — score fondé sur la fiche déclarée uniquement"
             score["points_faibles"] = [warn] + list(score.get("points_faibles") or [])
-        base.append((it, features, score, ex_cost))
+        base.append((it, features, score, ex_cost, clean_cv))
     llm_outs = await _gather_bounded([
-        llm_score(features, it, ao, weights) for (it, features, _s, _c) in base
+        llm_score(features, it, ao, weights,
+                  cv_excerpt=clean_cv, human_feedback=feedback.get(it.get("consultant_id")))
+        for (it, features, _s, _c, clean_cv) in base
     ])
 
     total_cost = 0.0
     results: list[dict] = []
-    for (it, features, score, ex_cost), (llm_res, llm_cost) in zip(base, llm_outs):
+    for (it, features, score, ex_cost, _clean), (llm_res, llm_cost) in zip(base, llm_outs):
         total_cost += ex_cost + llm_cost
         score.update(combine_hybrid(score, llm_res, weights))  # score_hybride, score_llm, agreement…
         score["weights"] = weights  # barèmes effectifs par axe (pour le radar)
@@ -252,7 +279,7 @@ async def _score_all(
     return results, total_cost
 
 
-async def run_submission_matching(ao_id: str, ran_by: Optional[str], top_n: int = 3) -> dict:
+async def run_submission_matching(ao_id: str, ran_by: Optional[str], top_n: int = 5) -> dict:
     """
     Score every submitted CV for this AO and persist the top N.
     Raises LookupError (no AO / no submissions) or ValueError (no readable CV).
@@ -331,7 +358,7 @@ async def run_submission_matching(ao_id: str, ran_by: Optional[str], top_n: int 
     }
 
 
-async def run_vivier_matching(ao_id: str, ran_by: Optional[str], top_n: int = 3) -> Optional[dict]:
+async def run_vivier_matching(ao_id: str, ran_by: Optional[str], top_n: int = 5) -> Optional[dict]:
     """
     Recommend consultants straight from the vivier for a freshly created AO.
     Only consultants owned by partners with active access to the AO's client

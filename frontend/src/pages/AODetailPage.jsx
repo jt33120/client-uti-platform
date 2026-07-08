@@ -9,7 +9,7 @@ import {
   Loader2, FileText, Trash2, RotateCcw, Building2, Plus,
   Upload, X, UserCircle2, Briefcase, Calendar, Pencil,
   CalendarClock, AlertTriangle, BarChart3, Sparkles,
-  UploadCloud, Download, Target, Hash, Send, Bell, Mail, MessageSquareWarning, Languages
+  UploadCloud, Download, Target, Hash, Send, Bell, Mail, MessageSquareWarning, Languages, GripVertical
 } from 'lucide-react'
 import ScoringPriorities, { DEFAULT_STARS } from '../components/ScoringPriorities'
 import HarmonizedCvModal from '../components/HarmonizedCvModal'
@@ -234,11 +234,18 @@ function DecisionBar({ aoId, result, rank }) {
         )}
       </div>
 
+      {recorded === 'overridden' && (
+        <p className="text-[11px] text-amber-300/90 mt-2 flex items-start gap-1.5">
+          <MessageSquareWarning size={12} className="shrink-0 mt-0.5" />
+          Désaccord enregistré. Relancez l'analyse (bouton « Relancer » en haut) : l'IA réévaluera ce profil en tenant compte de votre retour.
+        </p>
+      )}
+
       {overrideMode && !recorded && (
         <div className="mt-2 space-y-2">
           <textarea
             className="input text-xs min-h-[56px] resize-y"
-            placeholder="Votre commentaire / désaccord avec le classement IA (obligatoire)…"
+            placeholder="Votre désaccord / correction (ex. « sous-évalué : a mené une migration Teradata→Snowflake en 2023 »). Ce texte est réinjecté dans l'analyse IA au prochain lancement."
             value={justification}
             onChange={e => setJustification(e.target.value)}
           />
@@ -491,6 +498,17 @@ function MatchCard({ result, rank, aoId, isAdmin, ao, onContact, expanded: expan
           <div className="flex items-center gap-2 flex-wrap">
             <h3 className="text-sm font-semibold text-white">{result.consultant_name}</h3>
             <RecoTag reco={reco} />
+            {/* Contacter le partenaire — juste à côté du nom/trigramme (compact),
+                plutôt qu'un bouton pleine largeur en bas de carte. */}
+            {isAdmin && (
+              <a
+                href={buildMailto(result, ao)}
+                onClick={(e) => { e.stopPropagation(); if (contactStatus === 'none') { setContactStatus('contacted'); onContact?.(result, 'contacted') } }}
+                title={`${contactLabel(result.contact_kind)}${result.partner_name ? ` · ${result.partner_name}` : ''}`}
+                className="btn-primary !h-7 !px-2.5 text-[11px] gap-1 shrink-0">
+                <Mail size={12} /> Contacter
+              </a>
+            )}
             {contactStatus !== 'none' && (
               <span className={clsx('badge border text-[10px] inline-flex items-center gap-1',
                 contactStatus === 'proposed'
@@ -505,12 +523,14 @@ function MatchCard({ result, rank, aoId, isAdmin, ao, onContact, expanded: expan
               </span>
             )}
           </div>
-          <p className="text-[11px] text-slate-500 mt-1">Score d'adéquation</p>
-          {result.consultant_tjm && (
-            <span className="text-xs text-emerald-400 mt-1 inline-flex items-center gap-0.5">
-              <Euro size={10} />{result.consultant_tjm}€/j
-            </span>
-          )}
+          <div className="flex items-center gap-2 mt-1">
+            <p className="text-[11px] text-slate-500">Score d'adéquation</p>
+            {result.consultant_tjm && (
+              <span className="text-xs text-emerald-400 inline-flex items-center gap-0.5">
+                <Euro size={10} />{result.consultant_tjm}€/j
+              </span>
+            )}
+          </div>
         </div>
         <button className="text-slate-600 hover:text-slate-300 transition-colors shrink-0">
           {expanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
@@ -586,15 +606,10 @@ function MatchCard({ result, rank, aoId, isAdmin, ao, onContact, expanded: expan
             </a>
           )}
 
-          {/* Action commerciale : contacter le partenaire pour proposer ce profil */}
-          {isAdmin && (
-            <div className="space-y-2">
-              <a
-                href={buildMailto(result, ao)}
-                onClick={() => { if (contactStatus === 'none') { setContactStatus('contacted'); onContact?.(result, 'contacted') } }}
-                className="btn-primary text-sm w-full justify-center">
-                <Mail size={14} /> {contactLabel(result.contact_kind)}{result.partner_name ? ` · ${result.partner_name}` : ''}
-              </a>
+          {/* Suivi du contact (le bouton « Contacter » est désormais à côté du
+              nom, en tête de carte). Ici : seulement le statut + actions de suivi. */}
+          {isAdmin && (contactStatus !== 'none' || !result.partner_email) && (
+            <div>
               {contactStatus !== 'none' ? (
                 <div className="flex items-center justify-between gap-2 text-xs flex-wrap">
                   <span className="text-emerald-400 inline-flex items-center gap-1">
@@ -602,20 +617,22 @@ function MatchCard({ result, rank, aoId, isAdmin, ao, onContact, expanded: expan
                     {contactStatus === 'proposed' ? 'Proposé au client' : 'Partenaire contacté'}
                     {result.contacted_at && <span className="text-slate-500">· {formatDate(result.contacted_at)}</span>}
                   </span>
-                  {contactStatus === 'contacted' && (
-                    <button onClick={() => { setContactStatus('proposed'); onContact?.(result, 'proposed') }}
-                            className="btn-ghost text-[11px] px-2 py-1">
-                      Marquer proposé au client
-                    </button>
-                  )}
-                  <button onClick={() => { setContactStatus('none'); onContact?.(result, 'none') }}
-                          className="text-[11px] text-slate-500 hover:text-slate-300">réinitialiser</button>
+                  <div className="flex items-center gap-2">
+                    {contactStatus === 'contacted' && (
+                      <button onClick={() => { setContactStatus('proposed'); onContact?.(result, 'proposed') }}
+                              className="btn-ghost text-[11px] px-2 py-1">
+                        Marquer proposé au client
+                      </button>
+                    )}
+                    <button onClick={() => { setContactStatus('none'); onContact?.(result, 'none') }}
+                            className="text-[11px] text-slate-500 hover:text-slate-300">réinitialiser</button>
+                  </div>
                 </div>
-              ) : (!result.partner_email && (
+              ) : (
                 <p className="text-[11px] text-amber-400/80">
-                  Aucun email de contact trouvé (ni partenaire, ni consultant) : le brouillon s'ouvrira sans destinataire (à compléter).
+                  Aucun email de contact trouvé (ni partenaire, ni consultant) : le brouillon « Contacter » s'ouvrira sans destinataire (à compléter).
                 </p>
-              ))}
+              )}
             </div>
           )}
 
@@ -645,21 +662,28 @@ function MatchCarousel({ results: incoming, aoId, isAdmin, ao }) {
   const prev = () => setIdx(i => Math.max(0, i - 1))
   const next = () => setIdx(i => Math.min(results.length - 1, i + 1))
 
-  // Échange le profil courant avec son voisin et persiste le nouvel ordre.
-  const move = async (dir) => {
-    const j = idx + dir
-    if (j < 0 || j >= results.length) return
-    const reordered = results.slice()
-    ;[reordered[idx], reordered[j]] = [reordered[j], reordered[idx]]
+  // Persiste le classement humain (prime sur l'IA). Best-effort.
+  const persistOrder = async (reordered) => {
     setResults(reordered)
-    setIdx(j)
-    if (isAdmin) {
-      setSavingRank(true)
-      try {
-        await api.post(`/matching/${aoId}/rank`, { order: reordered.map(r => r.consultant_id) })
-      } catch { /* non bloquant : l'ordre local reste appliqué */ }
-      finally { setSavingRank(false) }
-    }
+    if (!isAdmin) return
+    setSavingRank(true)
+    try {
+      await api.post(`/matching/${aoId}/rank`, { order: reordered.map(r => r.consultant_id) })
+    } catch { /* non bloquant : l'ordre local reste appliqué */ }
+    finally { setSavingRank(false) }
+  }
+
+  // Drag & drop sur la barre de profils : l'opérateur impose son classement en
+  // glissant une vignette à sa place (remplace les boutons monter/descendre).
+  const [dragIdx, setDragIdx] = useState(null)
+  const dropAt = (target) => {
+    if (dragIdx === null || dragIdx === target) { setDragIdx(null); return }
+    const reordered = results.slice()
+    const [moved] = reordered.splice(dragIdx, 1)
+    reordered.splice(target, 0, moved)
+    setDragIdx(null)
+    setIdx(reordered.indexOf(moved))
+    persistOrder(reordered)
   }
 
   const onContact = async (r, status) => {
@@ -675,69 +699,67 @@ function MatchCarousel({ results: incoming, aoId, isAdmin, ao }) {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
-        <div className="flex items-center gap-2 text-xs text-slate-500">
-          <TrendingUp size={12} className="text-brand-400" />
-          <span>{isAdmin ? `Profil ${idx + 1}/${results.length} · votre classement` : `Top ${results.length}`}</span>
-          {savingRank && <Loader2 size={11} className="animate-spin text-slate-500" />}
-        </div>
-        <div className="flex items-center gap-1.5">
-          <button onClick={() => setExpanded(e => !e)} className="btn-ghost text-[11px] px-2 py-1 gap-1">
-            {expanded ? <><ChevronUp size={12} /> Réduire</> : <><ChevronDown size={12} /> Détailler</>}
-          </button>
-          <button onClick={prev} disabled={idx === 0}
-            className="btn-ghost p-1.5 disabled:opacity-30 disabled:cursor-not-allowed" title="Profil précédent">
-            <ChevronLeft size={16} />
-          </button>
-          <button onClick={next} disabled={idx === results.length - 1}
-            className="btn-ghost p-1.5 disabled:opacity-30 disabled:cursor-not-allowed" title="Profil suivant">
-            <ChevronRight size={16} />
-          </button>
-        </div>
-      </div>
-
-      {/* Barre galerie pleine largeur : trigramme + score de chaque profil sélectionné */}
-      <div className="flex gap-2 overflow-x-auto pb-1 mb-3">
-        {results.map((r, i) => {
-          const sc = r.score_hybride ?? r.score_total
-          const active = i === idx
-          return (
-            <button key={r.consultant_id || i} onClick={() => setIdx(i)}
-              className={clsx('flex-1 min-w-[104px] rounded-lg border px-3 py-2 text-left transition-all',
-                active ? 'border-brand-400 bg-brand-500/10' : 'border-white/10 bg-white/3 hover:border-white/25')}>
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[10px] font-bold text-slate-500">#{i + 1}</span>
-                <span className={clsx('text-sm font-bold tabular', scoreColor(sc))}>{sc}</span>
-              </div>
-              <div className="text-sm font-semibold text-white truncate mt-0.5">{r.consultant_name}</div>
+      {/* Barre de sélection COLLANTE : on navigue entre candidats sans devoir
+          remonter en haut après avoir scrollé le détail. */}
+      <div className="sticky top-0 z-20 pt-2 pb-2.5 mb-1 bg-[var(--bg)]/95 backdrop-blur-sm border-b border-white/5 rounded-b-lg">
+        <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
+          <div className="flex items-center gap-2 text-xs text-slate-500">
+            <TrendingUp size={12} className="text-brand-400" />
+            <span>{isAdmin ? `Profil ${idx + 1}/${results.length}` : `Top ${results.length}`}</span>
+            {savingRank && <span className="inline-flex items-center gap-1 text-brand-300"><Loader2 size={11} className="animate-spin" /> classement enregistré…</span>}
+          </div>
+          <div className="flex items-center gap-1.5">
+            <button onClick={() => setExpanded(e => !e)} className="btn-ghost text-[11px] px-2 py-1 gap-1">
+              {expanded ? <><ChevronUp size={12} /> Réduire</> : <><ChevronDown size={12} /> Détailler</>}
             </button>
-          )
-        })}
-      </div>
-
-      {/* Réordonnancement (staff) : l'humain impose son classement.
-          Déplace le PROFIL AFFICHÉ dans votre classement final (qui prime sur l'IA). */}
-      {isAdmin && results.length > 1 && (
-        <div className="flex items-center justify-between gap-2 mb-2 flex-wrap">
-          <span className="text-[11px] text-slate-500">
-            Votre classement final (il prime sur celui de l'IA) :
-          </span>
-          <div className="flex items-center gap-2">
-            <button onClick={() => move(-1)} disabled={idx === 0}
-              title="Remonter ce profil d'un rang dans votre classement"
-              className="btn-ghost text-[11px] px-2 py-1 gap-1 disabled:opacity-30 disabled:cursor-not-allowed">
-              <ChevronLeft size={12} /> Monter ce profil
+            <button onClick={prev} disabled={idx === 0}
+              className="btn-ghost p-1.5 disabled:opacity-30 disabled:cursor-not-allowed" title="Profil précédent">
+              <ChevronLeft size={16} />
             </button>
-            <button onClick={() => move(1)} disabled={idx === results.length - 1}
-              title="Descendre ce profil d'un rang dans votre classement"
-              className="btn-ghost text-[11px] px-2 py-1 gap-1 disabled:opacity-30 disabled:cursor-not-allowed">
-              Descendre ce profil <ChevronRight size={12} />
+            <button onClick={next} disabled={idx === results.length - 1}
+              className="btn-ghost p-1.5 disabled:opacity-30 disabled:cursor-not-allowed" title="Profil suivant">
+              <ChevronRight size={16} />
             </button>
           </div>
         </div>
-      )}
 
-      <div key={`${result?.consultant_id || idx}-${idx}`} className="animate-fade-in">
+        {/* Vignettes : trigramme + score. Cliquables (sélection) et, côté staff,
+            glissables pour réordonner (classement humain, prime sur l'IA). */}
+        <div className="flex gap-2 overflow-x-auto pb-0.5">
+          {results.map((r, i) => {
+            const sc = r.score_hybride ?? r.score_total
+            const active = i === idx
+            return (
+              <button key={r.consultant_id || i} onClick={() => setIdx(i)}
+                draggable={isAdmin && results.length > 1}
+                onDragStart={() => setDragIdx(i)}
+                onDragOver={e => { if (dragIdx !== null) e.preventDefault() }}
+                onDrop={() => dropAt(i)}
+                onDragEnd={() => setDragIdx(null)}
+                className={clsx('group relative flex-1 min-w-[104px] rounded-lg border px-3 py-2 text-left transition-all',
+                  isAdmin && results.length > 1 && 'cursor-grab active:cursor-grabbing',
+                  dragIdx === i && 'opacity-40',
+                  active ? 'border-brand-400 bg-brand-500/10' : 'border-white/10 bg-white/3 hover:border-white/25')}>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[10px] font-bold text-slate-500 inline-flex items-center gap-1">
+                    {isAdmin && results.length > 1 && <GripVertical size={11} className="text-slate-600 group-hover:text-slate-400" />}
+                    #{i + 1}
+                  </span>
+                  <span className={clsx('text-sm font-bold tabular', scoreColor(sc))}>{sc}</span>
+                </div>
+                <div className="text-sm font-semibold text-white truncate mt-0.5">{r.consultant_name}</div>
+              </button>
+            )
+          })}
+        </div>
+        {isAdmin && results.length > 1 && (
+          <p className="text-[10.5px] text-slate-500 mt-1.5 inline-flex items-center gap-1">
+            <GripVertical size={10} className="text-slate-600" /> Glissez un profil pour imposer votre classement (il prime sur l'IA).
+          </p>
+        )}
+      </div>
+
+      <div key={`${result?.consultant_id || idx}-${idx}`} className="animate-fade-in mt-3">
         <MatchCard result={result} rank={idx + 1} aoId={aoId} isAdmin={isAdmin} ao={ao}
           onContact={onContact} expanded={expanded} onToggleExpand={() => setExpanded(e => !e)} />
       </div>
@@ -1935,7 +1957,7 @@ export default function AODetailPage() {
     setMatching(true)
     setMatchError('')
     try {
-      const { data: run } = await api.post('/matching/run', { ao_id: id, top_n: 3 })
+      const { data: run } = await api.post('/matching/run', { ao_id: id, top_n: 5 })
       // Source de vérité = les résultats RENVOYÉS par le run (toujours calculés,
       // même si l'enregistrement en base échoue). On tente ensuite une relecture
       // qui FUSIONNE l'email partenaire + l'état humain (classement, badges), mais
@@ -2456,7 +2478,7 @@ export default function AODetailPage() {
                     <p className="text-xs text-slate-500 mt-0.5">
                       {submissions.length === 0
                         ? "En attente de soumissions de CVs"
-                        : `Analyse automatique de ${submissions.length} CV${submissions.length > 1 ? 's' : ''} · Top 3`}
+                        : `Analyse automatique de ${submissions.length} CV${submissions.length > 1 ? 's' : ''} · Top ${Math.min(submissions.length, 5)}`}
                     </p>
                   </div>
                   <div className="flex items-center gap-2">

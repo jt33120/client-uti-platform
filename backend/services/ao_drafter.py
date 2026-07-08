@@ -98,6 +98,10 @@ def _sanitize(d: dict, ao_types: list[str]) -> dict:
     if ao_type not in ao_types:
         ao_type = ""
 
+    work_mode = text("work_mode").lower()
+    if work_mode not in ("onsite", "hybrid", "remote"):
+        work_mode = ""
+
     deadline = text("deadline")
     if not re.match(r"^\d{4}-\d{2}-\d{2}$", deadline):
         deadline = ""
@@ -110,6 +114,7 @@ def _sanitize(d: dict, ao_types: list[str]) -> dict:
         "ao_type": ao_type,
         "budget_max": budget,
         "location": text("location"),
+        "work_mode": work_mode,
         "duration": text("duration"),
         "deadline": deadline,
         "context": text("context"),
@@ -194,7 +199,12 @@ async def draft_ao_fields(source: str, ao_types: list[str]) -> Optional[dict]:
         '« Montant maximum pour la durée du contrat » (ex. 320 000€ HT) sont des '
         'TOTAUX, PAS un TJM : ne les mets JAMAIS dans budget_max (laisse null) et '
         'reporte plutôt cette information dans "context".\n'
-        '- "location": localisation / télétravail (sur un modèle de marché : le « Lieu de la prestation »)\n'
+        '- "location": localisation / lieu de la prestation (ville, site) — ex. "Marseille". '
+        "N'y mets PAS le télétravail (c'est \"work_mode\").\n"
+        '- "work_mode": mode de travail, exactement l\'une de ces valeurs sinon "" : '
+        '"onsite" (100% sur site), "hybrid" (présentiel + télétravail partiel, ex. '
+        '"télétravail possible 2j/semaine", "hybride"), "remote" (100% télétravail). '
+        "Déduis-le du texte : « Télétravail possible X j/semaine » ⇒ \"hybrid\".\n"
         '- "duration": durée de la mission (durée du marché ET volumétrie en jours si indiquée)\n'
         '- "deadline": date limite de réponse au format "YYYY-MM-DD" (sur un modèle '
         'de marché : la « Date de limite de remise des offres »), sinon ""\n'

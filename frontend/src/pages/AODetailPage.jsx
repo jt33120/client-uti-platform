@@ -1534,6 +1534,7 @@ function AOEditModal({ ao, onClose, onSaved }) {
         ao_type: data.ao_type || p.ao_type,
         budget_max: data.budget_max != null ? String(data.budget_max) : p.budget_max,
         location: data.location || p.location,
+        work_mode: data.work_mode || p.work_mode,
         duration: data.duration || p.duration,
         deadline: data.deadline || p.deadline,
         context: data.context || p.context,

@@ -28,7 +28,7 @@ def _fetch_states(ao_id: str) -> dict:
 
 class MatchRequest(BaseModel):
     ao_id: str
-    top_n: int = 3
+    top_n: int = 5
 
 
 @router.post("/run", dependencies=[Depends(rate_limit(10, 60))])

@@ -28,7 +28,9 @@ export default function OnboardingTour({ steps, onClose }) {
     if (!step?.selector) { setRect(null); return }
     const el = document.querySelector(step.selector)
     if (!el) { setRect(null); return }
-    el.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    // 'center' (et non 'nearest') : la cible et sa bulle restent dans la fenêtre,
+    // même pour un élément bas de page (sinon on devait scroller à la main).
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' })
     setRect(el.getBoundingClientRect())
   }, [step])
 

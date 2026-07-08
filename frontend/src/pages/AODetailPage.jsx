@@ -192,8 +192,9 @@ function ScoreRadar({ breakdown, hybridBreakdown, weights }) {
 
 // Décision humaine sur un résultat (AI Act Art. 14 — supervision & override).
 // Le staff retient/écarte un profil ; justification obligatoire pour un ajustement.
-function DecisionBar({ aoId, result, rank }) {
-  const [recorded, setRecorded] = useState(null)
+function DecisionBar({ aoId, result, rank, initial }) {
+  // Décision déjà enregistrée (relue au chargement) → le badge survit au refresh.
+  const [recorded, setRecorded] = useState(initial?.decision || null)
   const [overrideMode, setOverrideMode] = useState(false)
   const [justification, setJustification] = useState('')
   const [loading, setLoading] = useState(false)
@@ -476,7 +477,7 @@ function ScoreAnalytics({ all, isAdmin }) {
   )
 }
 
-function MatchCard({ result, rank, aoId, isAdmin, ao, onContact, expanded: expandedProp, onToggleExpand }) {
+function MatchCard({ result, rank, aoId, isAdmin, ao, onContact, expanded: expandedProp, onToggleExpand, decision }) {
   const [contactStatus, setContactStatus] = useState(result.contact_status || 'none')
   useEffect(() => { setContactStatus(result.contact_status || 'none') }, [result.contact_status])
   // Vue détaillée/réduite : contrôlée par le parent (carousel) si fourni, pour
@@ -659,7 +660,7 @@ function MatchCard({ result, rank, aoId, isAdmin, ao, onContact, expanded: expan
           )}
 
           {isAdmin && result.submission_id && (
-            <DecisionBar aoId={aoId} result={result} rank={rank} />
+            <DecisionBar aoId={aoId} result={result} rank={rank} initial={decision} />
           )}
         </div>
       )}
@@ -670,7 +671,7 @@ function MatchCard({ result, rank, aoId, isAdmin, ao, onContact, expanded: expan
 // ─── Carousel : une carte à la fois, navigable + réordonnable ─────
 // Côté staff, l'opérateur a le dernier mot : il peut remonter/descendre un
 // profil dans SON classement (persisté en base, prime sur le score IA).
-function MatchCarousel({ results: incoming, aoId, isAdmin, ao }) {
+function MatchCarousel({ results: incoming, aoId, isAdmin, ao, decisions }) {
   const [results, setResults] = useState(incoming)
   const [idx, setIdx] = useState(0)
   const [savingRank, setSavingRank] = useState(false)
@@ -723,7 +724,7 @@ function MatchCarousel({ results: incoming, aoId, isAdmin, ao }) {
     <div>
       {/* Barre de sélection COLLANTE : on navigue entre candidats sans devoir
           remonter en haut après avoir scrollé le détail. */}
-      <div data-tour="match-selector" className="sticky top-0 z-20 pt-2 pb-2.5 mb-1 bg-[var(--bg)]/95 backdrop-blur-sm border-b border-white/5 rounded-b-lg">
+      <div data-tour="match-selector" className="sticky top-0 z-20 pt-2 pb-2.5 mb-1 bg-[var(--bg)] border-b border-white/10 shadow-[0_6px_10px_-8px_rgba(0,0,0,0.6)] rounded-b-lg">
         <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
           <div className="flex items-center gap-2 text-xs text-slate-500">
             <TrendingUp size={12} className="text-brand-400" />
@@ -783,7 +784,8 @@ function MatchCarousel({ results: incoming, aoId, isAdmin, ao }) {
 
       <div key={`${result?.consultant_id || idx}-${idx}`} className="animate-fade-in mt-3">
         <MatchCard result={result} rank={idx + 1} aoId={aoId} isAdmin={isAdmin} ao={ao}
-          onContact={onContact} expanded={expanded} onToggleExpand={() => setExpanded(e => !e)} />
+          onContact={onContact} expanded={expanded} onToggleExpand={() => setExpanded(e => !e)}
+          decision={decisions?.[result?.consultant_id]} />
       </div>
     </div>
   )
@@ -1952,6 +1954,7 @@ export default function AODetailPage() {
   const [matching, setMatching] = useState(false)
   const [matchError, setMatchError] = useState('')
   const [showMatchTour, setShowMatchTour] = useState(false)  // tutoriel « lire le matching »
+  const [decisions, setDecisions] = useState({})  // consultant_id → dernière décision humaine
   const [showSubmitModal, setShowSubmitModal] = useState(false)
   const [showEditModal, setShowEditModal] = useState(false)
   // Assistant can deep-link here to open the "propose consultant" flow,
@@ -1976,6 +1979,21 @@ export default function AODetailPage() {
     return r.data
   }
 
+  // Décisions humaines déjà enregistrées (retenu / écarté / désaccord) : relues
+  // au chargement pour que le badge de la barre « Décision humaine » survive à un
+  // rechargement (l'API renvoie du plus récent au plus ancien → 1re par consultant).
+  const loadDecisions = async () => {
+    try {
+      const { data } = await api.get(`/decisions/ao/${id}`)
+      const map = {}
+      for (const d of (data || [])) {
+        const cid = d.consultant_id
+        if (cid && !map[cid]) map[cid] = d
+      }
+      setDecisions(map)
+    } catch { /* non bloquant */ }
+  }
+
   const runMatching = async () => {
     setMatching(true)
     setMatchError('')
@@ -1994,6 +2012,7 @@ export default function AODetailPage() {
       setMatchResults(results)
       setAllScores(run.all_scores || null)
       writeMatchCache(id, results, run.all_scores)
+      loadDecisions()  // recharge les badges de décision (désaccord pris en compte)
       if (results.length === 0) {
         setMatchError(
           "Le scoring n'a renvoyé aucun profil. Les CV soumis n'ont peut-être pas "
@@ -2096,27 +2115,34 @@ export default function AODetailPage() {
         if (isAdmin && subs.length > 0) {
           setLoading(false)
 
-          // CACHE-FIRST : on réutilise toujours le scoring déjà calculé (aucun
-          // appel LLM à chaque ouverture). 1) cache de session (évite le re-scoring
-          // à chaque visite si la persistance serveur est indisponible) ; 2) cache
-          // serveur ; 3) à défaut seulement, premier scoring. « Relancer » force.
-          const sessionCached = readMatchCache(id)
-          if (sessionCached) {
-            setMatchResults(sessionCached.results)
-            setAllScores(sessionCached.allScores || null)
-            return
-          }
+          // SERVEUR D'ABORD : /matching/results est une simple RELECTURE en base
+          // (aucun appel LLM), et c'est la seule source qui porte le classement
+          // HUMAIN (tri par human_rank) et les statuts de contact. On la privilégie
+          // donc toujours, pour que l'état repris à la main survive au rechargement.
+          // Le cache de session ne sert QUE de repli hors-ligne (serveur injoignable).
+          let served = null
           try {
             const cached = await api.get(`/matching/results/${id}`)
-            const cachedResults = cached.data.results || []
-            if (cachedResults.length) {
-              setMatchResults(cachedResults)
-              writeMatchCache(id, cachedResults)
+            served = cached.data.results || []
+          } catch { served = null }
+
+          if (served && served.length) {
+            setMatchResults(served)
+            writeMatchCache(id, served)
+            await loadDecisions()
+            return
+          }
+          if (served === null) {
+            // Relecture serveur en échec → repli sur le dernier scoring en cache.
+            const sessionCached = readMatchCache(id)
+            if (sessionCached) {
+              setMatchResults(sessionCached.results)
+              setAllScores(sessionCached.allScores || null)
               return
             }
-          } catch { /* pas de cache : on score pour la première fois ci-dessous */ }
+          }
 
-          // Aucun résultat stocké → premier scoring de cet AO.
+          // served === [] (aucun matching en base) → premier scoring de cet AO.
           await runMatching()
           return
         }
@@ -2540,7 +2566,7 @@ export default function AODetailPage() {
               </div>
 
               {matchResults && matchResults.length > 0 ? (
-                <MatchCarousel results={matchResults} aoId={id} isAdmin ao={ao} />
+                <MatchCarousel results={matchResults} aoId={id} isAdmin ao={ao} decisions={decisions} />
               ) : !matching && submissions.length === 0 ? (
                 <div className="card p-8 text-center border-dashed border-white/10">
                   <Users size={32} className="mx-auto text-slate-700 mb-3" />

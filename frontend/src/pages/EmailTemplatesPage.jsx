@@ -2,7 +2,8 @@ import { useState, useEffect } from 'react'
 import api from '../lib/api'
 import RichTextEditor from '../components/RichTextEditor'
 import { useAuth } from '../contexts/AuthContext'
-import { Mail, Loader2, Save, RotateCcw, CheckCircle, Eye, Send, AlertCircle } from 'lucide-react'
+import { useConfirm } from '../contexts/ConfirmContext'
+import { Mail, Loader2, Save, RotateCcw, CheckCircle, Eye, Send, AlertCircle, Megaphone } from 'lucide-react'
 
 const VAR_LABELS = {
   title: "Titre de l'AO",
@@ -85,6 +86,7 @@ function EmailPreview({ tplKey, subject, body }) {
 
 function TemplateCard({ tpl, onSaved }) {
   const { user } = useAuth()
+  const confirm = useConfirm()
   const [subject, setSubject] = useState(tpl.subject)
   const [body, setBody] = useState(() => toEditorHtml(tpl.body))
   const [version, setVersion] = useState(0) // force la ré-init de l'éditeur
@@ -94,6 +96,16 @@ function TemplateCard({ tpl, onSaved }) {
   const [testEmail, setTestEmail] = useState(user?.email || '')
   const [testing, setTesting] = useState(false)
   const [testMsg, setTestMsg] = useState(null) // { ok, text }
+  // Diffusion groupée (modèles d'annonce uniquement).
+  const [clients, setClients] = useState([])
+  const [bcClient, setBcClient] = useState('')
+  const [bcBusy, setBcBusy] = useState(false)
+  const [bcMsg, setBcMsg] = useState(null) // { ok, text }
+
+  useEffect(() => {
+    if (!tpl.broadcast) return
+    api.get('/clients').then(r => setClients(r.data || [])).catch(() => {})
+  }, [tpl.broadcast])
 
   const sendTest = async () => {
     setTesting(true); setTestMsg(null)
@@ -104,6 +116,31 @@ function TemplateCard({ tpl, onSaved }) {
       setTestMsg({ ok: false, text: e.response?.data?.detail || "Échec de l'envoi du test" })
     } finally {
       setTesting(false)
+    }
+  }
+
+  const broadcast = async () => {
+    const client = clients.find(c => c.id === bcClient)
+    if (!client) return
+    if (!(await confirm({
+      title: 'Diffuser aux partenaires ?',
+      message: `L'e-mail (tel qu'affiché) sera envoyé à TOUS les partenaires habilités (Liste 1/2) sur le client « ${client.name} ». Cette action envoie de vrais e-mails.`,
+      confirmLabel: 'Diffuser',
+    }))) return
+    setBcBusy(true); setBcMsg(null)
+    try {
+      const r = await api.post('/email-templates/broadcast', { key: tpl.key, client_id: bcClient, subject, body })
+      const { sent = 0, recipients = 0, failed = 0 } = r.data
+      setBcMsg({
+        ok: failed === 0,
+        text: recipients === 0
+          ? 'Aucun partenaire habilité sur ce client.'
+          : `${sent}/${recipients} e-mail(s) envoyé(s)${failed ? ` · ${failed} échec(s)` : ''}.`,
+      })
+    } catch (e) {
+      setBcMsg({ ok: false, text: e.response?.data?.detail || 'Échec de la diffusion' })
+    } finally {
+      setBcBusy(false)
     }
   }
 
@@ -204,6 +241,42 @@ function TemplateCard({ tpl, onSaved }) {
           </span>
         )}
       </div>
+
+      {/* Diffusion groupée — modèles d'annonce uniquement. Envoie l'e-mail
+          (tel qu'affiché) aux partenaires habilités sur le client choisi. */}
+      {tpl.broadcast && (
+        <div className="pt-3 border-t border-white/5">
+          <p className="label flex items-center gap-1.5">
+            <Megaphone size={13} className="text-amber-400" /> Diffuser aux partenaires d'un client
+          </p>
+          <div className="flex items-center gap-2 flex-wrap">
+            <select
+              className="input h-8 py-1 text-xs flex-1 min-w-[160px] max-w-xs"
+              value={bcClient}
+              onChange={(e) => { setBcClient(e.target.value); setBcMsg(null) }}
+            >
+              <option value="">Choisir un client…</option>
+              {clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+            <button
+              onClick={broadcast}
+              disabled={bcBusy || !bcClient}
+              className="btn-primary text-xs h-8 px-3 gap-1 whitespace-nowrap"
+            >
+              {bcBusy ? <Loader2 size={13} className="animate-spin" /> : <Send size={13} />} Diffuser
+            </button>
+            {bcMsg && (
+              <span className={`text-[11px] inline-flex items-center gap-1 ${bcMsg.ok ? 'text-emerald-400' : 'text-red-400'}`}>
+                {bcMsg.ok ? <CheckCircle size={12} /> : <AlertCircle size={12} />} {bcMsg.text}
+              </span>
+            )}
+          </div>
+          <p className="text-[11px] text-slate-500 mt-1">
+            Envoie à tous les partenaires habilités (Liste 1 / Liste 2) sur ce client. Pense à
+            enregistrer tes modifications d'abord — c'est le contenu affiché qui part.
+          </p>
+        </div>
+      )}
 
       {error && <p className="text-xs text-red-400">{error}</p>}
 

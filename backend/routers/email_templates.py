@@ -13,6 +13,7 @@ from services import email_templates, audit, storage
 from services.email import send_email
 from services.supabase_client import supabase
 from routers.auth import require_staff, require_admin
+from config import settings
 
 router = APIRouter(prefix="/email-templates", tags=["email-templates"])
 
@@ -94,6 +95,67 @@ async def send_test(req: TestSendRequest, user: dict = Depends(require_admin)):
         actor_id=user["sub"], payload={"key": req.key, "to": req.to},
     )
     return {"message": f"Email de test envoyé à {req.to}."}
+
+
+class BroadcastRequest(BaseModel):
+    key: str
+    client_id: str
+    subject: str = Field(min_length=1, max_length=300)
+    body: str = Field(min_length=1, max_length=50000)
+
+
+@router.post("/broadcast")
+async def broadcast_to_partners(req: BroadcastRequest, user: dict = Depends(require_admin)):
+    """Diffuse un modèle d'ANNONCE aux partenaires habilités sur un client donné.
+
+    Réservé aux modèles marqués `broadcast` (annonces) : les modèles
+    transactionnels liés à un AO précis (title, deadline…) ne le sont pas.
+    Le rendu passe par build_email — identique à l'envoi réel/aperçu.
+    """
+    d = email_templates.DEFAULTS.get(req.key)
+    if not d:
+        raise HTTPException(status_code=404, detail="Template inconnu")
+    if not d.get("broadcast"):
+        raise HTTPException(status_code=400, detail="Ce modèle n'est pas diffusable en masse.")
+
+    # Partenaires (rôle 'ao') habilités list_1/list_2 sur ce client.
+    try:
+        access = supabase.table("partner_clients").select("partner_id").eq(
+            "client_id", req.client_id
+        ).in_("tier", ["list_1", "list_2"]).execute().data or []
+    except Exception:
+        raise HTTPException(status_code=500, detail="Lecture des accès partenaires impossible.")
+    pids = list({a["partner_id"] for a in access if a.get("partner_id")})
+    if not pids:
+        return {"recipients": 0, "sent": 0, "failed": 0,
+                "message": "Aucun partenaire habilité sur ce client."}
+
+    profs = supabase.table("profiles").select("id, email, name, role").in_(
+        "id", pids
+    ).eq("role", "ao").execute().data or []
+
+    link = settings.frontend_url
+    sent, failed = 0, []
+    for p in profs:
+        email = (p.get("email") or "").strip()
+        if not email:
+            continue
+        subject, html, text = email_templates.build_email(
+            req.key, {"name": p.get("name") or "", "link": link},
+            subject=req.subject, body=req.body,
+        )
+        ok, err = send_email(email, subject, html, text=text)
+        if ok:
+            sent += 1
+        else:
+            failed.append(email)
+
+    audit.log_event(
+        "email_broadcast", audit.new_run_id(), actor_id=user["sub"],
+        payload={"key": req.key, "client_id": req.client_id, "sent": sent, "failed": len(failed)},
+    )
+    return {"recipients": len(profs), "sent": sent, "failed": len(failed),
+            "failed_emails": failed[:20]}
 
 
 class TemplateUpdate(BaseModel):

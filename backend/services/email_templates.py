@@ -162,6 +162,8 @@ DEFAULTS = {
         "cta_label": "Découvrir la plateforme",
         "footer": "Vous recevez cet email en tant que partenaire du Groupement-IT "
                   "sélectionné pour la phase pilote.",
+        # Annonce → diffusable en masse aux partenaires d'un client.
+        "broadcast": True,
     },
     # ── Notifications « Validation CV » (demande Sullyvan) ────────────────────
     "cv_retenu": {
@@ -291,6 +293,9 @@ def get_all() -> list[dict]:
             "default_format": d.get("format", "html"),
             "is_custom": bool(row),
             "placeholders": d.get("placeholders", []),
+            # Diffusable en masse aux partenaires (annonces) : les modèles
+            # transactionnels liés à un AO précis ne le sont pas.
+            "broadcast": bool(d.get("broadcast")),
         })
     return out
 

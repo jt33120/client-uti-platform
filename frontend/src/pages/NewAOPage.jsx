@@ -9,6 +9,33 @@ import {
 import ScoringPriorities, { DEFAULT_STARS } from '../components/ScoringPriorities'
 import { formatDateFR } from '../lib/date'
 
+// Minuscule, sans accents, ponctuation (tirets, slashs…) ramenée à des espaces —
+// pour rapprocher un nom de client (« AGIRC-ARRCO » ≈ « AGIRC ARRCO »).
+const _norm = (s) => (s || '').toString()
+  .normalize('NFKD').replace(/[̀-ͯ]/g, '')
+  .toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+
+// Rapproche le nom de client détecté par l'IA d'un client existant, pour le
+// pré-sélectionner (ex. « CGM » → « CMA CGM »). Renvoie l'id ou '' si rien de sûr.
+function matchClientId(hint, clients) {
+  const h = _norm(hint)
+  if (!h || !clients?.length) return ''
+  let best = null, bestScore = -1
+  for (const c of clients) {
+    const n = _norm(c.name)
+    if (!n) continue
+    let score = -1
+    if (n === h) score = 100
+    // Inclusion mutuelle, mais seulement si le plus court fait ≥ 3 caractères
+    // (évite qu'un sigle « it »/« si » ne matche n'importe quel client).
+    else if ((n.includes(h) || h.includes(n)) && Math.min(n.length, h.length) >= 3) {
+      score = 50 - Math.abs(n.length - h.length)
+    }
+    if (score > bestScore) { bestScore = score; best = c }
+  }
+  return bestScore >= 0 ? best.id : ''
+}
+
 export default function NewAOPage() {
   const navigate = useNavigate()
   const { state } = useLocation()
@@ -73,8 +100,12 @@ export default function NewAOPage() {
       fd.append('pasted_text', aiText)
       aiFiles.forEach(f => fd.append('files', f))
       const { data } = await api.post('/aos/draft', fd)
+      // Client détecté par l'IA → pré-sélection dans la liste (Sullyvan : « s'il
+      // y voit CGM il me le propose »). Ne remplace pas un client déjà choisi.
+      const matchedClient = matchClientId(data.client_hint, clients)
       setForm(p => ({
         ...p,
+        client_id: p.client_id || matchedClient || p.client_id,
         title: data.title || p.title,
         description: data.description || p.description,
         skills_required: data.skills_required || p.skills_required,

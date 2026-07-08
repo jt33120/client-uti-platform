@@ -126,6 +126,43 @@ DEFAULTS = {
         "cta_label": "Réinitialiser mon mot de passe",
         "footer": "Si vous n'êtes pas à l'origine de cette demande, ignorez cet email, votre mot de passe reste inchangé.",
     },
+    # ── Annonce / communication aux partenaires (demande Sullyvan) ────────────
+    "annonce_pilote": {
+        "label": "Annonce — lancement plateforme / phase pilote (→ partenaires)",
+        "subject": "Nouvelle plateforme de gestion des appels d'offres — phase pilote GIT",
+        "body": (
+            '<p style="margin:0 0 14px;">Bonjour chers partenaires,</p>'
+            '<p style="margin:0 0 14px;">Afin de gagner en réactivité et de poursuivre '
+            "notre croissance, nous avons développé une nouvelle plateforme de gestion de "
+            "nos appels d'offres clients GIT, et souhaitons lancer ces prochains jours une "
+            "<strong>phase pilote</strong> avec l'un de nos clients : <strong>CMA CGM</strong>.</p>"
+            '<p style="margin:0 0 14px;">Ce pilote se fera en lien avec quelques partenaires '
+            "sélectionnés — dont vous avez l'honneur de faire partie 😊 !</p>"
+            '<p style="margin:0 0 14px;">La plateforme sera bientôt accessible à l\'adresse : '
+            '<a href="https://plateforme.groupement-it.com/" style="color:#4f46e5;">'
+            "https://plateforme.groupement-it.com/</a></p>"
+            '<p style="margin:0 0 8px;">En production, elle vous permettra, pour tous nos '
+            "clients GIT, de :</p>"
+            '<ul style="margin:0 0 14px;padding-left:20px;color:#1d1d1f;">'
+            '<li style="margin:0 0 6px;">consulter les appels d\'offres en cours ;</li>'
+            '<li style="margin:0 0 6px;">télécharger les dossiers de consultation ;</li>'
+            '<li style="margin:0;">suivre l\'avancement de vos candidatures.</li>'
+            "</ul>"
+            '<p style="margin:0 0 14px;">Pour entrer dans cette première phase de test, nous '
+            "vous adresserons prochainement un e-mail contenant vos <strong>identifiants de "
+            "connexion</strong>.</p>"
+            '<p style="margin:0 0 14px;">Nous comptons sur vous pour nous faire vos retours '
+            "précis, tant sur le fond que sur la forme, ainsi que sur les avantages que vous "
+            "y percevez.</p>"
+            '<p style="margin:0;">Vous en remerciant par avance.</p>'
+        ),
+        "format": "html",
+        "placeholders": ["link"],
+        "email_title": "Nouvelle plateforme partenaires — phase pilote",
+        "cta_label": "Découvrir la plateforme",
+        "footer": "Vous recevez cet email en tant que partenaire du Groupement-IT "
+                  "sélectionné pour la phase pilote.",
+    },
     # ── Notifications « Validation CV » (demande Sullyvan) ────────────────────
     "cv_retenu": {
         "label": "Validation CV — CV retenu par GRP-IT (→ partenaire)",

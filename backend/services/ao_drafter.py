@@ -114,6 +114,10 @@ def _sanitize(d: dict, ao_types: list[str]) -> dict:
         "deadline": deadline,
         "context": text("context"),
         "langue_requise": text("langue_requise")[:120],
+        # Nom du client détecté (ex. "CMA CGM"). Simple SUGGESTION : le front la
+        # rapproche d'un client existant pour pré-sélectionner la liste ; jamais
+        # imposée (l'admin valide).
+        "client_hint": text("client")[:120],
         # Suggestion (jamais imposée) des priorités de matching : l'admin garde
         # la main et peut tout ajuster avant d'enregistrer l'AO.
         "scoring_stars": _stars(d.get("importance")),
@@ -175,6 +179,9 @@ async def draft_ao_fields(source: str, ao_types: list[str]) -> Optional[dict]:
         'complète, JAMAIS l\'objet de la prestation recopié. '
         'Exemples : "Tech Lead Big Data — Assurance, longue mission" · '
         '"Architecte Cloud — secteur bancaire" · "Chef de projet MOA — télétravail partiel"\n'
+        '- "client": nom du CLIENT / donneur d\'ordre mentionné dans la source '
+        '(ex. "CMA CGM", "AGIRC-ARRCO", "SAFRAN"), tel qu\'il apparaît, sinon "". '
+        "C'est le client pour lequel l'AO est ouvert, pas un partenaire/prestataire.\n"
         '- "reference": référence client / de la consultation si présente (ex. "Marché Spécifique n°23915SA230MS"), sinon ""\n'
         '- "description": description claire et professionnelle (3 à 6 phrases), reformulée\n'
         '- "skills_required": compétences techniques clés, séparées par des virgules. '

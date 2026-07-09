@@ -241,6 +241,13 @@ function AOCard({ ao, isStaff, onEdit, onDelete, navigate, selected, onToggleSel
                   {ao.clients?.name && <span className="text-slate-600">· </span>}réf. {ao.reference}
                 </span>
               )}
+              {/* Date d'émission remontée près du client/réf (provenance) — demande Sullyvan (lisibilité) */}
+              {ao.created_at && (
+                <span className="normal-case text-slate-500 inline-flex items-center gap-1" title="Date d'émission de l'AO">
+                  <span className="text-slate-600">·</span>
+                  <Calendar size={9} /> Émis le {formatDate(ao.created_at)}
+                </span>
+              )}
             </div>
           )}
           <h3 className="text-sm font-semibold text-white group-hover:text-brand-300 transition-colors line-clamp-2">
@@ -314,12 +321,6 @@ function AOCard({ ao, isStaff, onEdit, onDelete, navigate, selected, onToggleSel
           <span className="flex items-center gap-1">
             <Clock size={10} />
             {ao.duration}
-          </span>
-        )}
-        {ao.created_at && (
-          <span className="flex items-center gap-1" title="Date d'émission de l'AO">
-            <Calendar size={10} />
-            Émis le {formatDate(ao.created_at)}
           </span>
         )}
         {isStaff ? (

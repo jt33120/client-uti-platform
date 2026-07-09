@@ -57,6 +57,12 @@ class Settings(BaseSettings):
     mip_rum_endpoint: Optional[str] = None
     mip_rum_app_id: Optional[str] = None
     mip_rum_api_key: Optional[str] = None
+    # ── MIP RUM — API de LECTURE (supervision côté UTI) ──────────────
+    # Base de l'API propriétaire MIP RUM + token d'accès UTI. Le backend UTI
+    # proxifie cette API (le token reste serveur, jamais exposé au navigateur).
+    # Tant que non renseigné, l'onglet RUM affiche « en attente de l'API MIP ».
+    mip_rum_read_url: Optional[str] = None    # ex. https://mip-rum-console.vercel.app/api
+    mip_rum_read_token: Optional[str] = None  # token d'accès délivré à UTI par MIP
 
     model_config = {
         "env_file": ".env",

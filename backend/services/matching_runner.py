@@ -166,7 +166,10 @@ def _persist(ao_id: str, results: list[dict], cost_usd: float, ran_by: Optional[
         "weights": r.get("weights"),
         "langues": r.get("langues"),  # langues détectées dans le CV (affichage)
         "rank": rank,
-        "cost_usd": cost_usd,
+        # Coût du RUN porté par la SEULE ligne de rang 1 (0 sur les autres) :
+        # sinon sommer matchings.cost_usd multiplie le coût par le nombre de
+        # profils persistés (Top N). Permet un « Coût IA » juste côté supervision.
+        "cost_usd": cost_usd if rank == 1 else 0,
         "ran_by": ran_by,
     } for rank, r in enumerate(results, start=1)]
 

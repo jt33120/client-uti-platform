@@ -95,6 +95,96 @@ async def overview(user: dict = Depends(require_admin)):
     }
 
 
+@router.get("/ai-usage")
+async def ai_usage(user: dict = Depends(require_admin)):
+    """Usage & coûts IA pour la supervision : coût cumulé, moyenne par run,
+    série journalière (30 j) et modèles configurés. Le coût est porté par la
+    ligne de rang 1 de chaque run (voir matching_runner._persist)."""
+    now = datetime.now(timezone.utc)
+    since = now - timedelta(days=30)
+    degraded: list[str] = []
+
+    total_cost, total_runs, series = None, None, []
+    try:
+        rows = supabase.table("matchings").select(
+            "cost_usd, created_at"
+        ).gt("cost_usd", 0).execute().data or []
+        total_runs = len(rows)  # 1 ligne cost>0 par run (rang 1)
+        total_cost = round(sum(float(r.get("cost_usd") or 0) for r in rows), 4)
+        by_day: dict = {}
+        for r in rows:
+            ts = r.get("created_at")
+            if not ts:
+                continue
+            try:
+                d = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+            except Exception:
+                continue
+            if d < since:
+                continue
+            day = str(ts)[:10]
+            e = by_day.setdefault(day, {"date": day, "cost": 0.0, "runs": 0})
+            e["cost"] += float(r.get("cost_usd") or 0)
+            e["runs"] += 1
+        series = [
+            {"date": k, "cost": round(v["cost"], 4), "runs": v["runs"]}
+            for k, v in sorted(by_day.items())
+        ]
+    except Exception:
+        degraded.append("matchings")
+
+    # Nombre total de matchings scorés (lignes), pour information.
+    scored = None
+    try:
+        scored = supabase.table("matchings").select("id", count="exact").limit(1).execute().count
+    except Exception:
+        pass
+
+    return {
+        "total_cost_usd": total_cost,
+        "total_runs": total_runs,
+        "scored_profiles": scored,
+        "avg_cost_per_run": round(total_cost / total_runs, 4) if (total_cost and total_runs) else 0,
+        "series_30d": series,
+        "models": {
+            "extraction": settings.extraction_model,
+            "scoring": settings.scoring_model,
+            "draft": settings.draft_model,
+            "assistant": settings.assistant_model,
+        },
+        "degraded": sorted(set(degraded)) or None,
+    }
+
+
+@router.get("/rum")
+async def rum_metrics(user: dict = Depends(require_admin)):
+    """Proxy vers l'API de LECTURE MIP RUM (token gardé côté serveur).
+
+    Renvoie {"configured": false} tant que MIP_RUM_READ_URL/TOKEN ne sont pas
+    définis (l'API MIP RUM n'est pas encore exposée) — l'onglet RUM affiche
+    alors « en attente ». Une fois configurés, on relaie tel quel le JSON MIP."""
+    base = (settings.mip_rum_read_url or "").rstrip("/")
+    token = settings.mip_rum_read_token
+    if not base or not token:
+        return {"configured": False,
+                "message": "API MIP RUM non configurée (MIP_RUM_READ_URL / MIP_RUM_READ_TOKEN)."}
+    app_id = settings.mip_rum_app_id or "gip-plateforme"
+    try:
+        with httpx.Client(timeout=12) as client:
+            resp = client.get(
+                f"{base}/rum/summary",
+                params={"app": app_id, "window": "30d"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        if resp.status_code >= 400:
+            return {"configured": True, "ok": False,
+                    "message": f"API MIP RUM: HTTP {resp.status_code}."}
+        return {"configured": True, "ok": True, "data": resp.json()}
+    except Exception as e:  # noqa: BLE001
+        print(f"[RUM] lecture MIP RUM échouée: {e}")
+        return {"configured": True, "ok": False, "message": "API MIP RUM injoignable."}
+
+
 @router.get("/accounts")
 async def list_accounts(user: dict = Depends(require_admin)):
     """All accounts (admin, commerce, partners) + pending invitations."""

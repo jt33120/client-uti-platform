@@ -28,6 +28,7 @@ import { MentionsLegales, Confidentialite, CGU } from './pages/LegalPages'
 const GraphPage = lazy(() => import('./pages/GraphPage'))
 const CartePage = lazy(() => import('./pages/CartePage'))
 const AdminPage = lazy(() => import('./pages/AdminPage'))
+const SupervisionPage = lazy(() => import('./pages/SupervisionPage'))
 const TicketsPage = lazy(() => import('./pages/TicketsPage'))
 const ScoringSettingsPage = lazy(() => import('./pages/ScoringSettingsPage'))
 const EmailsPage = lazy(() => import('./pages/EmailsPage'))
@@ -125,6 +126,13 @@ export default function App() {
             <ProtectedRoute roles={ADMIN}>
               <Suspense fallback={<div className="p-10 text-center text-sm" style={{ color: 'var(--text-faint)' }}>Chargement…</div>}>
                 <AdminPage />
+              </Suspense>
+            </ProtectedRoute>
+          } />
+          <Route path="/supervision" element={
+            <ProtectedRoute roles={ADMIN}>
+              <Suspense fallback={<div className="p-10 text-center text-sm" style={{ color: 'var(--text-faint)' }}>Chargement…</div>}>
+                <SupervisionPage />
               </Suspense>
             </ProtectedRoute>
           } />

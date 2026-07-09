@@ -15,6 +15,7 @@ from openai import AsyncOpenAI
 
 from config import settings
 from mip_rum_ai import record_ai_call
+from services import ai_ledger
 from services.scoring import STAR_CRITERIA
 
 _client: Optional[AsyncOpenAI] = (
@@ -232,12 +233,15 @@ async def draft_ao_fields(source: str, ao_types: list[str]) -> Optional[dict]:
                     ],
                     temperature=0.2,
                     max_tokens=1200,
+                    extra_body=(ai_ledger.OR_USAGE if provider == "OpenRouter" else {}),
                 )
                 _u = getattr(resp, "usage", None)
                 if _u:
                     _call.usage(input_tokens=getattr(_u, "prompt_tokens", None),
                                 output_tokens=getattr(_u, "completion_tokens", None),
                                 cost=getattr(_u, "cost", None))
+            ai_ledger.record(provider=provider.lower(), model=model, operation="draft",
+                             resp=resp, entity_type="ao")
             data = _extract_json(resp.choices[0].message.content or "")
             if data is None:
                 continue
@@ -287,12 +291,15 @@ async def summarize_ao(ao: dict) -> Optional[str]:
                     ],
                     temperature=0.3,
                     max_tokens=80,
+                    extra_body=(ai_ledger.OR_USAGE if provider == "OpenRouter" else {}),
                 )
                 _u = getattr(resp, "usage", None)
                 if _u:
                     _call.usage(input_tokens=getattr(_u, "prompt_tokens", None),
                                 output_tokens=getattr(_u, "completion_tokens", None),
                                 cost=getattr(_u, "cost", None))
+            ai_ledger.record(provider=provider.lower(), model=model, operation="summary",
+                             resp=resp, entity_type="ao")
             txt = (resp.choices[0].message.content or "").strip().strip('"').strip()
             return txt[:240] or None
         except Exception as e:  # noqa: BLE001

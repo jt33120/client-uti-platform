@@ -95,65 +95,245 @@ async def overview(user: dict = Depends(require_admin)):
     }
 
 
+_AI_WINDOWS = {"24h": 1, "7d": 7, "30d": 30, "90d": 90}
+
+
+def _ai_usage_from_ledger(since_iso: str) -> Optional[dict]:
+    """Agrège le registre ``ai_usage`` (source de vérité). Renvoie None si la
+    table est absente pour que l'appelant se rabatte sur les matchings."""
+    try:
+        rows = supabase.table("ai_usage").select(
+            "created_at, provider, model, operation, cost_usd, cost_source, "
+            "input_tokens, output_tokens, cached_tokens, entity_type, entity_id, user_id, user_email"
+        ).gte("created_at", since_iso).order("created_at", desc=True).limit(50000).execute().data
+    except Exception:
+        return None  # table pas encore migrée → fallback matchings
+    rows = rows or []
+
+    def _c(r):
+        return float(r.get("cost_usd") or 0)
+
+    total_cost = round(sum(_c(r) for r in rows), 4)
+    total_calls = len(rows)
+    total_in = sum(int(r.get("input_tokens") or 0) for r in rows)
+    total_out = sum(int(r.get("output_tokens") or 0) for r in rows)
+    total_cached = sum(int(r.get("cached_tokens") or 0) for r in rows)
+
+    by_op: dict = {}
+    by_model: dict = {}
+    by_source: dict = {}
+    by_day: dict = {}
+    by_ao: dict = {}
+    by_user: dict = {}
+    for r in rows:
+        cost = _c(r)
+        toks = int(r.get("input_tokens") or 0) + int(r.get("output_tokens") or 0)
+        op = r.get("operation") or "—"
+        md = r.get("model") or "—"
+        src = r.get("cost_source") or "none"
+        e = by_op.setdefault(op, {"key": op, "cost": 0.0, "calls": 0, "tokens": 0})
+        e["cost"] += cost; e["calls"] += 1; e["tokens"] += toks
+        m = by_model.setdefault(md, {"key": md, "cost": 0.0, "calls": 0, "tokens": 0})
+        m["cost"] += cost; m["calls"] += 1; m["tokens"] += toks
+        by_source[src] = round(by_source.get(src, 0.0) + cost, 4)
+        day = str(r.get("created_at") or "")[:10]
+        if day:
+            d = by_day.setdefault(day, {"date": day, "cost": 0.0, "calls": 0})
+            d["cost"] += cost; d["calls"] += 1
+        if r.get("entity_type") == "ao" and r.get("entity_id"):
+            a = by_ao.setdefault(r["entity_id"], {"ao_id": r["entity_id"], "cost": 0.0, "calls": 0})
+            a["cost"] += cost; a["calls"] += 1
+        uid = r.get("user_id") or r.get("user_email")
+        if uid:
+            u = by_user.setdefault(uid, {"user_id": r.get("user_id"), "email": r.get("user_email"),
+                                          "cost": 0.0, "calls": 0})
+            u["cost"] += cost; u["calls"] += 1
+
+    def _top(d, n=8):
+        out = sorted(d.values(), key=lambda x: x["cost"], reverse=True)[:n]
+        for x in out:
+            x["cost"] = round(x["cost"], 4)
+        return out
+
+    # Résolution des titres d'AO (best-effort, une seule requête).
+    top_aos = _top(by_ao)
+    if top_aos:
+        try:
+            ids = [a["ao_id"] for a in top_aos]
+            aos = supabase.table("appels_offres").select("id, title").in_("id", ids).execute().data or []
+            titles = {a["id"]: a.get("title") for a in aos}
+            for a in top_aos:
+                a["title"] = titles.get(a["ao_id"]) or "AO supprimé"
+        except Exception:
+            for a in top_aos:
+                a["title"] = a["ao_id"][:8]
+
+    # Résolution des noms de comptes (best-effort).
+    top_users = _top(by_user)
+    if top_users:
+        try:
+            ids = [u["user_id"] for u in top_users if u.get("user_id")]
+            if ids:
+                profs = supabase.table("profiles").select("id, name, email").in_("id", ids).execute().data or []
+                names = {p["id"]: p for p in profs}
+                for u in top_users:
+                    p = names.get(u.get("user_id")) or {}
+                    u["name"] = p.get("name") or u.get("email") or "—"
+                    u["email"] = u.get("email") or p.get("email")
+        except Exception:
+            pass
+
+    for e in by_op.values():
+        e["cost"] = round(e["cost"], 4)
+    for m in by_model.values():
+        m["cost"] = round(m["cost"], 4)
+
+    return {
+        "source": "ledger",
+        "total_cost_usd": total_cost,
+        "total_calls": total_calls,
+        "tokens": {"input": total_in, "output": total_out, "cached": total_cached,
+                   "total": total_in + total_out},
+        "avg_cost_per_call": round(total_cost / total_calls, 6) if total_calls else 0,
+        "by_operation": sorted(by_op.values(), key=lambda x: x["cost"], reverse=True),
+        "by_model": sorted(by_model.values(), key=lambda x: x["cost"], reverse=True),
+        "by_cost_source": by_source,
+        "series": [{"date": k, "cost": round(by_day[k]["cost"], 4),
+                    "calls": by_day[k]["calls"]} for k in sorted(by_day)],
+        "top_aos": top_aos,
+        "top_users": top_users,
+    }
+
+
 @router.get("/ai-usage")
-async def ai_usage(user: dict = Depends(require_admin)):
-    """Usage & coûts IA pour la supervision : coût cumulé, moyenne par run,
-    série journalière (30 j) et modèles configurés. Le coût est porté par la
-    ligne de rang 1 de chaque run (voir matching_runner._persist)."""
+async def ai_usage(window: str = "30d", user: dict = Depends(require_admin)):
+    """Usage & coûts IA — lit le registre ``ai_usage`` (coût réel OpenRouter par
+    appel, attribué au compte / système IA / AO). Se rabat sur les matchings tant
+    que la table n'existe pas. `window` ∈ 24h|7d|30d|90d."""
+    days = _AI_WINDOWS.get(window, 30)
     now = datetime.now(timezone.utc)
-    since = now - timedelta(days=30)
+    since = now - timedelta(days=days)
+    since_iso = since.isoformat()
     degraded: list[str] = []
 
+    models = {
+        "extraction": settings.extraction_model,
+        "scoring": settings.scoring_model,
+        "summary": settings.summary_model,
+        "draft": settings.draft_model,
+        "assistant": settings.assistant_model,
+    }
+
+    ledger = _ai_usage_from_ledger(since_iso)
+    if ledger is not None:
+        ledger["window"] = window
+        ledger["models"] = models
+        ledger["degraded"] = None
+        return ledger
+
+    # ── Fallback : ancienne vue basée sur matchings.cost_usd ──────────────
     total_cost, total_runs, series = None, None, []
     try:
         rows = supabase.table("matchings").select(
             "cost_usd, created_at"
-        ).gt("cost_usd", 0).execute().data or []
-        total_runs = len(rows)  # 1 ligne cost>0 par run (rang 1)
+        ).gt("cost_usd", 0).gte("created_at", since_iso).execute().data or []
+        total_runs = len(rows)
         total_cost = round(sum(float(r.get("cost_usd") or 0) for r in rows), 4)
         by_day: dict = {}
         for r in rows:
-            ts = r.get("created_at")
-            if not ts:
+            day = str(r.get("created_at") or "")[:10]
+            if not day:
                 continue
-            try:
-                d = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
-            except Exception:
-                continue
-            if d < since:
-                continue
-            day = str(ts)[:10]
-            e = by_day.setdefault(day, {"date": day, "cost": 0.0, "runs": 0})
+            e = by_day.setdefault(day, {"date": day, "cost": 0.0, "calls": 0})
             e["cost"] += float(r.get("cost_usd") or 0)
-            e["runs"] += 1
-        series = [
-            {"date": k, "cost": round(v["cost"], 4), "runs": v["runs"]}
-            for k, v in sorted(by_day.items())
-        ]
+            e["calls"] += 1
+        series = [{"date": k, "cost": round(v["cost"], 4), "calls": v["calls"]}
+                  for k, v in sorted(by_day.items())]
     except Exception:
         degraded.append("matchings")
 
-    # Nombre total de matchings scorés (lignes), pour information.
-    scored = None
-    try:
-        scored = supabase.table("matchings").select("id", count="exact").limit(1).execute().count
-    except Exception:
-        pass
-
     return {
+        "source": "matchings",
+        "window": window,
         "total_cost_usd": total_cost,
-        "total_runs": total_runs,
-        "scored_profiles": scored,
-        "avg_cost_per_run": round(total_cost / total_runs, 4) if (total_cost and total_runs) else 0,
-        "series_30d": series,
-        "models": {
-            "extraction": settings.extraction_model,
-            "scoring": settings.scoring_model,
-            "draft": settings.draft_model,
-            "assistant": settings.assistant_model,
-        },
+        "total_calls": total_runs,
+        "avg_cost_per_call": round(total_cost / total_runs, 6) if (total_cost and total_runs) else 0,
+        "series": series,
+        "by_operation": [], "by_model": [], "by_cost_source": {},
+        "top_aos": [], "top_users": [],
+        "models": models,
         "degraded": sorted(set(degraded)) or None,
     }
+
+
+# Cache court du miroir OpenRouter (l'API compte n'aime pas être martelée).
+_OR_CACHE: dict[str, tuple[float, dict]] = {}
+_OR_TTL = 60.0
+
+
+@router.get("/ai-openrouter")
+async def ai_openrouter(user: dict = Depends(require_admin)):
+    """Miroir du compte OpenRouter (source de vérité facturation, non hallucinée) :
+    solde, usage cumulé, plafond de clé, et — si une clé de *provisioning* est
+    configurée — l'activité journalière par modèle. Sert d'ancre de réconciliation
+    face au registre interne ``ai_usage``. Token gardé côté serveur, cache 60 s."""
+    import time
+    prov = settings.openrouter_provisioning_key
+    runtime = settings.openrouter_key
+    key = prov or runtime
+    if not key:
+        return {"configured": False,
+                "message": "Aucune clé OpenRouter configurée (OPENROUTER_KEY)."}
+
+    now = time.time()
+    hit = _OR_CACHE.get("main")
+    if hit and now - hit[0] < _OR_TTL:
+        return hit[1]
+
+    out: dict = {"configured": True, "has_provisioning": bool(prov),
+                 "balance": None, "usage": None, "limit": None,
+                 "limit_remaining": None, "key_label": None, "activity": None}
+    base = "https://openrouter.ai/api/v1"
+    headers = {"Authorization": f"Bearer {key}"}
+    try:
+        with httpx.Client(timeout=12) as client:
+            # Solde & usage cumulé (facturé) — clé runtime OU provisioning.
+            try:
+                r = client.get(f"{base}/credits", headers={"Authorization": f"Bearer {runtime or key}"})
+                if r.status_code < 400:
+                    d = (r.json() or {}).get("data") or {}
+                    tc = float(d.get("total_credits") or 0)
+                    tu = float(d.get("total_usage") or 0)
+                    out["usage"] = round(tu, 4)
+                    out["balance"] = round(tc - tu, 4)
+            except Exception:
+                pass
+            # Plafond / usage de la clé runtime.
+            try:
+                r = client.get(f"{base}/key", headers={"Authorization": f"Bearer {runtime or key}"})
+                if r.status_code < 400:
+                    d = (r.json() or {}).get("data") or {}
+                    out["limit"] = d.get("limit")
+                    out["limit_remaining"] = d.get("limit_remaining")
+                    out["key_label"] = d.get("label")
+            except Exception:
+                pass
+            # Activité journalière par modèle — nécessite la clé de provisioning.
+            if prov:
+                try:
+                    r = client.get(f"{base}/activity", headers={"Authorization": f"Bearer {prov}"})
+                    if r.status_code < 400:
+                        out["activity"] = (r.json() or {}).get("data")
+                except Exception:
+                    pass
+    except Exception as e:  # noqa: BLE001
+        print(f"[AI-OR] miroir OpenRouter échec: {e}")
+        out["ok"] = False
+        return out
+
+    out["ok"] = True
+    _OR_CACHE["main"] = (now, out)
+    return out
 
 
 # Cache court (par fenêtre) de la réponse MIP RUM : l'API MIP limite à 60 req/min

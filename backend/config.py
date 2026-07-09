@@ -51,6 +51,12 @@ class Settings(BaseSettings):
     assistant_openrouter_key: Optional[str] = None
     assistant_model: str = "anthropic/claude-sonnet-4.5"
 
+    # OpenRouter — clé de PROVISIONING (facultative), pour la supervision IA :
+    # elle donne accès à l'API compte (/credits, /activity) → miroir fidèle du
+    # dashboard OpenRouter (dépenses, requêtes, tokens, coût par modèle). À défaut,
+    # la supervision se rabat sur /credits via la clé runtime + le registre interne.
+    openrouter_provisioning_key: Optional[str] = None
+
     # MIP RUM — distributed tracing (optional; unset = middleware inactive).
     # Read here because pydantic-settings loads .env without exporting to
     # os.environ, which the middleware would otherwise rely on.

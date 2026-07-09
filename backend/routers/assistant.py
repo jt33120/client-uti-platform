@@ -31,6 +31,7 @@ from openai import AsyncOpenAI
 
 from config import settings
 from mip_rum_ai import record_ai_call, session_id_from_tracestate
+from services import ai_ledger
 from services.supabase_client import supabase
 from services.ratelimit import rate_limit
 from routers.auth import get_current_user
@@ -743,12 +744,16 @@ async def chat(body: ChatRequest, request: Request, user: dict = Depends(get_cur
 
     try:
         with record_ai_call(provider="openrouter", model=MODEL, route="assistant/chat", session_id=session_id) as _call:
-            resp = await _client.chat.completions.create(model=MODEL, messages=convo, temperature=0.3, max_tokens=900)
+            resp = await _client.chat.completions.create(model=MODEL, messages=convo, temperature=0.3, max_tokens=900,
+                                                         extra_body=ai_ledger.OR_USAGE)
             _u = getattr(resp, "usage", None)
             if _u:
                 _call.usage(input_tokens=getattr(_u, "prompt_tokens", None),
                             output_tokens=getattr(_u, "completion_tokens", None),
                             cost=getattr(_u, "cost", None))
+        ai_ledger.record(provider="openrouter", model=MODEL, operation="assistant", resp=resp,
+                         user_id=user.get("sub"), user_email=user.get("email"),
+                         entity_type="assistant")
         data = _parse_json(resp.choices[0].message.content or "")
         if data is None:
             print("[ASSISTANT] model output was not valid JSON — falling back")

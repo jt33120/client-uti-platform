@@ -21,6 +21,7 @@ from services.llm_scoring import llm_score, combine_hybrid
 from services.scoring_settings import get_config
 from services.pseudonymize import strip_pii
 from services import audit
+from services import ai_ledger
 from services.error_log import record as _record_err
 
 # Keep vivier runs bounded — most recent consultants first
@@ -287,6 +288,7 @@ async def run_submission_matching(ao_id: str, ran_by: Optional[str], top_n: int 
     Score every submitted CV for this AO and persist the top N.
     Raises LookupError (no AO / no submissions) or ValueError (no readable CV).
     """
+    ai_ledger.set_context(user_id=ran_by, entity_type="ao", entity_id=ao_id)
     run_id = audit.new_run_id()
     try:
         ao = supabase.table("appels_offres").select("*").eq("id", ao_id).single().execute().data
@@ -367,6 +369,7 @@ async def run_vivier_matching(ao_id: str, ran_by: Optional[str], top_n: int = 5)
     Only consultants owned by partners with active access to the AO's client
     (or by UTI staff) are eligible. Never raises — background-task friendly.
     """
+    ai_ledger.set_context(user_id=ran_by, entity_type="ao", entity_id=ao_id)
     run_id = audit.new_run_id()
     try:
         ao = supabase.table("appels_offres").select("*").eq("id", ao_id).single().execute().data

@@ -11,6 +11,7 @@ from typing import Optional
 from openai import AsyncOpenAI
 from config import settings
 from mip_rum_ai import record_ai_call
+from services import ai_ledger
 
 _client: Optional[AsyncOpenAI] = (
     AsyncOpenAI(api_key=settings.openrouter_key, base_url="https://openrouter.ai/api/v1", timeout=60, max_retries=1)
@@ -144,12 +145,15 @@ async def harmonize_cv(cv_text: str, lang: str = "fr") -> Optional[dict]:
                         {"role": "system", "content": system},
                         {"role": "user", "content": cv_text},
                     ],
+                    extra_body=(ai_ledger.OR_USAGE if provider == "OpenRouter" else {}),
                 )
                 _u = getattr(resp, "usage", None)
                 if _u:
                     _call.usage(input_tokens=getattr(_u, "prompt_tokens", None),
                                 output_tokens=getattr(_u, "completion_tokens", None),
                                 cost=getattr(_u, "cost", None))
+            ai_ledger.record(provider=provider.lower(), model=model, operation="harmonize",
+                             resp=resp, entity_type="consultant")
             data = _extract_json(resp.choices[0].message.content or "")
             if data:
                 out = _sanitize(data)

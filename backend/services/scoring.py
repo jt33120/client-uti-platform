@@ -5,13 +5,14 @@ Conformité AI Act : le score est calculé ici par une formule **explicite,
 versionnée et reproductible** (Art. 13 transparence, Art. 15 reproductibilité),
 sur des **features justifiables** (Art. 10 — pas de texte brut porteur de biais).
 
-Grille v2 (total 100, poids par défaut dérivés des étoiles) :
-  competences_techniques  : ~31 — recouvrement compétences requises ∩ candidat
-  seniorite               : ~16 — années d'expérience vs cible
-  contexte_domaine        : ~15 — adéquation secteur/contexte de l'AO
-  points_forts_cv         : ~15 — force des points forts du CV (noté par l'IA)
-  elements_differenciants : ~15 — ce qui distingue le profil (noté par l'IA)
-  compatibilite_tjm       : ~8  — TJM consultant vs budget de l'AO (0★ = exclu)
+Grille v2.1 (total 100, poids par défaut dérivés des étoiles) :
+  competences_techniques  : ~37 — recouvrement compétences requises ∩ candidat
+                                  (matching par synonymes/alias, cf. _SKILL_ALIASES)
+  seniorite               : ~18 — années d'expérience vs cible
+  contexte_domaine        : ~18 — adéquation secteur/contexte de l'AO
+  points_forts_cv         : ~9  — force des points forts du CV (noté par l'IA)
+  elements_differenciants : ~9  — ce qui distingue le profil (noté par l'IA)
+  compatibilite_tjm       : ~9  — TJM consultant vs budget de l'AO (0★ = exclu)
 
 Les deux axes qualitatifs (points_forts_cv / elements_differenciants) n'ont pas
 de signal déterministe : la grille les pose en NEUTRE et le 2e avis IA
@@ -28,7 +29,7 @@ import re
 import unicodedata
 from typing import Optional
 
-GRID_VERSION = "2.0.0"
+GRID_VERSION = "2.1.0"
 
 # Poids de la grille (somme = 100). NB : depuis v2 la forme canonique est
 # « en étoiles » (cf. plus bas) ; ces poids par défaut en sont DÉRIVÉS.
@@ -72,9 +73,16 @@ STAR_CRITERIA = (
     "competences", "seniorite", "contexte",
     "points_forts_cv", "elements_differenciants", "tjm",
 )
+# v2.1 : les deux axes qualitatifs (points_forts_cv / elements_differenciants)
+# n'ont PAS de signal déterministe — la grille les pose au neutre (0.5) et
+# seule l'IA les note vraiment. À 2★ chacun (v2.0) ils gelaient ~30/100 points
+# au milieu du barème, ce qui aspirait mécaniquement tout score vers ~55-60 %.
+# Ramenés à 1★ : moins de « poids mort » neutre, davantage de points rendus aux
+# axes réellement mesurables (compétences/séniorité/contexte). Reste pilotable
+# par AO/admin (table scoring_config) — c'est un défaut, pas un plafond.
 DEFAULT_STARS = {
     "competences": 4, "seniorite": 2, "contexte": 2,
-    "points_forts_cv": 2, "elements_differenciants": 2, "tjm": 1,
+    "points_forts_cv": 1, "elements_differenciants": 1, "tjm": 1,
 }
 # Correspondance clé étoile → clé du breakdown déterministe (services.scoring)
 # et libellé humain (explicabilité). Ordre = ordre d'affichage.
@@ -140,6 +148,34 @@ _STOPWORDS = {
     "aux", "pour", "avec", "sur", "dans", "par", "sans", "the", "and", "for",
     "with", "of", "to", "in", "on", "a", "an", "ans", "an",
 }
+
+
+# ── Synonymes de compétences (v2.1) ────────────────────────────────────────
+# Le matching de compétences était purement lexical : « React.js » ≠ « ReactJS »,
+# « K8s » ≠ « Kubernetes », « JS » ≠ « JavaScript »… → un consultant réellement
+# compétent perdait des points sur l'axe le plus lourd à cause de l'orthographe.
+# On canonicalise via une table d'alias CURÉE (déterministe, auditable, sans IA)
+# appliquée aux compétences requises ET candidates avant comparaison. Conservateur
+# à dessein : uniquement des équivalences non ambiguës et largement admises.
+_SKILL_ALIASES = {
+    "reactjs": "react", "react.js": "react", "react js": "react",
+    "vuejs": "vue", "vue.js": "vue", "vue js": "vue",
+    "nodejs": "node", "node.js": "node", "node js": "node",
+    "nextjs": "next", "next.js": "next", "next js": "next",
+    "nestjs": "nest", "nest.js": "nest",
+    "js": "javascript", "ts": "typescript",
+    "py": "python", "golang": "go",
+    "k8s": "kubernetes", "postgres": "postgresql", "postgre": "postgresql",
+    "psql": "postgresql", "mongo": "mongodb", "es": "elasticsearch",
+    "csharp": "c#", "c sharp": "c#", "dotnet": ".net", ".net core": ".net",
+    "gcp": "google cloud", "aws": "amazon web services",
+    "tf": "terraform", "k8": "kubernetes",
+}
+
+
+def _canon(tok: str) -> str:
+    """Ramène un libellé de compétence normalisé à sa forme canonique (alias)."""
+    return _SKILL_ALIASES.get(tok, tok)
 
 
 def _norm(s: str) -> str:
@@ -218,10 +254,12 @@ def score_consultant(features: dict, consultant: dict, ao: dict, config: dict | 
     w_tjm = cfg["w_tjm"]
     seniority_full = cfg["seniority_full_years"] or SENIORITY_FULL_YEARS
 
-    # ── Compétences (40) ───────────────────────────────────────────
-    required = _tokens(ao.get("skills_required"))
-    candidate_skills = {_norm(s) for s in features.get("skills", [])}
-    candidate_skills |= set(_tokens(consultant.get("skills")))
+    # ── Compétences (poids le plus lourd) ──────────────────────────
+    # Canonicalisation par alias (v2.1) des deux côtés → « ReactJS » matche
+    # « React.js », « K8s » matche « Kubernetes », etc. (déterministe, auditable).
+    required = [_canon(t) for t in _tokens(ao.get("skills_required"))]
+    candidate_skills = {_canon(_norm(s)) for s in features.get("skills", [])}
+    candidate_skills |= {_canon(t) for t in _tokens(consultant.get("skills"))}
     if not required:
         comp_ratio = NEUTRAL_RATIO
     elif not candidate_skills:

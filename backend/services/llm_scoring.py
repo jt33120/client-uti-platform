@@ -7,10 +7,11 @@ sur la MÊME échelle que la grille (compétences /w, séniorité /w, contexte /
 TJM /w), une justification par catégorie et une justification globale.
 
 Le score hybride combine les deux par catégorie avec un « repli sur le
-déterministe » : plus l'IA et la grille divergent, plus on fait confiance à la
-grille.
-    proximité a = 1 − |D−L| / w
-    H = a · (D+L)/2 + (1−a) · D
+déterministe » : plus l'IA et la grille divergent, plus on refait confiance à la
+grille — mais un plancher (A_FLOOR) empêche d'écraser totalement un avis IA
+confiant (sinon les bons profils restaient bridés vers l'ancre neutre).
+    proximité a = max(A_FLOOR, 1 − |D−L| / w)
+    H = a · (IA_WEIGHT·L + (1−IA_WEIGHT)·D) + (1−a) · D
 
 L'entrée du LLM est déjà pseudonymisée (features issues de `ai_matching`, aucune
 PII). En cas d'absence de clé ou d'erreur, on retombe proprement sur le seul
@@ -90,7 +91,16 @@ Règles :
   guillemets « … ». Une justification vague, sans ancrage dans le CV, est proscrite.
 - Reste factuel, fondé sur les données fournies. N'invente JAMAIS un élément absent
   du CV (ni expérience, ni compétence, ni chiffre) : cite uniquement ce qui y figure.
-- Si une information manque, note prudemment au milieu du barème et dis-le dans la justification.
+- UTILISE TOUTE L'ÉTENDUE DU BARÈME — ne te réfugie pas systématiquement au milieu.
+  Repères (en proportion du MAX de chaque critère) :
+    • ~80-100 % du MAX : adéquation forte / évidente, éléments concrets probants.
+    • ~55-75 % : correct, adéquation réelle mais partielle ou avec réserves.
+    • ~25-45 % : faible, peu d'éléments pertinents.
+    • 0-15 % : hors-sujet, ou aucune information exploitable dans le CV.
+  Un excellent profil DOIT obtenir des scores proches du MAX ; un profil hors-sujet,
+  proche de 0. N'écrase pas les bons profils par excès de prudence.
+- Ne note « au milieu » que si l'information est RÉELLEMENT absente et que tu ne peux
+  pas trancher — et dis-le alors dans la justification. Ce doit être l'exception.
 - Si un critère a un MAX de 0, il est désactivé : renvoie score 0 et justification vide.
 - Ne mentionne jamais de nom, contact ou donnée personnelle.
 """
@@ -254,13 +264,19 @@ def combine_hybrid(deterministic: dict, llm: Optional[dict], weights: dict) -> d
     llm_bd = llm.get("llm_breakdown") or {}
     hybrid_bd: dict = {}
     diff_sum = 0
-    IA_WEIGHT = 0.65  # 65 % IA / 35 % grille quand accord parfait ; repli déterministe si divergence
+    IA_WEIGHT = 0.75  # 75 % IA / 25 % grille quand accord ; repli déterministe si divergence
+    # Plancher de proximité (v2.1) : sans lui, une divergence égale au poids du
+    # critère annulait totalement l'avis IA (a→0, hybride = déterministe pur), ce
+    # qui bridait les bons profils vers l'ancre neutre. Avec le plancher, un avis
+    # IA confiant conserve toujours ≥ A_FLOOR·IA_WEIGHT (~30 %) du poids, même en
+    # forte divergence — la grille reste l'ancre, sans écraser l'IA.
+    A_FLOOR = 0.4
     for llm_k, det_k, w_k in _CATS:
         w = int(weights.get(w_k, 0)) or 1
         d = int(det_bd.get(det_k) or 0)
         l = int((llm_bd.get(llm_k) or {}).get("score") or 0)
         diff_sum += abs(d - l)
-        a = 1 - abs(d - l) / w            # proximité sur ce critère
+        a = max(A_FLOOR, 1 - abs(d - l) / w)   # proximité (bornée) sur ce critère
         hybrid_bd[det_k] = round(a * (IA_WEIGHT * l + (1 - IA_WEIGHT) * d) + (1 - a) * d)
 
     score_hybride = sum(hybrid_bd.values())

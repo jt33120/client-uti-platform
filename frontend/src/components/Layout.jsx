@@ -5,7 +5,7 @@ import {
   LayoutDashboard, Users, FileText, LogOut, Plus,
   Building2, Network, Sun, Moon, UserPlus, UserCheck, Settings,
   HelpCircle, Mail, Compass, Gauge, Ticket, SlidersHorizontal, ChevronDown, Map,
-  Menu, X
+  Menu, X, Activity
 } from 'lucide-react'
 import clsx from 'clsx'
 import InviteModal from './InviteModal'
@@ -246,6 +246,7 @@ export default function Layout() {
               <NavSection id="administration" label="Administration" defaultOpen={false}>
                 <NavItem to="/admin" icon={Gauge} label="Comptes & utilisateurs" />
                 <NavItem to="/admin/scoring" icon={SlidersHorizontal} label="Réglages du matching IA" />
+                <NavItem to="/supervision" icon={Activity} label="Supervision" />
                 <NavItem to="/graph" icon={Compass} label="Graphe de connexions" />
                 <NavItem to="/tickets" icon={Ticket} label="Tickets support" />
               </NavSection>

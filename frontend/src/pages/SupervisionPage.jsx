@@ -35,47 +35,41 @@ const AI_WINDOWS = [{ k: '24h', l: '24 h' }, { k: '7d', l: '7 j' }, { k: '30d', 
 // ── Onglet Usage & coûts IA — miroir OpenRouter + traçabilité ────
 function AiUsageTab() {
   const [win, setWin] = useState('30d')
-  const [data, setData] = useState(null)   // null=chargement, false=erreur
+  const [data, setData] = useState(null)   // registre interne (attribution)
   const [orr, setOrr] = useState(undefined) // undefined=chargement, null=indispo
   const load = (w = win) => {
     setData(null); setOrr(undefined)
     api.get('/admin/ai-usage', { params: { window: w } }).then(r => setData(r.data)).catch(() => setData(false))
-    api.get('/admin/ai-openrouter').then(r => setOrr(r.data)).catch(() => setOrr(null))
+    api.get('/admin/ai-openrouter', { params: { window: w } }).then(r => setOrr(r.data)).catch(() => setOrr(null))
   }
   useEffect(() => { load(win) }, [win])
 
-  if (data === null) return <div className="text-[13px] py-8" style={{ color: 'var(--text-faint)' }}>Chargement…</div>
-  if (data === false) return (
-    <div className="text-[13px] py-8" style={{ color: 'var(--text-muted)' }}>
-      Usage IA indisponible (backend injoignable ou version antérieure).
-      <button onClick={() => load(win)} className="btn-ghost !h-7 !px-2.5 text-[12px] ml-2">Réessayer</button>
-    </div>
-  )
-
-  const models = data.models || {}
-  const series = data.series || []
-  const maxCost = Math.max(0.0001, ...series.map(d => d.cost))
-  const tokens = data.tokens || {}
-  const bySrc = data.by_cost_source || {}
-  const verified = (bySrc.openrouter || 0) + (bySrc.provider || 0)
-  const estimated = bySrc.estimate || 0
-  const totalCost = data.total_cost_usd || 0
-  const verifiedPct = totalCost > 0 ? Math.round((verified / totalCost) * 100) : (data.source === 'matchings' ? 0 : 100)
-  const isLedger = data.source === 'ledger'
   const winLabel = (AI_WINDOWS.find(w => w.k === win) || {}).l || win
+  const orConfigured = orr && orr.configured
+  const hasProv = orr && orr.has_provisioning
+  const orT = (orr && orr.totals) || {}
+  const orSeries = (orr && orr.series) || []
+  const orModels = (orr && orr.by_model) || []
+  const orKeys = (orr && orr.keys) || []
+  const maxOr = Math.max(0.0001, ...orSeries.map(d => d.cost))
+
+  // Attribution interne (ce qu'OpenRouter/MIP ne savent pas : quel AO / quel compte).
+  const topAos = (data && data.top_aos) || []
+  const topUsers = (data && data.top_users) || []
+  const models = (data && data.models) || {}
 
   const kpis = [
-    { label: 'Coût IA', value: fmtUsd(totalCost), sub: `sur ${winLabel}` },
-    { label: 'Appels IA', value: fmtInt(data.total_calls), sub: `${fmtUsd(data.avg_cost_per_call)} / appel` },
-    { label: 'Tokens', value: fmtTok(tokens.total), sub: `${fmtTok(tokens.input)} in · ${fmtTok(tokens.output)} out` },
-    { label: 'Cache', value: fmtTok(tokens.cached), sub: 'tokens en cache' },
+    { label: 'Dépense', value: hasProv ? fmtUsd(orT.cost) : '—', sub: `OpenRouter · ${winLabel}` },
+    { label: 'Requêtes', value: hasProv ? fmtInt(orT.requests) : '—', sub: 'appels facturés' },
+    { label: 'Tokens', value: hasProv ? fmtTok(orT.tokens) : '—', sub: hasProv ? `${fmtTok(orT.prompt_tokens)} in · ${fmtTok(orT.completion_tokens)} out` : '' },
+    { label: 'Solde', value: orConfigured ? fmtUsd(orr.balance) : '—', sub: orConfigured ? `${fmtUsd(orr.usage)} / ${fmtUsd(orr.total_credits)} consommé` : '' },
   ]
 
   return (
     <div className="space-y-7">
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <p className="text-[12.5px]" style={{ color: 'var(--text-muted)' }}>
-          Coût <strong>réel</strong> des appels IA (facturation OpenRouter, par appel) — attribué au système, au compte et à l'AO.
+          Facturation <strong>réelle</strong> du compte OpenRouter UTI (miroir de l'API), + attribution interne par AO et par compte.
         </p>
         <div className="flex items-center gap-1.5">
           <div className="flex gap-1 rounded-lg p-0.5" style={{ background: 'var(--surface-2)' }}>
@@ -90,7 +84,16 @@ function AiUsageTab() {
         </div>
       </div>
 
-      {/* KPIs période (registre interne) */}
+      {orr === undefined && <div className="text-[13px] py-4" style={{ color: 'var(--text-faint)' }}>Chargement du compte OpenRouter…</div>}
+
+      {orr !== undefined && !orConfigured && (
+        <div className="flex items-start gap-2 text-[12px] px-3 py-2.5 rounded-lg" style={{ background: 'var(--surface-2)', color: 'var(--text-muted)' }}>
+          <AlertTriangle size={14} className="mt-0.5 shrink-0" style={{ color: 'var(--warning, #b78103)' }} />
+          <span>Compte OpenRouter non joignable{orr && orr.message ? ` — ${orr.message}` : ''}. Vérifier <code>OPENROUTER_KEY</code> côté serveur.</span>
+        </div>
+      )}
+
+      {/* KPIs — miroir du compte OpenRouter UTI */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-y-6">
         {kpis.map((k, i) => (
           <div key={i} className="flex flex-col gap-1.5 lg:px-5 lg:border-l lg:first:border-l-0 lg:first:pl-0 border-[color:var(--border)]">
@@ -101,106 +104,114 @@ function AiUsageTab() {
         ))}
       </div>
 
-      {!isLedger && (
+      {orConfigured && !hasProv && (
         <div className="flex items-start gap-2 text-[12px] px-3 py-2.5 rounded-lg" style={{ background: 'var(--surface-2)', color: 'var(--text-muted)' }}>
           <AlertTriangle size={14} className="mt-0.5 shrink-0" style={{ color: 'var(--warning, #b78103)' }} />
           <span>
-            Registre détaillé <code>ai_usage</code> pas encore actif — vue de repli basée sur le coût des runs de matching.
-            Exécuter la migration <code>backend/migrations/0001_ai_usage.sql</code> dans Supabase pour activer la traçabilité complète
-            (par système IA, compte, AO) et le coût réel OpenRouter.
+            Seul le solde du compte est visible. Ajouter la <strong>clé de provisioning</strong> (<code>OPENROUTER_PROVISIONING_KEY</code>)
+            côté serveur pour le détail par modèle, par jour et par clé — comme le dashboard OpenRouter.
           </span>
         </div>
       )}
 
-      {/* Réconciliation OpenRouter ↔ registre UTI */}
+      {/* Coût par jour (OpenRouter) */}
+      {hasProv && (
+        <div>
+          <p className="text-[11px] uppercase tracking-[0.08em] font-semibold mb-3 flex items-center gap-1.5" style={{ color: 'var(--text-faint)' }}>
+            <TrendingUp size={13} /> Dépense par jour ({winLabel})
+          </p>
+          {orSeries.length === 0 ? (
+            <p className="text-[12.5px] py-3" style={{ color: 'var(--text-faint)' }}>Aucune dépense sur la période.</p>
+          ) : (
+            <div className="flex items-end gap-1 h-32">
+              {orSeries.map((d) => (
+                <div key={d.date} className="flex-1 flex flex-col items-center justify-end group" title={`${fmtDay(d.date)} · ${fmtUsd(d.cost)} · ${fmtInt(d.requests)} req · ${fmtTok(d.tokens)} tokens`}>
+                  <div className="w-full rounded-t" style={{ height: `${Math.max(3, (d.cost / maxOr) * 100)}%`, background: 'var(--accent)' }} />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Usage par modèle + Clés API (comme le dashboard OpenRouter) */}
+      {hasProv && (
+        <div className="grid lg:grid-cols-2 gap-6">
+          <BreakdownTable icon={Cpu} title="Usage par modèle (OpenRouter)"
+            rows={orModels.map(m => ({ key: m.model, cost: m.cost, calls: m.requests, tokens: m.tokens }))}
+            total={orT.cost} labelOf={(r) => r.key} mono />
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.08em] font-semibold mb-2 flex items-center gap-1.5" style={{ color: 'var(--text-faint)' }}>
+              <Coins size={13} /> Clés API (usage total)
+            </p>
+            <div className="card overflow-hidden">
+              {orKeys.length === 0 ? (
+                <p className="text-[12px] px-3 py-4" style={{ color: 'var(--text-faint)' }}>Aucune clé listée.</p>
+              ) : (
+                <table className="w-full text-[12.5px]">
+                  <thead>
+                    <tr className="text-left text-[10.5px] uppercase tracking-wide" style={{ color: 'var(--text-faint)', borderBottom: '1px solid var(--border)' }}>
+                      <th className="font-medium px-3 py-2">Clé</th>
+                      <th className="font-medium px-3 py-2 text-right">7 j</th>
+                      <th className="font-medium px-3 py-2 text-right">30 j</th>
+                      <th className="font-medium px-3 py-2 text-right">Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {orKeys.map((k, i) => (
+                      <tr key={i} style={{ borderTop: i ? '1px solid var(--border)' : 'none', opacity: k.disabled ? 0.5 : 1 }}>
+                        <td className="px-3 py-2" style={{ color: 'var(--text)' }}>
+                          {k.name || '—'}
+                          <span className="ml-1.5 font-mono text-[10.5px]" style={{ color: 'var(--text-faint)' }}>{k.label}</span>
+                        </td>
+                        <td className="px-3 py-2 text-right tabular" style={{ color: 'var(--text-muted)' }}>{fmtUsd(k.usage_weekly)}</td>
+                        <td className="px-3 py-2 text-right tabular" style={{ color: 'var(--text-muted)' }}>{fmtUsd(k.usage_monthly)}</td>
+                        <td className="px-3 py-2 text-right tabular font-medium" style={{ color: 'var(--text)' }}>{fmtUsd(k.usage)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Attribution interne — ce qu'OpenRouter ne sait pas : quel AO / quel compte */}
+      {(topAos.length > 0 || topUsers.length > 0) && (
+        <div>
+          <p className="text-[11px] uppercase tracking-[0.08em] font-semibold mb-2 flex items-center gap-1.5" style={{ color: 'var(--text-faint)' }}>
+            <ShieldCheck size={13} /> Attribution interne UTI <span className="normal-case tracking-normal font-normal" style={{ color: 'var(--text-faint)' }}>· qui a consommé (registre <code>ai_usage</code>)</span>
+          </p>
+          <div className="grid lg:grid-cols-2 gap-6">
+            <div>
+              <p className="text-[11px] mb-2 flex items-center gap-1.5" style={{ color: 'var(--text-faint)' }}><FileText size={12} /> AOs les plus consommateurs</p>
+              <ConsumerTable rows={topAos} nameOf={(r) => r.title || r.ao_id} />
+            </div>
+            <div>
+              <p className="text-[11px] mb-2 flex items-center gap-1.5" style={{ color: 'var(--text-faint)' }}><Users size={12} /> Comptes les plus consommateurs</p>
+              <ConsumerTable rows={topUsers} nameOf={(r) => r.name || r.email || '—'} />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Performance IA (MIP) — à venir via l'API de lecture */}
       <div className="card p-4">
-        <p className="text-[11px] uppercase tracking-[0.08em] font-semibold mb-3 flex items-center gap-1.5" style={{ color: 'var(--text-faint)' }}>
-          <ShieldCheck size={13} /> Correspondance OpenRouter — facturation réelle, non estimée
+        <p className="text-[11px] uppercase tracking-[0.08em] font-semibold mb-1.5 flex items-center gap-1.5" style={{ color: 'var(--text-faint)' }}>
+          <Radio size={13} /> Performance IA (MIP) — latence, gouvernance PII, lien session
         </p>
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-y-5 gap-x-4">
-          <div className="flex flex-col gap-1">
-            <span className="text-[11px]" style={{ color: 'var(--text-faint)' }}>Solde OpenRouter</span>
-            <span className="text-[20px] font-semibold tabular leading-none flex items-center gap-1.5" style={{ color: 'var(--text)' }}>
-              <Wallet size={15} style={{ color: 'var(--accent-text)' }} />
-              {orr && orr.configured ? fmtUsd(orr.balance) : '—'}
-            </span>
-            <span className="text-[10.5px]" style={{ color: 'var(--text-faint)' }}>crédits restants</span>
-          </div>
-          <div className="flex flex-col gap-1">
-            <span className="text-[11px]" style={{ color: 'var(--text-faint)' }}>Usage OpenRouter (cumulé)</span>
-            <span className="text-[20px] font-semibold tabular leading-none" style={{ color: 'var(--text)' }}>
-              {orr && orr.configured ? fmtUsd(orr.usage) : '—'}
-            </span>
-            <span className="text-[10.5px]" style={{ color: 'var(--text-faint)' }}>facturé, toutes apps de la clé</span>
-          </div>
-          <div className="flex flex-col gap-1">
-            <span className="text-[11px]" style={{ color: 'var(--text-faint)' }}>Part vérifiée (registre)</span>
-            <span className="text-[20px] font-semibold tabular leading-none" style={{ color: verifiedPct >= 99 ? 'var(--success, #1a7f37)' : 'var(--text)' }}>
-              {verifiedPct} %
-            </span>
-            <span className="text-[10.5px]" style={{ color: 'var(--text-faint)' }}>{fmtUsd(verified)} coût OpenRouter réel</span>
-          </div>
-          <div className="flex flex-col gap-1">
-            <span className="text-[11px]" style={{ color: 'var(--text-faint)' }}>Estimé (repli)</span>
-            <span className="text-[20px] font-semibold tabular leading-none" style={{ color: 'var(--text)' }}>{fmtUsd(estimated)}</span>
-            <span className="text-[10.5px]" style={{ color: 'var(--text-faint)' }}>Mistral / usage manquant</span>
-          </div>
-        </div>
-        <p className="text-[11px] mt-3 leading-relaxed" style={{ color: 'var(--text-faint)' }}>
-          Chaque appel enregistre le coût renvoyé par OpenRouter (<code>usage.include</code>) — identique au facturé, à la ligne près,
-          auditable via l'<code>id</code> de génération. L'usage cumulé ci-dessus est celui de la clé (potentiellement partagée avec d'autres apps) ;
-          la correspondance exacte se fait sur la <strong>part vérifiée</strong> du registre.
-          {orr && !orr.configured && ' — Clé OpenRouter non configurée pour le solde.'}
-          {orr && orr.configured && !orr.has_provisioning && ' Ajouter une clé de provisioning (OPENROUTER_PROVISIONING_KEY) pour l\'activité par modèle côté OpenRouter.'}
+        <p className="text-[12px] leading-relaxed" style={{ color: 'var(--text-muted)' }}>
+          La couche observabilité (latence p75 par usage, gouvernance des données / PII, corrélation à la session RUM)
+          est collectée par MIP à partir des spans <code>gen_ai</code> du backend. Elle sera recopiée ici dès que l'API de
+          lecture MIP expose l'endpoint <code>/ai/summary</code> — comme l'onglet RUM.
         </p>
-      </div>
-
-      {/* Série journalière */}
-      <div>
-        <p className="text-[11px] uppercase tracking-[0.08em] font-semibold mb-3 flex items-center gap-1.5" style={{ color: 'var(--text-faint)' }}>
-          <TrendingUp size={13} /> Coût par jour ({winLabel})
-        </p>
-        {series.length === 0 ? (
-          <p className="text-[12.5px] py-3" style={{ color: 'var(--text-faint)' }}>Aucun appel IA sur la période.</p>
-        ) : (
-          <div className="flex items-end gap-1 h-32">
-            {series.map((d) => (
-              <div key={d.date} className="flex-1 flex flex-col items-center justify-end group" title={`${fmtDay(d.date)} · ${fmtUsd(d.cost)} · ${fmtInt(d.calls)} appel(s)`}>
-                <div className="w-full rounded-t" style={{ height: `${Math.max(3, (d.cost / maxCost) * 100)}%`, background: 'var(--accent)' }} />
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Par système IA + par modèle (côte à côte) */}
-      <div className="grid lg:grid-cols-2 gap-6">
-        <BreakdownTable icon={Layers} title="Par système IA" rows={data.by_operation} total={totalCost}
-          labelOf={(r) => OP_LABELS[r.key] || r.key} />
-        <BreakdownTable icon={Cpu} title="Par modèle" rows={data.by_model} total={totalCost}
-          labelOf={(r) => r.key} mono />
-      </div>
-
-      {/* Top AOs + Top comptes */}
-      <div className="grid lg:grid-cols-2 gap-6">
-        <div>
-          <p className="text-[11px] uppercase tracking-[0.08em] font-semibold mb-2 flex items-center gap-1.5" style={{ color: 'var(--text-faint)' }}>
-            <FileText size={13} /> AOs les plus consommateurs
-          </p>
-          <ConsumerTable rows={data.top_aos} nameOf={(r) => r.title || r.ao_id} />
-        </div>
-        <div>
-          <p className="text-[11px] uppercase tracking-[0.08em] font-semibold mb-2 flex items-center gap-1.5" style={{ color: 'var(--text-faint)' }}>
-            <Users size={13} /> Comptes les plus consommateurs
-          </p>
-          <ConsumerTable rows={data.top_users} nameOf={(r) => r.name || r.email || '—'} />
-        </div>
       </div>
 
       {/* Modèles configurés */}
       <div>
         <p className="text-[11px] uppercase tracking-[0.08em] font-semibold mb-2 flex items-center gap-1.5" style={{ color: 'var(--text-faint)' }}>
-          <Cpu size={13} /> Modèles IA configurés
+          <Layers size={13} /> Modèles IA configurés
         </p>
         <div className="card overflow-hidden">
           <table className="w-full text-[12.5px]">

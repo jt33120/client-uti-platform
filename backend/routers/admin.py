@@ -156,33 +156,55 @@ async def ai_usage(user: dict = Depends(require_admin)):
     }
 
 
+# Cache court (par fenêtre) de la réponse MIP RUM : l'API MIP limite à 60 req/min
+# par token → on ne tape jamais à chaque rafraîchissement navigateur.
+_RUM_WINDOWS = ("24h", "7d", "30d")
+_RUM_CACHE: dict[str, tuple[float, dict]] = {}
+_RUM_TTL = 60.0
+
+
 @router.get("/rum")
-async def rum_metrics(user: dict = Depends(require_admin)):
-    """Proxy vers l'API de LECTURE MIP RUM (token gardé côté serveur).
+async def rum_metrics(window: str = "30d", user: dict = Depends(require_admin)):
+    """Proxy vers l'API de LECTURE MIP RUM (token gardé côté serveur, jamais au
+    navigateur). Cache 60 s par fenêtre (respect du rate-limit MIP 60 req/min).
 
     Renvoie {"configured": false} tant que MIP_RUM_READ_URL/TOKEN ne sont pas
-    définis (l'API MIP RUM n'est pas encore exposée) — l'onglet RUM affiche
-    alors « en attente ». Une fois configurés, on relaie tel quel le JSON MIP."""
+    définis — l'onglet RUM affiche alors « en attente »."""
+    import time
+    if window not in _RUM_WINDOWS:
+        window = "30d"
     base = (settings.mip_rum_read_url or "").rstrip("/")
     token = settings.mip_rum_read_token
     if not base or not token:
         return {"configured": False,
                 "message": "API MIP RUM non configurée (MIP_RUM_READ_URL / MIP_RUM_READ_TOKEN)."}
+
+    now = time.time()
+    hit = _RUM_CACHE.get(window)
+    if hit and now - hit[0] < _RUM_TTL:
+        return hit[1]
+
     app_id = settings.mip_rum_app_id or "gip-plateforme"
     try:
         with httpx.Client(timeout=12) as client:
             resp = client.get(
                 f"{base}/rum/summary",
-                params={"app": app_id, "window": "30d"},
+                params={"app": app_id, "window": window},
                 headers={"Authorization": f"Bearer {token}"},
             )
+        if resp.status_code == 429:
+            return {"configured": True, "ok": False, "window": window,
+                    "message": "API MIP RUM: quota atteint (429), réessayez dans un instant."}
         if resp.status_code >= 400:
-            return {"configured": True, "ok": False,
+            return {"configured": True, "ok": False, "window": window,
                     "message": f"API MIP RUM: HTTP {resp.status_code}."}
-        return {"configured": True, "ok": True, "data": resp.json()}
+        payload = {"configured": True, "ok": True, "window": window, "data": resp.json()}
+        _RUM_CACHE[window] = (now, payload)
+        return payload
     except Exception as e:  # noqa: BLE001
         print(f"[RUM] lecture MIP RUM échouée: {e}")
-        return {"configured": True, "ok": False, "message": "API MIP RUM injoignable."}
+        return {"configured": True, "ok": False, "window": window,
+                "message": "API MIP RUM injoignable."}
 
 
 @router.get("/accounts")

@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 from typing import Optional
 from services.supabase_client import supabase
 from services.cv_parser import extract_text_from_pdf, extract_text_from_docx, extract_text_from_xlsx
-from services import ao_drafter, storage, notifications
+from services import ao_drafter, storage, notifications, ai_ledger
 from services.app_settings import get_notification_settings
 from services.matching_runner import run_vivier_matching
 from services.ratelimit import rate_limit
@@ -157,6 +157,8 @@ async def draft_ao(
     """
     if not ao_drafter.is_available():
         raise HTTPException(status_code=503, detail="Génération IA indisponible (clé OpenRouter non configurée).")
+
+    ai_ledger.set_context(user_id=user.get("sub"), user_email=user.get("email"), entity_type="ao")
 
     parts: list[str] = []
     if pasted_text and pasted_text.strip():

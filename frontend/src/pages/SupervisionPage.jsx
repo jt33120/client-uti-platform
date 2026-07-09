@@ -4,6 +4,7 @@ import api from '../lib/api'
 import ErrorJournal from '../components/ErrorJournal'
 import {
   Activity, Coins, Radio, RefreshCw, Cpu, TrendingUp,
+  Wallet, ShieldCheck, Layers, FileText, Users, AlertTriangle,
 } from 'lucide-react'
 
 const TABS = [
@@ -12,49 +13,86 @@ const TABS = [
   { k: 'rum', label: 'RUM (activité)', icon: Radio },
 ]
 
-const fmtUsd = (v) => (v == null ? '—' : `$${Number(v).toFixed(v < 1 ? 4 : 2)}`)
+const fmtUsd = (v) => (v == null ? '—' : `$${Number(v).toFixed(Math.abs(v) < 1 ? 4 : 2)}`)
+const fmtInt = (v) => (v == null ? '—' : new Intl.NumberFormat('fr-FR').format(v))
+const fmtTok = (v) => {
+  if (v == null) return '—'
+  if (v >= 1e6) return `${(v / 1e6).toFixed(1)} M`
+  if (v >= 1e3) return `${(v / 1e3).toFixed(1)} k`
+  return fmtInt(v)
+}
 const fmtDay = (iso) => {
   try { return new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'short' }).format(new Date(iso)) }
   catch { return iso }
 }
 
-// ── Onglet Usage & coûts IA ──────────────────────────────────────
+const OP_LABELS = {
+  extraction: 'Extraction CV', scoring: 'Scoring (2ᵉ avis)', draft: "Génération d'AO",
+  summary: "Résumé d'AO", assistant: 'Assistant', harmonize: 'Harmonisation CV',
+}
+const AI_WINDOWS = [{ k: '24h', l: '24 h' }, { k: '7d', l: '7 j' }, { k: '30d', l: '30 j' }, { k: '90d', l: '90 j' }]
+
+// ── Onglet Usage & coûts IA — miroir OpenRouter + traçabilité ────
 function AiUsageTab() {
-  const [data, setData] = useState(null) // null=chargement, false=erreur
-  const load = () => {
-    setData(null)
-    api.get('/admin/ai-usage').then(r => setData(r.data)).catch(() => setData(false))
+  const [win, setWin] = useState('30d')
+  const [data, setData] = useState(null)   // null=chargement, false=erreur
+  const [orr, setOrr] = useState(undefined) // undefined=chargement, null=indispo
+  const load = (w = win) => {
+    setData(null); setOrr(undefined)
+    api.get('/admin/ai-usage', { params: { window: w } }).then(r => setData(r.data)).catch(() => setData(false))
+    api.get('/admin/ai-openrouter').then(r => setOrr(r.data)).catch(() => setOrr(null))
   }
-  useEffect(load, [])
+  useEffect(() => { load(win) }, [win])
 
   if (data === null) return <div className="text-[13px] py-8" style={{ color: 'var(--text-faint)' }}>Chargement…</div>
   if (data === false) return (
     <div className="text-[13px] py-8" style={{ color: 'var(--text-muted)' }}>
       Usage IA indisponible (backend injoignable ou version antérieure).
-      <button onClick={load} className="btn-ghost !h-7 !px-2.5 text-[12px] ml-2">Réessayer</button>
+      <button onClick={() => load(win)} className="btn-ghost !h-7 !px-2.5 text-[12px] ml-2">Réessayer</button>
     </div>
   )
 
-  const maxCost = Math.max(0.0001, ...(data.series_30d || []).map(d => d.cost))
   const models = data.models || {}
+  const series = data.series || []
+  const maxCost = Math.max(0.0001, ...series.map(d => d.cost))
+  const tokens = data.tokens || {}
+  const bySrc = data.by_cost_source || {}
+  const verified = (bySrc.openrouter || 0) + (bySrc.provider || 0)
+  const estimated = bySrc.estimate || 0
+  const totalCost = data.total_cost_usd || 0
+  const verifiedPct = totalCost > 0 ? Math.round((verified / totalCost) * 100) : (data.source === 'matchings' ? 0 : 100)
+  const isLedger = data.source === 'ledger'
+  const winLabel = (AI_WINDOWS.find(w => w.k === win) || {}).l || win
+
+  const kpis = [
+    { label: 'Coût IA', value: fmtUsd(totalCost), sub: `sur ${winLabel}` },
+    { label: 'Appels IA', value: fmtInt(data.total_calls), sub: `${fmtUsd(data.avg_cost_per_call)} / appel` },
+    { label: 'Tokens', value: fmtTok(tokens.total), sub: `${fmtTok(tokens.input)} in · ${fmtTok(tokens.output)} out` },
+    { label: 'Cache', value: fmtTok(tokens.cached), sub: 'tokens en cache' },
+  ]
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
+    <div className="space-y-7">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
         <p className="text-[12.5px]" style={{ color: 'var(--text-muted)' }}>
-          Coût des appels IA (extraction CV + 2ᵉ avis de scoring). Le coût est compté <strong>par run</strong> de matching.
+          Coût <strong>réel</strong> des appels IA (facturation OpenRouter, par appel) — attribué au système, au compte et à l'AO.
         </p>
-        <button onClick={load} className="btn-ghost !h-7 !px-2 text-[11px]" title="Rafraîchir"><RefreshCw size={12} /></button>
+        <div className="flex items-center gap-1.5">
+          <div className="flex gap-1 rounded-lg p-0.5" style={{ background: 'var(--surface-2)' }}>
+            {AI_WINDOWS.map(w => (
+              <button key={w.k} onClick={() => setWin(w.k)}
+                className={win === w.k ? 'seg-active px-2.5 py-1 text-[11px] rounded-md font-medium' : 'px-2.5 py-1 text-[11px] rounded-md font-medium text-[var(--text-muted)] hover:text-[var(--text)]'}>
+                {w.l}
+              </button>
+            ))}
+          </div>
+          <button onClick={() => load(win)} className="btn-ghost !h-7 !px-2 text-[11px]" title="Rafraîchir"><RefreshCw size={12} /></button>
+        </div>
       </div>
 
-      {/* KPIs */}
+      {/* KPIs période (registre interne) */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-y-6">
-        {[
-          { label: 'Coût IA cumulé', value: fmtUsd(data.total_cost_usd), sub: 'depuis le début' },
-          { label: 'Runs de matching', value: data.total_runs ?? '—', sub: `${data.scored_profiles ?? 0} profils scorés` },
-          { label: 'Coût moyen / run', value: fmtUsd(data.avg_cost_per_run), sub: 'extraction + scoring' },
-          { label: 'Sur 30 jours', value: fmtUsd((data.series_30d || []).reduce((s, d) => s + d.cost, 0)), sub: `${(data.series_30d || []).reduce((s, d) => s + d.runs, 0)} runs` },
-        ].map((k, i) => (
+        {kpis.map((k, i) => (
           <div key={i} className="flex flex-col gap-1.5 lg:px-5 lg:border-l lg:first:border-l-0 lg:first:pl-0 border-[color:var(--border)]">
             <span className="text-[11px] uppercase tracking-[0.07em] font-semibold" style={{ color: 'var(--text-faint)' }}>{k.label}</span>
             <span className="text-[26px] font-semibold tabular leading-none" style={{ color: 'var(--text)' }}>{k.value}</span>
@@ -63,28 +101,100 @@ function AiUsageTab() {
         ))}
       </div>
 
-      {data.degraded && (
-        <div className="text-[12px] px-3 py-2 rounded-lg" style={{ background: 'var(--surface-2)', color: 'var(--text-muted)' }}>
-          Lecture partielle ({data.degraded.join(', ')}) — les chiffres peuvent être incomplets.
+      {!isLedger && (
+        <div className="flex items-start gap-2 text-[12px] px-3 py-2.5 rounded-lg" style={{ background: 'var(--surface-2)', color: 'var(--text-muted)' }}>
+          <AlertTriangle size={14} className="mt-0.5 shrink-0" style={{ color: 'var(--warning, #b78103)' }} />
+          <span>
+            Registre détaillé <code>ai_usage</code> pas encore actif — vue de repli basée sur le coût des runs de matching.
+            Exécuter la migration <code>backend/migrations/0001_ai_usage.sql</code> dans Supabase pour activer la traçabilité complète
+            (par système IA, compte, AO) et le coût réel OpenRouter.
+          </span>
         </div>
       )}
 
-      {/* Série journalière (30 j) */}
+      {/* Réconciliation OpenRouter ↔ registre UTI */}
+      <div className="card p-4">
+        <p className="text-[11px] uppercase tracking-[0.08em] font-semibold mb-3 flex items-center gap-1.5" style={{ color: 'var(--text-faint)' }}>
+          <ShieldCheck size={13} /> Correspondance OpenRouter — facturation réelle, non estimée
+        </p>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-y-5 gap-x-4">
+          <div className="flex flex-col gap-1">
+            <span className="text-[11px]" style={{ color: 'var(--text-faint)' }}>Solde OpenRouter</span>
+            <span className="text-[20px] font-semibold tabular leading-none flex items-center gap-1.5" style={{ color: 'var(--text)' }}>
+              <Wallet size={15} style={{ color: 'var(--accent-text)' }} />
+              {orr && orr.configured ? fmtUsd(orr.balance) : '—'}
+            </span>
+            <span className="text-[10.5px]" style={{ color: 'var(--text-faint)' }}>crédits restants</span>
+          </div>
+          <div className="flex flex-col gap-1">
+            <span className="text-[11px]" style={{ color: 'var(--text-faint)' }}>Usage OpenRouter (cumulé)</span>
+            <span className="text-[20px] font-semibold tabular leading-none" style={{ color: 'var(--text)' }}>
+              {orr && orr.configured ? fmtUsd(orr.usage) : '—'}
+            </span>
+            <span className="text-[10.5px]" style={{ color: 'var(--text-faint)' }}>facturé, toutes apps de la clé</span>
+          </div>
+          <div className="flex flex-col gap-1">
+            <span className="text-[11px]" style={{ color: 'var(--text-faint)' }}>Part vérifiée (registre)</span>
+            <span className="text-[20px] font-semibold tabular leading-none" style={{ color: verifiedPct >= 99 ? 'var(--success, #1a7f37)' : 'var(--text)' }}>
+              {verifiedPct} %
+            </span>
+            <span className="text-[10.5px]" style={{ color: 'var(--text-faint)' }}>{fmtUsd(verified)} coût OpenRouter réel</span>
+          </div>
+          <div className="flex flex-col gap-1">
+            <span className="text-[11px]" style={{ color: 'var(--text-faint)' }}>Estimé (repli)</span>
+            <span className="text-[20px] font-semibold tabular leading-none" style={{ color: 'var(--text)' }}>{fmtUsd(estimated)}</span>
+            <span className="text-[10.5px]" style={{ color: 'var(--text-faint)' }}>Mistral / usage manquant</span>
+          </div>
+        </div>
+        <p className="text-[11px] mt-3 leading-relaxed" style={{ color: 'var(--text-faint)' }}>
+          Chaque appel enregistre le coût renvoyé par OpenRouter (<code>usage.include</code>) — identique au facturé, à la ligne près,
+          auditable via l'<code>id</code> de génération. L'usage cumulé ci-dessus est celui de la clé (potentiellement partagée avec d'autres apps) ;
+          la correspondance exacte se fait sur la <strong>part vérifiée</strong> du registre.
+          {orr && !orr.configured && ' — Clé OpenRouter non configurée pour le solde.'}
+          {orr && orr.configured && !orr.has_provisioning && ' Ajouter une clé de provisioning (OPENROUTER_PROVISIONING_KEY) pour l\'activité par modèle côté OpenRouter.'}
+        </p>
+      </div>
+
+      {/* Série journalière */}
       <div>
         <p className="text-[11px] uppercase tracking-[0.08em] font-semibold mb-3 flex items-center gap-1.5" style={{ color: 'var(--text-faint)' }}>
-          <TrendingUp size={13} /> Coût par jour (30 derniers jours)
+          <TrendingUp size={13} /> Coût par jour ({winLabel})
         </p>
-        {(data.series_30d || []).length === 0 ? (
-          <p className="text-[12.5px] py-3" style={{ color: 'var(--text-faint)' }}>Aucun run sur la période.</p>
+        {series.length === 0 ? (
+          <p className="text-[12.5px] py-3" style={{ color: 'var(--text-faint)' }}>Aucun appel IA sur la période.</p>
         ) : (
           <div className="flex items-end gap-1 h-32">
-            {data.series_30d.map((d) => (
-              <div key={d.date} className="flex-1 flex flex-col items-center justify-end group" title={`${fmtDay(d.date)} · ${fmtUsd(d.cost)} · ${d.runs} run(s)`}>
+            {series.map((d) => (
+              <div key={d.date} className="flex-1 flex flex-col items-center justify-end group" title={`${fmtDay(d.date)} · ${fmtUsd(d.cost)} · ${fmtInt(d.calls)} appel(s)`}>
                 <div className="w-full rounded-t" style={{ height: `${Math.max(3, (d.cost / maxCost) * 100)}%`, background: 'var(--accent)' }} />
               </div>
             ))}
           </div>
         )}
+      </div>
+
+      {/* Par système IA + par modèle (côte à côte) */}
+      <div className="grid lg:grid-cols-2 gap-6">
+        <BreakdownTable icon={Layers} title="Par système IA" rows={data.by_operation} total={totalCost}
+          labelOf={(r) => OP_LABELS[r.key] || r.key} />
+        <BreakdownTable icon={Cpu} title="Par modèle" rows={data.by_model} total={totalCost}
+          labelOf={(r) => r.key} mono />
+      </div>
+
+      {/* Top AOs + Top comptes */}
+      <div className="grid lg:grid-cols-2 gap-6">
+        <div>
+          <p className="text-[11px] uppercase tracking-[0.08em] font-semibold mb-2 flex items-center gap-1.5" style={{ color: 'var(--text-faint)' }}>
+            <FileText size={13} /> AOs les plus consommateurs
+          </p>
+          <ConsumerTable rows={data.top_aos} nameOf={(r) => r.title || r.ao_id} />
+        </div>
+        <div>
+          <p className="text-[11px] uppercase tracking-[0.08em] font-semibold mb-2 flex items-center gap-1.5" style={{ color: 'var(--text-faint)' }}>
+            <Users size={13} /> Comptes les plus consommateurs
+          </p>
+          <ConsumerTable rows={data.top_users} nameOf={(r) => r.name || r.email || '—'} />
+        </div>
       </div>
 
       {/* Modèles configurés */}
@@ -98,6 +208,7 @@ function AiUsageTab() {
               {[
                 ['Extraction CV', models.extraction],
                 ['Scoring (2ᵉ avis)', models.scoring],
+                ['Résumé d\'AO', models.summary],
                 ['Génération d\'AO', models.draft],
                 ['Assistant', models.assistant],
               ].map(([label, m], i) => (
@@ -113,6 +224,69 @@ function AiUsageTab() {
           Réglables par variables d'environnement (EXTRACTION_MODEL / SCORING_MODEL / DRAFT_MODEL) sans redéploiement de code.
         </p>
       </div>
+    </div>
+  )
+}
+
+// Tableau de répartition (part de coût avec mini-barre).
+function BreakdownTable({ icon: Icon, title, rows, total, labelOf, mono }) {
+  const list = Array.isArray(rows) ? rows : []
+  const max = Math.max(0.0001, ...list.map(r => r.cost))
+  return (
+    <div>
+      <p className="text-[11px] uppercase tracking-[0.08em] font-semibold mb-2 flex items-center gap-1.5" style={{ color: 'var(--text-faint)' }}>
+        <Icon size={13} /> {title}
+      </p>
+      <div className="card overflow-hidden">
+        {list.length === 0 ? (
+          <p className="text-[12px] px-3 py-4" style={{ color: 'var(--text-faint)' }}>Aucune donnée sur la période.</p>
+        ) : (
+          <table className="w-full text-[12.5px]">
+            <tbody>
+              {list.map((r, i) => (
+                <tr key={r.key || i} style={{ borderTop: i ? '1px solid var(--border)' : 'none' }}>
+                  <td className={`px-3 py-2 ${mono ? 'font-mono text-[11.5px]' : ''}`} style={{ color: 'var(--text)' }}>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="truncate">{labelOf(r)}</span>
+                      <span className="tabular shrink-0" style={{ color: 'var(--text-muted)' }}>{fmtUsd(r.cost)}</span>
+                    </div>
+                    <div className="mt-1.5 h-1 rounded-full overflow-hidden" style={{ background: 'var(--surface-2)' }}>
+                      <div className="h-full rounded-full" style={{ width: `${Math.max(2, (r.cost / max) * 100)}%`, background: 'var(--accent)' }} />
+                    </div>
+                    <div className="mt-1 text-[10.5px]" style={{ color: 'var(--text-faint)' }}>
+                      {fmtInt(r.calls)} appel(s) · {fmtTok(r.tokens)} tokens
+                      {total > 0 ? ` · ${Math.round((r.cost / total) * 100)} %` : ''}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function ConsumerTable({ rows, nameOf }) {
+  const list = Array.isArray(rows) ? rows : []
+  return (
+    <div className="card overflow-hidden">
+      {list.length === 0 ? (
+        <p className="text-[12px] px-3 py-4" style={{ color: 'var(--text-faint)' }}>Aucune donnée sur la période.</p>
+      ) : (
+        <table className="w-full text-[12.5px]">
+          <tbody>
+            {list.map((r, i) => (
+              <tr key={i} style={{ borderTop: i ? '1px solid var(--border)' : 'none' }}>
+                <td className="px-3 py-2 truncate max-w-[220px]" style={{ color: 'var(--text)' }} title={nameOf(r)}>{nameOf(r)}</td>
+                <td className="px-3 py-2 text-right tabular whitespace-nowrap" style={{ color: 'var(--text-faint)' }}>{fmtInt(r.calls)} appel(s)</td>
+                <td className="px-3 py-2 text-right tabular whitespace-nowrap font-medium" style={{ color: 'var(--text-muted)' }}>{fmtUsd(r.cost)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
     </div>
   )
 }

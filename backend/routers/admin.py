@@ -266,64 +266,124 @@ async def ai_usage(window: str = "30d", user: dict = Depends(require_admin)):
     }
 
 
-# Cache court du miroir OpenRouter (l'API compte n'aime pas être martelée).
+# Cache court (par fenêtre) du miroir OpenRouter (l'API compte n'aime pas être martelée).
 _OR_CACHE: dict[str, tuple[float, dict]] = {}
 _OR_TTL = 60.0
+_OR_WINDOWS = {"24h": 1, "7d": 7, "30d": 30}
+
+
+def _or_activity_date(s: str):
+    """Parse une date d'activité OpenRouter ('2026-07-08 00:00:00' ou ISO)."""
+    try:
+        return datetime.fromisoformat(str(s).replace("Z", "+00:00").replace(" ", "T")).date()
+    except Exception:
+        try:
+            return datetime.strptime(str(s)[:10], "%Y-%m-%d").date()
+        except Exception:
+            return None
 
 
 @router.get("/ai-openrouter")
-async def ai_openrouter(user: dict = Depends(require_admin)):
-    """Miroir du compte OpenRouter (source de vérité facturation, non hallucinée) :
-    solde, usage cumulé, plafond de clé, et — si une clé de *provisioning* est
-    configurée — l'activité journalière par modèle. Sert d'ancre de réconciliation
-    face au registre interne ``ai_usage``. Token gardé côté serveur, cache 60 s."""
+async def ai_openrouter(window: str = "30d", user: dict = Depends(require_admin)):
+    """Miroir du compte OpenRouter UTI (source de vérité facturation, non
+    hallucinée) : solde, usage cumulé, et — avec la clé de *provisioning* —
+    l'activité agrégée par modèle / par jour + l'usage par clé (comme le
+    dashboard OpenRouter). Token gardé côté serveur, cache 60 s par fenêtre."""
     import time
+    days = _OR_WINDOWS.get(window, 30)
     prov = settings.openrouter_provisioning_key
     runtime = settings.openrouter_key
-    key = prov or runtime
-    if not key:
+    if not (prov or runtime):
         return {"configured": False,
                 "message": "Aucune clé OpenRouter configurée (OPENROUTER_KEY)."}
 
+    ck = f"or:{window}"
     now = time.time()
-    hit = _OR_CACHE.get("main")
+    hit = _OR_CACHE.get(ck)
     if hit and now - hit[0] < _OR_TTL:
         return hit[1]
 
-    out: dict = {"configured": True, "has_provisioning": bool(prov),
-                 "balance": None, "usage": None, "limit": None,
-                 "limit_remaining": None, "key_label": None, "activity": None}
+    out: dict = {"configured": True, "has_provisioning": bool(prov), "ok": True,
+                 "window": window, "balance": None, "usage": None,
+                 "total_credits": None, "key_label": None,
+                 "totals": {"cost": 0.0, "requests": 0, "prompt_tokens": 0, "completion_tokens": 0, "tokens": 0},
+                 "by_model": [], "series": [], "keys": []}
     base = "https://openrouter.ai/api/v1"
-    headers = {"Authorization": f"Bearer {key}"}
+    since = (datetime.now(timezone.utc).date() - timedelta(days=days - 1))
     try:
         with httpx.Client(timeout=12) as client:
-            # Solde & usage cumulé (facturé) — clé runtime OU provisioning.
+            # Solde & usage cumulé du compte (facturé).
             try:
-                r = client.get(f"{base}/credits", headers={"Authorization": f"Bearer {runtime or key}"})
+                r = client.get(f"{base}/credits", headers={"Authorization": f"Bearer {runtime or prov}"})
                 if r.status_code < 400:
                     d = (r.json() or {}).get("data") or {}
                     tc = float(d.get("total_credits") or 0)
                     tu = float(d.get("total_usage") or 0)
+                    out["total_credits"] = round(tc, 4)
                     out["usage"] = round(tu, 4)
                     out["balance"] = round(tc - tu, 4)
             except Exception:
                 pass
-            # Plafond / usage de la clé runtime.
-            try:
-                r = client.get(f"{base}/key", headers={"Authorization": f"Bearer {runtime or key}"})
-                if r.status_code < 400:
-                    d = (r.json() or {}).get("data") or {}
-                    out["limit"] = d.get("limit")
-                    out["limit_remaining"] = d.get("limit_remaining")
-                    out["key_label"] = d.get("label")
-            except Exception:
-                pass
-            # Activité journalière par modèle — nécessite la clé de provisioning.
+            # Activité agrégée par modèle / par jour — nécessite la provisioning.
             if prov:
                 try:
                     r = client.get(f"{base}/activity", headers={"Authorization": f"Bearer {prov}"})
                     if r.status_code < 400:
-                        out["activity"] = (r.json() or {}).get("data")
+                        rows = (r.json() or {}).get("data") or []
+                        by_model: dict = {}
+                        by_day: dict = {}
+                        for a in rows:
+                            dt = _or_activity_date(a.get("date"))
+                            if dt is None or dt < since:
+                                continue
+                            cost = float(a.get("usage") or 0)
+                            reqs = int(a.get("requests") or 0)
+                            pin = int(a.get("prompt_tokens") or 0)
+                            pout = int(a.get("completion_tokens") or 0)
+                            md = a.get("model") or a.get("model_permaslug") or "—"
+                            m = by_model.setdefault(md, {"model": md, "provider": a.get("provider_name"),
+                                                          "cost": 0.0, "requests": 0,
+                                                          "prompt_tokens": 0, "completion_tokens": 0})
+                            m["cost"] += cost; m["requests"] += reqs
+                            m["prompt_tokens"] += pin; m["completion_tokens"] += pout
+                            day = dt.isoformat()
+                            e = by_day.setdefault(day, {"date": day, "cost": 0.0, "requests": 0, "tokens": 0})
+                            e["cost"] += cost; e["requests"] += reqs; e["tokens"] += pin + pout
+                            t = out["totals"]
+                            t["cost"] += cost; t["requests"] += reqs
+                            t["prompt_tokens"] += pin; t["completion_tokens"] += pout
+                        t = out["totals"]
+                        t["cost"] = round(t["cost"], 4)
+                        t["tokens"] = t["prompt_tokens"] + t["completion_tokens"]
+                        for m in by_model.values():
+                            m["cost"] = round(m["cost"], 4)
+                            m["tokens"] = m["prompt_tokens"] + m["completion_tokens"]
+                        out["by_model"] = sorted(by_model.values(), key=lambda x: x["cost"], reverse=True)
+                        out["series"] = [{"date": k, "cost": round(v["cost"], 4), "requests": v["requests"],
+                                          "tokens": v["tokens"]} for k, v in sorted(by_day.items())]
+                except Exception:
+                    pass
+                # Usage par clé (Top API Keys).
+                try:
+                    r = client.get(f"{base}/keys", headers={"Authorization": f"Bearer {prov}"})
+                    if r.status_code < 400:
+                        klist = (r.json() or {}).get("data") or []
+                        keys = [{"name": k.get("name"), "label": k.get("label"),
+                                 "usage": round(float(k.get("usage") or 0), 4),
+                                 "usage_daily": round(float(k.get("usage_daily") or 0), 4),
+                                 "usage_weekly": round(float(k.get("usage_weekly") or 0), 4),
+                                 "usage_monthly": round(float(k.get("usage_monthly") or 0), 4),
+                                 "disabled": bool(k.get("disabled"))} for k in klist]
+                        out["keys"] = sorted(keys, key=lambda x: x["usage"], reverse=True)
+                except Exception:
+                    pass
+            else:
+                # Sans provisioning : au moins le label/plafond de la clé runtime.
+                try:
+                    r = client.get(f"{base}/key", headers={"Authorization": f"Bearer {runtime}"})
+                    if r.status_code < 400:
+                        d = (r.json() or {}).get("data") or {}
+                        out["key_label"] = d.get("label")
                 except Exception:
                     pass
     except Exception as e:  # noqa: BLE001
@@ -331,8 +391,7 @@ async def ai_openrouter(user: dict = Depends(require_admin)):
         out["ok"] = False
         return out
 
-    out["ok"] = True
-    _OR_CACHE["main"] = (now, out)
+    _OR_CACHE[ck] = (now, out)
     return out
 
 

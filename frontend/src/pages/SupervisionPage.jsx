@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import api from '../lib/api'
 import ErrorJournal from '../components/ErrorJournal'
+import UTILoader, { ChartLoader } from '../components/UTILoader'
 import {
   Activity, Coins, Radio, RefreshCw, Cpu, TrendingUp,
   Wallet, ShieldCheck, Layers, FileText, Users, AlertTriangle,
@@ -45,6 +46,7 @@ function AiUsageTab() {
   useEffect(() => { load(win) }, [win])
 
   const winLabel = (AI_WINDOWS.find(w => w.k === win) || {}).l || win
+  const orLoading = orr === undefined            // valeurs en cours de recherche
   const orConfigured = orr && orr.configured
   const hasProv = orr && orr.has_provisioning
   const orT = (orr && orr.totals) || {}
@@ -52,6 +54,10 @@ function AiUsageTab() {
   const orModels = (orr && orr.by_model) || []
   const orKeys = (orr && orr.keys) || []
   const maxOr = Math.max(0.0001, ...orSeries.map(d => d.cost))
+  // Coût des seules clés plateforme (par fenêtre) — la dépense « à toi », hors autres apps du compte.
+  const PC_MAP = { '24h': 'daily', '7d': 'weekly', '30d': 'monthly', '90d': 'total' }
+  const pc = (orr && orr.platform_cost) || null
+  const platCost = pc ? pc[PC_MAP[win] || 'monthly'] : null
 
   // Attribution interne (ce qu'OpenRouter/MIP ne savent pas : quel AO / quel compte).
   const topAos = (data && data.top_aos) || []
@@ -59,7 +65,7 @@ function AiUsageTab() {
   const models = (data && data.models) || {}
 
   const kpis = [
-    { label: 'Dépense', value: hasProv ? fmtUsd(orT.cost) : '—', sub: `OpenRouter · ${winLabel}` },
+    { label: 'Dépense', value: (hasProv && platCost != null) ? fmtUsd(platCost) : (hasProv ? fmtUsd(orT.cost) : '—'), sub: `Plateforme · ${winLabel}` },
     { label: 'Requêtes', value: hasProv ? fmtInt(orT.requests) : '—', sub: 'appels facturés' },
     { label: 'Tokens', value: hasProv ? fmtTok(orT.tokens) : '—', sub: hasProv ? `${fmtTok(orT.prompt_tokens)} in · ${fmtTok(orT.completion_tokens)} out` : '' },
     { label: 'Solde', value: orConfigured ? fmtUsd(orr.balance) : '—', sub: orConfigured ? `${fmtUsd(orr.usage)} / ${fmtUsd(orr.total_credits)} consommé` : '' },
@@ -84,8 +90,6 @@ function AiUsageTab() {
         </div>
       </div>
 
-      {orr === undefined && <div className="text-[13px] py-4" style={{ color: 'var(--text-faint)' }}>Chargement du compte OpenRouter…</div>}
-
       {orr !== undefined && !orConfigured && (
         <div className="flex items-start gap-2 text-[12px] px-3 py-2.5 rounded-lg" style={{ background: 'var(--surface-2)', color: 'var(--text-muted)' }}>
           <AlertTriangle size={14} className="mt-0.5 shrink-0" style={{ color: 'var(--warning, #b78103)' }} />
@@ -98,11 +102,15 @@ function AiUsageTab() {
         {kpis.map((k, i) => (
           <div key={i} className="flex flex-col gap-1.5 lg:px-5 lg:border-l lg:first:border-l-0 lg:first:pl-0 border-[color:var(--border)]">
             <span className="text-[11px] uppercase tracking-[0.07em] font-semibold" style={{ color: 'var(--text-faint)' }}>{k.label}</span>
-            <span className="text-[26px] font-semibold tabular leading-none" style={{ color: 'var(--text)' }}>{k.value}</span>
-            <span className="text-[11px]" style={{ color: 'var(--text-faint)' }}>{k.sub}</span>
+            <span className="text-[26px] font-semibold tabular leading-none flex items-center" style={{ color: 'var(--text)', minHeight: 26 }}>
+              {orLoading ? <UTILoader size={22} /> : k.value}
+            </span>
+            <span className="text-[11px]" style={{ color: 'var(--text-faint)' }}>{orLoading ? '' : k.sub}</span>
           </div>
         ))}
       </div>
+
+      {orLoading && <ChartLoader height={150} label="Recherche des données OpenRouter…" />}
 
       {orConfigured && !hasProv && (
         <div className="flex items-start gap-2 text-[12px] px-3 py-2.5 rounded-lg" style={{ background: 'var(--surface-2)', color: 'var(--text-muted)' }}>
@@ -142,7 +150,12 @@ function AiUsageTab() {
             total={orT.cost} labelOf={(r) => r.key} mono />
           <div>
             <p className="text-[11px] uppercase tracking-[0.08em] font-semibold mb-2 flex items-center gap-1.5" style={{ color: 'var(--text-faint)' }}>
-              <Coins size={13} /> Clés API (usage total)
+              <Coins size={13} /> Clés API de la plateforme
+              {orr && orr.keys_filtered === false && (
+                <span className="normal-case tracking-normal font-normal ml-1" style={{ color: 'var(--text-faint)' }}>
+                  · toutes les clés du compte (nommage non reconnu)
+                </span>
+              )}
             </p>
             <div className="card overflow-hidden">
               {orKeys.length === 0 ? (
@@ -309,6 +322,17 @@ const fmtNum = (v) => (v == null ? '—' : new Intl.NumberFormat('fr-FR').format
 const fmtMs = (v) => (v == null ? '—' : `${new Intl.NumberFormat('fr-FR').format(Math.round(v))} ms`)
 const fmtPct = (v) => (v == null ? '—' : `${(v * 100).toFixed(v < 0.1 ? 2 : 1)} %`)
 
+// Attribution de la source : la télémétrie RUM provient de MIP.
+function MipBadge() {
+  return (
+    <span className="inline-flex items-center gap-1 text-[10px] font-medium uppercase tracking-wide px-2 py-0.5 rounded-full shrink-0"
+      style={{ background: 'var(--surface-2)', color: 'var(--text-faint)', border: '1px solid var(--border)' }}
+      title="Données de télémétrie fournies par MIP RUM">
+      <Radio size={9} /> powered by MIP
+    </span>
+  )
+}
+
 function RumTab() {
   const [win, setWin] = useState('30d')
   const [data, setData] = useState(null) // null=chargement, false=erreur réseau
@@ -318,15 +342,18 @@ function RumTab() {
   }
   useEffect(() => { load(win) }, [win])
 
-  if (data === null) return <div className="text-[13px] py-8" style={{ color: 'var(--text-faint)' }}>Chargement…</div>
+  if (data === null) return <div className="py-10 flex justify-center"><UTILoader size={40} label="Chargement…" /></div>
 
   const notReady = data === false || !data?.configured || !data?.ok
   if (notReady) {
     return (
       <div className="card p-5">
-        <p className="text-sm font-semibold flex items-center gap-2" style={{ color: 'var(--text)' }}>
-          <Radio size={15} className="text-brand-400" /> Real User Monitoring — en attente de l'API MIP RUM
-        </p>
+        <div className="flex items-center gap-2 flex-wrap">
+          <p className="text-sm font-semibold flex items-center gap-2" style={{ color: 'var(--text)' }}>
+            <Radio size={15} className="text-brand-400" /> Real User Monitoring — en attente de l'API MIP RUM
+          </p>
+          <MipBadge />
+        </div>
         <p className="text-[13px] mt-2 leading-relaxed" style={{ color: 'var(--text-muted)' }}>
           La télémétrie d'usage (sessions, parcours, performances, signaux de frustration) est <strong>collectée</strong>
           par MIP RUM pour l'app <code>gip-plateforme</code>. Le backend UTI interroge l'API de lecture MIP avec un
@@ -358,7 +385,10 @@ function RumTab() {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between gap-2 flex-wrap">
-        <p className="text-[12.5px]" style={{ color: 'var(--text-muted)' }}>Activité des utilisateurs (MIP RUM).</p>
+        <div className="flex items-center gap-2 flex-wrap">
+          <p className="text-[12.5px]" style={{ color: 'var(--text-muted)' }}>Activité des utilisateurs.</p>
+          <MipBadge />
+        </div>
         <div className="flex items-center gap-1.5">
           <div className="flex gap-1 rounded-lg p-0.5" style={{ background: 'var(--surface-2)' }}>
             {RUM_WINDOWS.map(w => (

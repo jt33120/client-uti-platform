@@ -283,6 +283,19 @@ def _or_activity_date(s: str):
             return None
 
 
+def _supervised_fragments() -> list[str]:
+    """Fragments de nom identifiant les clés « plateforme » (cf. config).
+    Vide → défaut « plateforme » (convention de nommage des clés UTI)."""
+    raw = settings.openrouter_supervised_keys or "plateforme"
+    parts = [p.strip().lower() for p in raw.split(",") if p.strip()]
+    return parts or ["plateforme"]
+
+
+def _is_platform_key(name: Optional[str], fragments: list[str]) -> bool:
+    n = (name or "").lower()
+    return any(f in n for f in fragments)
+
+
 @router.get("/ai-openrouter")
 async def ai_openrouter(window: str = "30d", user: dict = Depends(require_admin)):
     """Miroir du compte OpenRouter UTI (source de vérité facturation, non
@@ -307,6 +320,7 @@ async def ai_openrouter(window: str = "30d", user: dict = Depends(require_admin)
                  "window": window, "balance": None, "usage": None,
                  "total_credits": None, "key_label": None,
                  "totals": {"cost": 0.0, "requests": 0, "prompt_tokens": 0, "completion_tokens": 0, "tokens": 0},
+                 "platform_cost": None, "keys_filtered": False,
                  "by_model": [], "series": [], "keys": []}
     base = "https://openrouter.ai/api/v1"
     since = (datetime.now(timezone.utc).date() - timedelta(days=days - 1))
@@ -363,7 +377,9 @@ async def ai_openrouter(window: str = "30d", user: dict = Depends(require_admin)
                                           "tokens": v["tokens"]} for k, v in sorted(by_day.items())]
                 except Exception:
                     pass
-                # Usage par clé (Top API Keys).
+                # Usage par clé — restreint aux clés DE LA PLATEFORME (les autres
+                # apps du compte OpenRouter, ex. CV MANAGER / Achatinfo, sont
+                # masquées : la supervision UTI ne montre que sa propre conso).
                 try:
                     r = client.get(f"{base}/keys", headers={"Authorization": f"Bearer {prov}"})
                     if r.status_code < 400:
@@ -374,7 +390,21 @@ async def ai_openrouter(window: str = "30d", user: dict = Depends(require_admin)
                                  "usage_weekly": round(float(k.get("usage_weekly") or 0), 4),
                                  "usage_monthly": round(float(k.get("usage_monthly") or 0), 4),
                                  "disabled": bool(k.get("disabled"))} for k in klist]
-                        out["keys"] = sorted(keys, key=lambda x: x["usage"], reverse=True)
+                        frags = _supervised_fragments()
+                        plat = [k for k in keys if _is_platform_key(k["name"], frags)]
+                        # Garde-fou : si le nommage ne matche rien, on montre tout
+                        # plutôt qu'un tableau vide (et on le signale).
+                        out["keys_filtered"] = bool(plat)
+                        shown = plat or keys
+                        out["keys"] = sorted(shown, key=lambda x: x["usage"], reverse=True)
+                        # Coût agrégé des SEULES clés plateforme (source facturation
+                        # fiable par clé — les totaux /activity sont au niveau compte).
+                        out["platform_cost"] = {
+                            "daily": round(sum(k["usage_daily"] for k in shown), 4),
+                            "weekly": round(sum(k["usage_weekly"] for k in shown), 4),
+                            "monthly": round(sum(k["usage_monthly"] for k in shown), 4),
+                            "total": round(sum(k["usage"] for k in shown), 4),
+                        }
                 except Exception:
                     pass
             else:

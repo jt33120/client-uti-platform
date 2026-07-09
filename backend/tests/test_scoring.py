@@ -181,3 +181,26 @@ def test_short_skills_are_scored():
         _features(skills=["Docker", "Django"]), _consultant(skills="Docker, Django"), ao_r, None
     )
     assert none["breakdown"]["competences_techniques"] == 0
+
+
+# ── Synonymes de compétences (v2.1) ────────────────────────────────
+
+def test_skill_synonyms_match_fully():
+    # Le consultant écrit les technos autrement (ReactJS/NodeJS/K8s/Postgres) mais
+    # ce sont les mêmes compétences que l'AO (React.js/Node.js/Kubernetes/PostgreSQL).
+    ao = {**AO, "skills_required": "React.js, Node.js, Kubernetes, PostgreSQL"}
+    res = score_consultant(
+        _features(skills=["ReactJS", "NodeJS", "K8s", "Postgres"]),
+        _consultant(skills="ReactJS, NodeJS, K8s, Postgres"),
+        ao,
+    )
+    assert res["breakdown"]["competences_techniques"] == W_COMP
+
+
+def test_skill_synonyms_do_not_create_false_match():
+    # Un alias ne doit pas faire matcher des technos sans rapport.
+    ao = {**AO, "skills_required": "React.js"}
+    res = score_consultant(
+        _features(skills=["Angular"]), _consultant(skills="Angular"), ao,
+    )
+    assert res["breakdown"]["competences_techniques"] == 0

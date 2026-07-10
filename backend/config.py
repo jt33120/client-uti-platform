@@ -56,6 +56,11 @@ class Settings(BaseSettings):
     # dashboard OpenRouter (dépenses, requêtes, tokens, coût par modèle). À défaut,
     # la supervision se rabat sur /credits via la clé runtime + le registre interne.
     openrouter_provisioning_key: Optional[str] = None
+    # Supervision IA — noms (ou fragments de nom) des clés OpenRouter à considérer
+    # comme « clés de la plateforme » dans le miroir compte. Les autres clés du
+    # compte (autres apps : CV MANAGER, Achatinfo…) sont masquées de la supervision
+    # UTI. Liste séparée par virgules ; vide = préfixe « plateforme » par défaut.
+    openrouter_supervised_keys: Optional[str] = None
 
     # MIP RUM — distributed tracing (optional; unset = middleware inactive).
     # Read here because pydantic-settings loads .env without exporting to

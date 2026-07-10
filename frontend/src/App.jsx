@@ -2,6 +2,7 @@ import { Routes, Route, Navigate } from 'react-router-dom'
 import { lazy, Suspense } from 'react'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { ConfirmProvider } from './contexts/ConfirmContext'
+import ErrorBoundary from './components/ErrorBoundary'
 import Layout from './components/Layout'
 import LoginPage from './pages/LoginPage'
 import RegisterPage from './pages/RegisterPage'
@@ -24,14 +25,40 @@ import CookieBanner from './components/CookieBanner'
 import ContactPage from './pages/ContactPage'
 import { MentionsLegales, Confidentialite, CGU } from './pages/LegalPages'
 
+// Auto-récupération des « chunks » lazy : après un nouveau déploiement, un onglet
+// déjà ouvert référence des fichiers hashés qui n'existent plus → l'import échoue
+// et la page devient blanche. On recharge alors UNE fois (garde sessionStorage
+// anti-boucle) pour récupérer la version fraîche ; en cas d'échec réel (hors-ligne,
+// 500 persistant), on laisse l'ErrorBoundary afficher un message + bouton Recharger.
+const CHUNK_RELOAD_KEY = 'chunk-reload-once'
+function lazyWithReload(factory) {
+  return lazy(() =>
+    factory()
+      .then((mod) => {
+        try { sessionStorage.removeItem(CHUNK_RELOAD_KEY) } catch { /* ignore */ }
+        return mod
+      })
+      .catch((err) => {
+        let already = false
+        try { already = sessionStorage.getItem(CHUNK_RELOAD_KEY) === '1' } catch { /* ignore */ }
+        if (!already) {
+          try { sessionStorage.setItem(CHUNK_RELOAD_KEY, '1') } catch { /* ignore */ }
+          window.location.reload()
+          return new Promise(() => {})   // ne rend rien avant le rechargement
+        }
+        throw err                        // échec réel → ErrorBoundary
+      })
+  )
+}
+
 // Lazy — keeps the graph library out of the main bundle
-const GraphPage = lazy(() => import('./pages/GraphPage'))
-const CartePage = lazy(() => import('./pages/CartePage'))
-const AdminPage = lazy(() => import('./pages/AdminPage'))
-const SupervisionPage = lazy(() => import('./pages/SupervisionPage'))
-const TicketsPage = lazy(() => import('./pages/TicketsPage'))
-const ScoringSettingsPage = lazy(() => import('./pages/ScoringSettingsPage'))
-const EmailsPage = lazy(() => import('./pages/EmailsPage'))
+const GraphPage = lazyWithReload(() => import('./pages/GraphPage'))
+const CartePage = lazyWithReload(() => import('./pages/CartePage'))
+const AdminPage = lazyWithReload(() => import('./pages/AdminPage'))
+const SupervisionPage = lazyWithReload(() => import('./pages/SupervisionPage'))
+const TicketsPage = lazyWithReload(() => import('./pages/TicketsPage'))
+const ScoringSettingsPage = lazyWithReload(() => import('./pages/ScoringSettingsPage'))
+const EmailsPage = lazyWithReload(() => import('./pages/EmailsPage'))
 
 // roles: array of allowed roles; omitted = any authenticated user.
 function ProtectedRoute({ children, roles = null }) {
@@ -60,6 +87,7 @@ export default function App() {
   return (
     <AuthProvider>
       <ConfirmProvider>
+        <ErrorBoundary>
         <Routes>
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route path="/login" element={<GuestRoute><LoginPage /></GuestRoute>} />
@@ -145,6 +173,7 @@ export default function App() {
           } />
         </Route>
         </Routes>
+        </ErrorBoundary>
         <CookieBanner />
       </ConfirmProvider>
     </AuthProvider>

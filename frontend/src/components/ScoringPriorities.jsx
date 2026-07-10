@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Radar, RadarChart, PolarGrid, PolarAngleAxis, ResponsiveContainer } from 'recharts'
-import { ChevronDown, SlidersHorizontal } from 'lucide-react'
+import { ChevronDown, SlidersHorizontal, RotateCcw } from 'lucide-react'
 import StarRating from './StarRating'
 
 // Les 6 axes du scoring, libellés non-techs + libellé court pour le radar.
@@ -86,8 +86,30 @@ export default function ScoringPriorities({ stars, onStarsChange, thresholds, on
   const setStar = (key) => (n) => onStarsChange({ ...stars, [key]: n })
   const fortError = thresholds && thresholds.reco_fort_min <= thresholds.reco_moyen_min
 
+  // « Déjà aux défauts ? » — pour désactiver le bouton de réinitialisation.
+  const isDefault = CRITERIA.every(({ key }) => {
+    const v = parseInt(stars?.[key], 10)
+    const cur = Number.isFinite(v) ? v : DEFAULT_STARS[key]
+    return cur === DEFAULT_STARS[key]
+  })
+
   return (
     <div className="space-y-5">
+      {onStarsChange && (
+        <div className="flex items-center justify-end -mb-1">
+          <button
+            type="button"
+            onClick={() => onStarsChange({ ...DEFAULT_STARS })}
+            disabled={isDefault}
+            className="inline-flex items-center gap-1.5 text-[12px] font-medium transition-opacity disabled:opacity-40 disabled:cursor-default"
+            style={{ color: 'var(--text-muted)' }}
+            title="Rétablir les poids par défaut de la grille"
+          >
+            <RotateCcw size={12} />
+            Poids par défaut
+          </button>
+        </div>
+      )}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4 items-center">
         <div className="space-y-3.5">
           {CRITERIA.map(({ key, label, ai }) => (

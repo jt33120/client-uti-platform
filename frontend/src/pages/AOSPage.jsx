@@ -354,6 +354,148 @@ function AOCard({ ao, isStaff, onEdit, onDelete, navigate, selected, onToggleSel
   )
 }
 
+// ── AO table (vue dense — lisibilité quand beaucoup d'AO) ─────────────────────
+// Une ligne par AO : client · réf · mission · émis le · lieu · échéance · statut.
+// Pensé pour scanner rapidement 50+ AO là où les cartes deviennent trop longues.
+function AOTable({ items, isStaff, navigate, onEdit, onDelete, selected, onToggleSelect, allSelected, onToggleAll }) {
+  const th = 'font-medium px-4 py-2.5'
+  return (
+    <div className="card overflow-hidden">
+      <div className="overflow-x-auto">
+        <table className="w-full text-[13px]">
+          <thead>
+            <tr className="text-left text-[11px] uppercase tracking-wide"
+              style={{ color: 'var(--text-faint)', borderBottom: '1px solid var(--border)' }}>
+              {isStaff && (
+                <th className="px-3 py-2.5 w-8">
+                  <button
+                    onClick={onToggleAll}
+                    className="w-4 h-4 rounded flex items-center justify-center transition-all"
+                    style={{
+                      background: allSelected ? 'var(--accent)' : 'transparent',
+                      border: `1px solid ${allSelected ? 'var(--accent)' : 'var(--border-strong)'}`,
+                      color: '#fff',
+                    }}
+                    title={allSelected ? 'Tout désélectionner' : 'Tout sélectionner'}
+                  >
+                    {allSelected && <Check size={11} strokeWidth={3} />}
+                  </button>
+                </th>
+              )}
+              <th className={th}>Client</th>
+              <th className={clsx(th, 'hidden lg:table-cell')}>Réf.</th>
+              <th className={th}>Mission</th>
+              <th className={clsx(th, 'hidden md:table-cell')}>Émis le</th>
+              <th className={clsx(th, 'hidden xl:table-cell')}>Lieu</th>
+              <th className={th}>Échéance</th>
+              <th className={th}>Statut</th>
+              {isStaff && <th className="px-4 py-2.5" />}
+            </tr>
+          </thead>
+          <tbody>
+            {items.map(ao => {
+              const isOpen = ao.status === 'open'
+              const dl = deadlineMeta(ao.deadline)
+              const isSel = selected.has(ao.id)
+              return (
+                <tr
+                  key={ao.id}
+                  onClick={() => navigate(`/aos/${ao.id}`)}
+                  className="group cursor-pointer transition-colors hover:bg-[var(--surface-2)]"
+                  style={{
+                    borderBottom: '1px solid var(--border)',
+                    ...(isSel ? { background: 'var(--accent-soft)' } : {}),
+                  }}
+                >
+                  {isStaff && (
+                    <td className="px-3 py-2.5" onClick={e => e.stopPropagation()}>
+                      <button
+                        onClick={() => onToggleSelect(ao.id)}
+                        className="w-4 h-4 rounded flex items-center justify-center transition-all"
+                        style={{
+                          background: isSel ? 'var(--accent)' : 'transparent',
+                          border: `1px solid ${isSel ? 'var(--accent)' : 'var(--border-strong)'}`,
+                          color: '#fff',
+                        }}
+                        title={isSel ? 'Désélectionner' : 'Sélectionner'}
+                      >
+                        {isSel && <Check size={11} strokeWidth={3} />}
+                      </button>
+                    </td>
+                  )}
+                  <td className="px-4 py-2.5 whitespace-nowrap" style={{ color: 'var(--text-muted)' }}>
+                    <span className="inline-flex items-center gap-1.5">
+                      <Building2 size={11} className="shrink-0 text-slate-500" />
+                      {ao.clients?.name || '—'}
+                    </span>
+                  </td>
+                  <td className="px-4 py-2.5 hidden lg:table-cell tabular whitespace-nowrap" style={{ color: 'var(--text-faint)' }}>
+                    {ao.reference || '—'}
+                  </td>
+                  <td className="px-4 py-2.5 font-medium" style={{ color: 'var(--text)' }}>
+                    <div className="flex items-center gap-2 min-w-[220px]">
+                      <span className="line-clamp-1 group-hover:text-brand-300 transition-colors">{ao.title}</span>
+                      {ao.ao_type && (
+                        <span className="badge bg-violet-500/10 text-violet-300 border border-violet-500/20 text-[10px] shrink-0 hidden sm:inline-flex">
+                          {ao.ao_type}
+                        </span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="px-4 py-2.5 hidden md:table-cell tabular whitespace-nowrap" style={{ color: 'var(--text-faint)' }}>
+                    {formatDate(ao.created_at) || '—'}
+                  </td>
+                  <td className="px-4 py-2.5 hidden xl:table-cell whitespace-nowrap" style={{ color: 'var(--text-muted)' }}>
+                    {ao.location || '—'}
+                  </td>
+                  <td className="px-4 py-2.5 whitespace-nowrap">
+                    {dl ? (
+                      <span
+                        className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] font-semibold"
+                        style={DEADLINE_TONE[dl.tone]}
+                        title={`${dl.date} · ${dl.rel}`}
+                      >
+                        <CalendarClock size={11} className="shrink-0" />
+                        {dl.date}
+                      </span>
+                    ) : (
+                      <span style={{ color: 'var(--text-faint)' }}>—</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-2.5 whitespace-nowrap">
+                    <span className={clsx(
+                      'badge',
+                      isOpen
+                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                        : 'bg-slate-500/10 text-slate-500 border border-slate-600/20'
+                    )}>
+                      {isOpen ? 'Ouvert' : 'Fermé'}
+                    </span>
+                  </td>
+                  {isStaff && (
+                    <td className="px-4 py-2.5 text-right whitespace-nowrap" onClick={e => e.stopPropagation()}>
+                      <span className="inline-flex items-center gap-1 text-brand-300 text-xs mr-1" title="CV soumis">
+                        <Users size={11} />
+                        {ao.submission_count ?? 0}
+                      </span>
+                      <button onClick={() => onEdit(ao)} className="btn-ghost p-1.5" title="Modifier">
+                        <Pencil size={12} />
+                      </button>
+                      <button onClick={() => onDelete(ao)} className="btn-ghost p-1.5 hover:text-red-400" title="Supprimer">
+                        <X size={13} />
+                      </button>
+                    </td>
+                  )}
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
 export default function AOSPage() {
   const { isStaff } = useAuth()
   const confirm = useConfirm()
@@ -366,7 +508,7 @@ export default function AOSPage() {
   const [error, setError] = useState('')
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState('all')
-  const [groupBy, setGroupBy] = useState('client') // 'client' | 'none'
+  const [view, setView] = useState('client') // 'client' (cartes groupées) | 'cards' (cartes) | 'table' (liste dense)
   const [sortBy, setSortBy] = useState('created')  // 'created' (émission) | 'deadline' (échéance)
   const [editAo, setEditAo] = useState(null)
   const [deleting, setDeleting] = useState(null)
@@ -470,8 +612,17 @@ export default function AOSPage() {
     })
   }, [filtered, sortBy])
 
+  // Sélection « tout » dans la vue tableau (dépend du sous-ensemble affiché).
+  const allSelected = sorted.length > 0 && sorted.every(a => selected.has(a.id))
+  const toggleSelectAll = () => {
+    setSelected(prev => {
+      if (sorted.length > 0 && sorted.every(a => prev.has(a.id))) return new Set()
+      return new Set(sorted.map(a => a.id))
+    })
+  }
+
   const groupedByClient = useMemo(() => {
-    if (groupBy !== 'client') return null
+    if (view !== 'client') return null
     const groups = new Map()
     for (const ao of sorted) {
       const key = ao.clients?.id || 'unknown'
@@ -480,7 +631,7 @@ export default function AOSPage() {
       groups.get(key).items.push(ao)
     }
     return Array.from(groups.entries()).map(([id, v]) => ({ id, name: v.name, items: v.items }))
-  }, [sorted, groupBy])
+  }, [sorted, view])
 
   return (
     <div>
@@ -557,14 +708,15 @@ export default function AOSPage() {
         <div className="flex gap-1 bg-white/5 rounded-lg p-1">
           {[
             { k: 'client', l: 'Par client' },
-            { k: 'none', l: 'Liste' },
+            { k: 'cards', l: 'Cartes' },
+            { k: 'table', l: 'Tableau' },
           ].map(o => (
             <button
               key={o.k}
-              onClick={() => setGroupBy(o.k)}
+              onClick={() => setView(o.k)}
               className={clsx(
                 'px-3 py-1 text-xs rounded-md font-medium transition-all',
-                groupBy === o.k ? 'seg-active' : 'text-slate-400 hover:text-slate-200'
+                view === o.k ? 'seg-active' : 'text-slate-400 hover:text-slate-200'
               )}
             >
               {o.l}
@@ -621,7 +773,19 @@ export default function AOSPage() {
             )}
           </>}
         />
-      ) : groupBy === 'client' && groupedByClient ? (
+      ) : view === 'table' ? (
+        <AOTable
+          items={sorted}
+          isStaff={isStaff}
+          navigate={navigate}
+          onEdit={setEditAo}
+          onDelete={handleDeleteAo}
+          selected={selected}
+          onToggleSelect={toggleSelect}
+          allSelected={allSelected}
+          onToggleAll={toggleSelectAll}
+        />
+      ) : view === 'client' && groupedByClient ? (
         <div className="space-y-6">
           {groupedByClient.map(group => (
             <div key={group.id}>

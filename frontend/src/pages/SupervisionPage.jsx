@@ -83,6 +83,7 @@ function AiUsageTab() {
   const orModels = (orr && orr.by_model) || []
   const orKeys = (orr && orr.keys) || []
   const maxOr = Math.max(0.0001, ...orSeries.map(d => d.cost))
+  const maxReq = Math.max(1, ...orSeries.map(d => d.requests || 0))
   // Coût des seules clés plateforme (par fenêtre) — la dépense « à toi », hors autres apps du compte.
   const PC_MAP = { '24h': 'daily', '7d': 'weekly', '30d': 'monthly', '90d': 'total' }
   const pc = (orr && orr.platform_cost) || null
@@ -236,6 +237,23 @@ function AiUsageTab() {
               )}
             </>
           )}
+        </div>
+      )}
+
+      {/* Volume — requêtes facturées par jour (complément « coût + volume ») */}
+      {hasProv && orSeries.length > 0 && (
+        <div>
+          <p className="text-[11px] uppercase tracking-[0.08em] font-semibold mb-3 flex items-center gap-1.5" style={{ color: 'var(--text-faint)' }}>
+            <Cpu size={13} /> Volume — requêtes par jour ({winLabel})
+          </p>
+          <div className="flex items-end gap-1 h-24">
+            {orSeries.map((d) => (
+              <div key={d.date} className="flex-1 flex flex-col justify-end"
+                   title={`${fmtDay(d.date)} · ${fmtInt(d.requests)} req · ${fmtTok(d.tokens)} tokens`}>
+                <div className="w-full" style={{ height: `${Math.max(2, (d.requests / maxReq) * 100)}%`, background: 'var(--viz-2)', borderRadius: '3px 3px 0 0' }} />
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
@@ -430,6 +448,71 @@ function MipBadge() {
   )
 }
 
+// Core Web Vitals + leurs seuils Google (bon / à améliorer / médiocre).
+const VITALS = [
+  { key: 'p75_lcp_ms', label: 'LCP', good: 2500, ni: 4000, cap: 6000, fmt: fmtMs },
+  { key: 'p75_inp_ms', label: 'INP', good: 200, ni: 500, cap: 800, fmt: fmtMs },
+  { key: 'cls', label: 'CLS', good: 0.1, ni: 0.25, cap: 0.5, fmt: (v) => (v == null ? '—' : Number(v).toFixed(2)) },
+]
+
+// Barre d'un Web Vital positionné sur ses zones de seuil (statut par couleur + libellé).
+function VitalBar({ label, value, good, ni, cap, fmt }) {
+  const status = value == null ? null : value <= good ? 'good' : value <= ni ? 'warn' : 'bad'
+  const tone = { good: 'var(--success)', warn: 'var(--warning)', bad: 'var(--danger)' }[status] || 'var(--text-faint)'
+  const statusLabel = { good: 'Bon', warn: 'À améliorer', bad: 'Médiocre' }[status] || '—'
+  const goodPct = (good / cap) * 100
+  const niPct = (ni / cap) * 100
+  const pct = value == null ? null : Math.min(100, (value / cap) * 100)
+  return (
+    <div>
+      <div className="flex items-baseline justify-between mb-1.5">
+        <span className="text-[12px] font-medium" style={{ color: 'var(--text)' }}>
+          {label} <span style={{ color: 'var(--text-faint)' }}>p75</span>
+        </span>
+        <span className="text-[12px] tabular font-semibold" style={{ color: tone }}>
+          {fmt(value)}
+          {status && <span className="ml-1.5 text-[10px] font-medium" style={{ color: 'var(--text-faint)' }}>{statusLabel}</span>}
+        </span>
+      </div>
+      <div className="relative h-2 rounded-full overflow-hidden" style={{ background: 'var(--surface-2)' }}>
+        <div className="absolute inset-y-0 left-0" style={{ width: `${goodPct}%`, background: 'var(--success-soft)' }} />
+        <div className="absolute inset-y-0" style={{ left: `${goodPct}%`, width: `${niPct - goodPct}%`, background: 'var(--warning-soft)' }} />
+        <div className="absolute inset-y-0" style={{ left: `${niPct}%`, right: 0, background: 'var(--danger-soft)' }} />
+        {pct != null && (
+          <div className="absolute top-[-2px] bottom-[-2px] w-[2px] rounded" style={{ left: `calc(${pct}% - 1px)`, background: tone }} title={`${fmt(value)}`} />
+        )}
+      </div>
+      <div className="mt-1 text-[9.5px]" style={{ color: 'var(--text-faint)' }}>
+        Bon ≤ {fmt(good)} · à améliorer ≤ {fmt(ni)}
+      </div>
+    </div>
+  )
+}
+
+// Barres horizontales classées (routes lentes, erreurs…). Identité = libellé, pas la couleur.
+function HBars({ items, fmt, tone = 'var(--accent)' }) {
+  const list = Array.isArray(items) ? items : []
+  const max = Math.max(1, ...list.map(i => i.value || 0))
+  return (
+    <div className="card p-3.5 space-y-2.5">
+      {list.map((it, i) => (
+        <div key={i}>
+          <div className="flex items-center justify-between gap-3 mb-1">
+            <span className="text-[12px] truncate font-mono" style={{ color: 'var(--text)' }} title={it.label}>{it.label}</span>
+            <span className="text-[11.5px] tabular shrink-0" style={{ color: 'var(--text-muted)' }}>{fmt(it.value)}</span>
+          </div>
+          <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--surface-2)' }}>
+            <div className="h-full rounded-full" style={{ width: `${Math.max(2, (it.value / max) * 100)}%`, background: it.tone || tone }} />
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// Sévérité d'un temps de chargement (ms) → couleur de statut.
+const toneForMs = (v) => (v == null ? 'var(--text-faint)' : v <= 1000 ? 'var(--success)' : v <= 3000 ? 'var(--warning)' : 'var(--danger)')
+
 function RumTab() {
   const [win, setWin] = useState('30d')
   const [data, setData] = useState(null) // null=chargement, false=erreur réseau
@@ -509,6 +592,20 @@ function RumTab() {
         ))}
       </div>
 
+      {/* Core Web Vitals vs seuils Google (l'un des plots MIP « perf / vue d'ensemble ») */}
+      {VITALS.some(v => d[v.key] != null) && (
+        <div>
+          <p className="text-[11px] uppercase tracking-[0.08em] font-semibold mb-3 flex items-center gap-1.5" style={{ color: 'var(--text-faint)' }}>
+            <Activity size={13} /> Core Web Vitals vs seuils
+          </p>
+          <div className="card p-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {VITALS.filter(v => d[v.key] != null).map(v => (
+              <VitalBar key={v.key} label={v.label} value={d[v.key]} good={v.good} ni={v.ni} cap={v.cap} fmt={v.fmt} />
+            ))}
+          </div>
+        </div>
+      )}
+
       {series.length > 0 && (
         <div>
           <p className="text-[11px] uppercase tracking-[0.08em] font-semibold mb-3 flex items-center gap-1.5" style={{ color: 'var(--text-faint)' }}>
@@ -522,6 +619,19 @@ function RumTab() {
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {Array.isArray(d.top_routes) && d.top_routes.some(r => r.avg_ms != null) && (
+        <div>
+          <p className="text-[11px] uppercase tracking-[0.08em] font-semibold mb-2 flex items-center gap-1.5" style={{ color: 'var(--text-faint)' }}>
+            <Activity size={13} /> Pages les plus lentes <span className="normal-case tracking-normal font-normal" style={{ color: 'var(--text-faint)' }}>· temps moyen</span>
+          </p>
+          <HBars
+            items={[...d.top_routes].filter(r => r.avg_ms != null).sort((a, b) => (b.avg_ms || 0) - (a.avg_ms || 0)).slice(0, 8)
+              .map(r => ({ label: r.route, value: r.avg_ms, tone: toneForMs(r.avg_ms) }))}
+            fmt={fmtMs}
+          />
         </div>
       )}
 
@@ -553,7 +663,20 @@ function RumTab() {
 
       {Array.isArray(d.top_errors) && d.top_errors.length > 0 && (
         <div>
-          <p className="text-[11px] uppercase tracking-[0.08em] font-semibold mb-2" style={{ color: 'var(--text-faint)' }}>Erreurs front les plus fréquentes</p>
+          <p className="text-[11px] uppercase tracking-[0.08em] font-semibold mb-2 flex items-center gap-1.5" style={{ color: 'var(--text-faint)' }}>
+            <AlertTriangle size={13} /> Erreurs front <span className="normal-case tracking-normal font-normal" style={{ color: 'var(--text-faint)' }}>· par occurrences</span>
+          </p>
+          <HBars
+            items={[...d.top_errors].sort((a, b) => (b.count || 0) - (a.count || 0)).slice(0, 8)
+              .map(e => ({ label: e.message, value: e.count, tone: 'var(--danger)' }))}
+            fmt={fmtNum}
+          />
+        </div>
+      )}
+
+      {Array.isArray(d.top_errors) && d.top_errors.length > 0 && (
+        <div>
+          <p className="text-[11px] uppercase tracking-[0.08em] font-semibold mb-2" style={{ color: 'var(--text-faint)' }}>Détail des erreurs</p>
           <div className="card overflow-hidden">
             <table className="w-full text-[12px]">
               <tbody>

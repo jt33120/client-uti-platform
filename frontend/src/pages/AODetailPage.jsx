@@ -191,102 +191,6 @@ function ScoreRadar({ breakdown, hybridBreakdown, weights }) {
   )
 }
 
-// Décision humaine sur un résultat (AI Act Art. 14 — supervision & override).
-// Le staff retient/écarte un profil ; justification obligatoire pour un ajustement.
-function DecisionBar({ aoId, result, rank, initial }) {
-  // Décision déjà enregistrée (relue au chargement) → le badge survit au refresh.
-  const [recorded, setRecorded] = useState(initial?.decision || null)
-  const [overrideMode, setOverrideMode] = useState(false)
-  const [justification, setJustification] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
-
-  const labels = { retained: 'Retenu', rejected: 'Écarté', overridden: 'Désaccord signalé' }
-
-  const record = async (decision, just = null) => {
-    if (decision === 'overridden' && !just?.trim()) {
-      setError('Une justification est requise pour ajuster le classement.')
-      return
-    }
-    setLoading(true); setError('')
-    try {
-      await api.post('/decisions', {
-        ao_id: aoId,
-        submission_id: result.submission_id || null,
-        consultant_id: result.consultant_id || null,
-        ai_rank: rank,
-        ai_score: result.score_total,
-        decision,
-        justification: just,
-      })
-      setRecorded(decision)
-      setOverrideMode(false)
-    } catch (e) {
-      setError(e.response?.data?.detail || 'Erreur lors de l’enregistrement')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  return (
-    <div className="border-t border-white/5 pt-3 mt-1" data-tour="match-decision">
-      <div className="flex items-center justify-between gap-2 flex-wrap">
-        <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide">
-          Décision humaine
-        </span>
-        {recorded ? (
-          <span className="badge bg-brand-500/10 text-brand-300 border border-brand-500/20 text-[10px] inline-flex items-center gap-1">
-            <CheckCircle size={10} /> {labels[recorded]}
-            <button onClick={() => { setRecorded(null); setOverrideMode(false) }} className="ml-1 text-slate-500 hover:text-slate-300">modifier</button>
-          </span>
-        ) : (
-          <div className="flex items-center gap-1.5">
-            <button onClick={() => record('retained')} disabled={loading}
-              className="btn-ghost text-[11px] px-2 py-1 gap-1 text-emerald-400 hover:text-emerald-300">
-              <CheckCircle size={11} /> Retenir
-            </button>
-            <button onClick={() => record('rejected')} disabled={loading}
-              className="btn-ghost text-[11px] px-2 py-1 gap-1 text-slate-400 hover:text-red-400">
-              <X size={11} /> Écarter
-            </button>
-            <button onClick={() => setOverrideMode(o => !o)} disabled={loading}
-              className="btn-ghost text-[11px] px-2 py-1 gap-1 text-amber-400 hover:text-amber-300">
-              <MessageSquareWarning size={11} /> Signaler un désaccord
-            </button>
-          </div>
-        )}
-      </div>
-
-      {recorded === 'overridden' && (
-        <p className="text-[11px] text-amber-300/90 mt-2 flex items-start gap-1.5">
-          <MessageSquareWarning size={12} className="shrink-0 mt-0.5" />
-          Désaccord enregistré. Relancez l'analyse (bouton « Relancer » en haut) : l'IA réévaluera ce profil en tenant compte de votre retour.
-        </p>
-      )}
-
-      {overrideMode && !recorded && (
-        <div className="mt-2 space-y-2">
-          <textarea
-            className="input text-xs min-h-[56px] resize-y"
-            placeholder="Votre désaccord / correction (ex. « sous-évalué : a mené une migration Teradata→Snowflake en 2023 »). Ce texte est réinjecté dans l'analyse IA au prochain lancement."
-            value={justification}
-            onChange={e => setJustification(e.target.value)}
-          />
-          <div className="flex justify-end gap-2">
-            <button onClick={() => setOverrideMode(false)} className="btn-ghost text-[11px] px-2 py-1">Annuler</button>
-            <button onClick={() => record('overridden', justification)} disabled={loading}
-              className="btn-primary text-[11px] px-3 py-1">
-              {loading ? <Loader2 size={11} className="animate-spin" /> : 'Enregistrer'}
-            </button>
-          </div>
-        </div>
-      )}
-
-      {error && <p className="text-[11px] text-red-400 mt-1.5">{error}</p>}
-    </div>
-  )
-}
-
 // Libellé du bouton selon la cible de contact (partenaire vs consultant).
 function contactLabel(kind) {
   if (kind === 'consultant') return 'Contacter le consultant'
@@ -478,6 +382,26 @@ function ScoreAnalytics({ all, isAdmin }) {
   )
 }
 
+// Phrase-bilan : la 1ʳᵉ phrase de l'avis IA (verdict « qui contacter et pourquoi »),
+// bornée. Le détail est porté par les puces forts / vigilance juste en dessous.
+function bilanPhrase(text) {
+  if (!text) return ''
+  const m = String(text).match(/^[\s\S]*?[.!?](?=\s|$)/)
+  const s = (m ? m[0] : String(text)).trim()
+  return s.length > 240 ? `${s.slice(0, 237).trimEnd()}…` : s
+}
+
+// Puces « à retenir » (haut du barème) / « vigilance » (bas), dérivées des
+// justifications IA déjà ancrées dans le CV. 2–3 de chaque, sans recouvrement.
+function splitHighlights(cats) {
+  const scored = (cats || [])
+    .filter(c => c.max > 0 && c.justif)
+    .map(c => ({ ...c, ratio: c.hybridVal / c.max }))
+  const forts = scored.filter(c => c.ratio >= 0.6).sort((a, b) => b.ratio - a.ratio).slice(0, 3)
+  const faibles = scored.filter(c => c.ratio < 0.5).sort((a, b) => a.ratio - b.ratio).slice(0, 3)
+  return { forts, faibles }
+}
+
 function MatchCard({ result, rank, aoId, isAdmin, ao, onContact, expanded: expandedProp, onToggleExpand, decision }) {
   const [contactStatus, setContactStatus] = useState(result.contact_status || 'none')
   useEffect(() => { setContactStatus(result.contact_status || 'none') }, [result.contact_status])
@@ -501,6 +425,46 @@ function MatchCard({ result, rank, aoId, isAdmin, ao, onContact, expanded: expan
     hybridVal: hbd?.[c.det] ?? bd[c.det] ?? 0,
     justif: lbd?.[c.llm]?.justification,
   }))
+  // Bilan express : phrase-verdict + puces forts / vigilance (dérivées des critères).
+  const bilan = bilanPhrase(result.llm_global)
+  const { forts, faibles } = splitHighlights(cats)
+
+  // ── Décision humaine (AI Act Art. 14) — actions RAPPROCHÉES du nom (en-tête).
+  // Retenir / Écarter / Signaler un désaccord ; justification obligatoire pour
+  // un ajustement. La décision relue survit au refresh.
+  const decLabels = { retained: 'Retenu', rejected: 'Écarté', overridden: 'Désaccord signalé' }
+  const canDecide = isAdmin && !!result.submission_id
+  const [recorded, setRecorded] = useState(decision?.decision || null)
+  const [overrideMode, setOverrideMode] = useState(false)
+  const [justification, setJustification] = useState('')
+  const [decLoading, setDecLoading] = useState(false)
+  const [decError, setDecError] = useState('')
+  useEffect(() => { setRecorded(decision?.decision || null) }, [decision?.decision, result.submission_id])
+
+  const recordDecision = async (dec, just = null) => {
+    if (dec === 'overridden' && !just?.trim()) {
+      setDecError('Une justification est requise pour ajuster le classement.')
+      return
+    }
+    setDecLoading(true); setDecError('')
+    try {
+      await api.post('/decisions', {
+        ao_id: aoId,
+        submission_id: result.submission_id || null,
+        consultant_id: result.consultant_id || null,
+        ai_rank: rank,
+        ai_score: result.score_total,
+        decision: dec,
+        justification: just,
+      })
+      setRecorded(dec)
+      setOverrideMode(false)
+    } catch (e) {
+      setDecError(e.response?.data?.detail || 'Erreur lors de l’enregistrement')
+    } finally {
+      setDecLoading(false)
+    }
+  }
 
   return (
     <div className={clsx('card overflow-hidden transition-all duration-200', rank === 1 && 'border-emerald-500/30 bg-emerald-500/3')}>
@@ -533,6 +497,35 @@ function MatchCard({ result, rank, aoId, isAdmin, ao, onContact, expanded: expan
                 <Mail size={12} /> Contacter
               </a>
             )}
+            {/* Décision humaine — actions rapprochées du nom, alignées sur « Contacter ». */}
+            {canDecide && !recorded && (
+              <span data-tour="match-decision" className="inline-flex items-center gap-1.5" onClick={e => e.stopPropagation()}>
+                <button onClick={() => recordDecision('retained')} disabled={decLoading}
+                  title="Retenir ce profil"
+                  className="btn-ghost !h-7 !px-2.5 text-[11px] gap-1 shrink-0 text-emerald-400 hover:text-emerald-300 border border-emerald-500/30">
+                  <CheckCircle size={12} /> Retenir
+                </button>
+                <button onClick={() => recordDecision('rejected')} disabled={decLoading}
+                  title="Écarter ce profil"
+                  className="btn-ghost !h-7 !px-2.5 text-[11px] gap-1 shrink-0 text-slate-400 hover:text-red-400 border border-white/10">
+                  <X size={12} /> Écarter
+                </button>
+                <button onClick={() => setOverrideMode(o => !o)} disabled={decLoading}
+                  title="Signaler un désaccord avec le classement IA (réinjecté au prochain « Relancer »)"
+                  className={clsx('btn-ghost !h-7 !px-2.5 text-[11px] gap-1 shrink-0 text-amber-400 hover:text-amber-300 border border-amber-500/30',
+                    overrideMode && 'bg-amber-500/10')}>
+                  <MessageSquareWarning size={12} /> Désaccord
+                </button>
+              </span>
+            )}
+            {canDecide && recorded && (
+              <span data-tour="match-decision" onClick={e => e.stopPropagation()}
+                className="badge bg-brand-500/10 text-brand-300 border border-brand-500/20 text-[10px] inline-flex items-center gap-1">
+                <CheckCircle size={10} /> {decLabels[recorded]}
+                <button onClick={() => { setRecorded(null); setOverrideMode(false) }}
+                  className="ml-1 text-slate-500 hover:text-slate-300">modifier</button>
+              </span>
+            )}
             {contactStatus !== 'none' && (
               <span className={clsx('badge border text-[10px] inline-flex items-center gap-1',
                 contactStatus === 'proposed'
@@ -561,22 +554,86 @@ function MatchCard({ result, rank, aoId, isAdmin, ao, onContact, expanded: expan
         </button>
       </div>
 
+      {/* Panneau « désaccord » — sous l'en-tête, accessible carte pliée ou dépliée. */}
+      {canDecide && overrideMode && !recorded && (
+        <div className="px-4 pb-3 -mt-1 space-y-2" onClick={e => e.stopPropagation()}>
+          <textarea
+            className="input text-xs min-h-[56px] resize-y"
+            placeholder="Votre désaccord / correction (ex. « sous-évalué : a mené une migration Teradata→Snowflake en 2023 »). Ce texte est réinjecté dans l'analyse IA au prochain lancement."
+            value={justification}
+            onChange={e => setJustification(e.target.value)}
+          />
+          <div className="flex justify-end gap-2">
+            <button onClick={() => setOverrideMode(false)} className="btn-ghost text-[11px] px-2 py-1">Annuler</button>
+            <button onClick={() => recordDecision('overridden', justification)} disabled={decLoading}
+              className="btn-primary text-[11px] px-3 py-1">
+              {decLoading ? <Loader2 size={11} className="animate-spin" /> : 'Enregistrer'}
+            </button>
+          </div>
+        </div>
+      )}
+      {canDecide && recorded === 'overridden' && (
+        <p className="px-4 pb-3 -mt-1 text-[11px] text-amber-300/90 flex items-start gap-1.5">
+          <MessageSquareWarning size={12} className="shrink-0 mt-0.5" />
+          Désaccord enregistré. Relancez l'analyse (bouton « Relancer » en haut) : l'IA réévaluera ce profil en tenant compte de votre retour.
+        </p>
+      )}
+      {canDecide && decError && <p className="px-4 pb-3 -mt-1 text-[11px] text-red-400">{decError}</p>}
+
       {expanded && (
         <div className="px-4 pb-4 space-y-4 border-t border-white/5 pt-4 animate-fade-in">
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-center">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
             {/* Radar : forme du profil — grille vs IA */}
             <div>
               <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1">Profil du candidat</p>
               <ScoreRadar breakdown={bd} hybridBreakdown={hbd} weights={weights} />
             </div>
-            {/* Auto-justification rédigée par l'IA */}
+            {/* Bilan IA : phrase-verdict + puces « à retenir » / « vigilance ». */}
             <div data-tour="match-ia">
               <p className="text-xs font-semibold text-violet-300 uppercase tracking-wide mb-2 flex items-center gap-1">
                 <Sparkles size={11} /> Analyse IA
               </p>
-              {result.llm_global
-                ? <p className="text-sm text-slate-300 leading-relaxed whitespace-pre-line">{result.llm_global}</p>
-                : <p className="text-xs text-slate-500 italic">Avis IA indisponible pour ce profil : score déterministe seul (grille auditable).</p>}
+              {result.llm_global ? (
+                <>
+                  <p className="text-sm text-slate-200 leading-relaxed">{bilan}</p>
+                  {(forts.length > 0 || faibles.length > 0) && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3 mt-3">
+                      {forts.length > 0 && (
+                        <div>
+                          <p className="text-[10.5px] font-semibold uppercase tracking-wide text-emerald-400 flex items-center gap-1 mb-1.5">
+                            <CheckCircle size={11} /> À retenir
+                          </p>
+                          <ul className="space-y-1.5">
+                            {forts.map(c => (
+                              <li key={c.key} className="text-[11.5px] text-slate-300 leading-snug flex gap-1.5">
+                                <span className="text-emerald-400 mt-[3px] shrink-0 leading-none">▪</span>
+                                <span><span className="text-slate-200 font-medium">{c.label} — </span>{c.justif}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      {faibles.length > 0 && (
+                        <div>
+                          <p className="text-[10.5px] font-semibold uppercase tracking-wide text-amber-400 flex items-center gap-1 mb-1.5">
+                            <AlertTriangle size={11} /> Points de vigilance
+                          </p>
+                          <ul className="space-y-1.5">
+                            {faibles.map(c => (
+                              <li key={c.key} className="text-[11.5px] text-slate-300 leading-snug flex gap-1.5">
+                                <span className="text-amber-400 mt-[3px] shrink-0 leading-none">▪</span>
+                                <span><span className="text-slate-200 font-medium">{c.label} — </span>{c.justif}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <p className="text-xs text-slate-500 italic">Avis IA indisponible pour ce profil : score déterministe seul (grille auditable).</p>
+              )}
             </div>
           </div>
 
@@ -659,10 +716,6 @@ function MatchCard({ result, rank, aoId, isAdmin, ao, onContact, expanded: expan
               )}
             </div>
           )}
-
-          {isAdmin && result.submission_id && (
-            <DecisionBar aoId={aoId} result={result} rank={rank} initial={decision} />
-          )}
         </div>
       )}
     </div>
@@ -699,13 +752,15 @@ function MatchCarousel({ results: incoming, aoId, isAdmin, ao, decisions }) {
 
   // Drag & drop sur la barre de profils : l'opérateur impose son classement en
   // glissant une vignette à sa place (remplace les boutons monter/descendre).
-  const [dragIdx, setDragIdx] = useState(null)
+  const [dragIdx, setDragIdx] = useState(null)   // vignette en cours de déplacement
+  const [overIdx, setOverIdx] = useState(null)   // cible survolée (repère de dépose)
+  const endDrag = () => { setDragIdx(null); setOverIdx(null) }
   const dropAt = (target) => {
-    if (dragIdx === null || dragIdx === target) { setDragIdx(null); return }
+    if (dragIdx === null || dragIdx === target) { endDrag(); return }
     const reordered = results.slice()
     const [moved] = reordered.splice(dragIdx, 1)
     reordered.splice(target, 0, moved)
-    setDragIdx(null)
+    endDrag()
     setIdx(reordered.indexOf(moved))
     persistOrder(reordered)
   }
@@ -753,17 +808,28 @@ function MatchCarousel({ results: incoming, aoId, isAdmin, ao, decisions }) {
           {results.map((r, i) => {
             const sc = r.score_hybride ?? r.score_total
             const active = i === idx
+            const dragging = dragIdx !== null
+            const isDragged = dragIdx === i
+            // Repère de dépose : barre AVANT la cible si on remonte le profil,
+            // APRÈS si on le descend (cohérent avec le splice de dropAt).
+            const targeted = dragging && overIdx === i && !isDragged
+            const barBefore = targeted && dragIdx > i
+            const barAfter = targeted && dragIdx < i
             return (
               <button key={r.consultant_id || i} onClick={() => setIdx(i)}
                 draggable={isAdmin && results.length > 1}
-                onDragStart={() => setDragIdx(i)}
-                onDragOver={e => { if (dragIdx !== null) e.preventDefault() }}
+                onDragStart={() => { setDragIdx(i); setOverIdx(i) }}
+                onDragOver={e => { if (dragging) { e.preventDefault(); if (overIdx !== i) setOverIdx(i) } }}
                 onDrop={() => dropAt(i)}
-                onDragEnd={() => setDragIdx(null)}
+                onDragEnd={endDrag}
                 className={clsx('group relative flex-1 min-w-[104px] rounded-lg border px-3 py-2 text-left transition-all',
                   isAdmin && results.length > 1 && 'cursor-grab active:cursor-grabbing',
-                  dragIdx === i && 'opacity-40',
+                  isDragged && 'opacity-40 scale-[0.97]',
+                  targeted && 'ring-2 ring-brand-400/60',
                   active ? 'border-brand-400 bg-brand-500/10' : 'border-white/10 bg-white/3 hover:border-white/25')}>
+                {/* Barre d'insertion : matérialise l'endroit exact de la dépose. */}
+                {barBefore && <span className="absolute inset-y-1 -left-1 w-[3px] rounded-full bg-brand-400 shadow-[0_0_8px_rgba(96,120,255,0.8)]" />}
+                {barAfter && <span className="absolute inset-y-1 -right-1 w-[3px] rounded-full bg-brand-400 shadow-[0_0_8px_rgba(96,120,255,0.8)]" />}
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-[10px] font-bold text-slate-500 inline-flex items-center gap-1">
                     {isAdmin && results.length > 1 && <GripVertical size={11} className="text-slate-600 group-hover:text-slate-400" />}
@@ -778,7 +844,7 @@ function MatchCarousel({ results: incoming, aoId, isAdmin, ao, decisions }) {
         </div>
         {isAdmin && results.length > 1 && (
           <p className="text-[10.5px] text-slate-500 mt-1.5 inline-flex items-center gap-1">
-            <GripVertical size={10} className="text-slate-600" /> Glissez un profil pour imposer votre classement (il prime sur l'IA).
+            <GripVertical size={10} className="text-slate-600" /> Glissez un profil : la barre bleue indique où il se placera (votre classement prime sur l'IA).
           </p>
         )}
       </div>

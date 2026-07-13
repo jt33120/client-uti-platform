@@ -20,6 +20,7 @@ from services.scoring import score_consultant, GRID_VERSION, DEFAULTS, stars_to_
 from services.llm_scoring import llm_score, combine_hybrid
 from services.scoring_settings import get_config
 from services.pseudonymize import strip_pii
+from services.cv_structured import flatten_structured
 from services import audit
 from services import ai_ledger
 from services.error_log import record as _record_err
@@ -241,9 +242,13 @@ async def _score_all(
             warn = "⚠️ Lecture IA du CV indisponible — score fondé sur la fiche déclarée uniquement"
             score["points_faibles"] = [warn] + list(score.get("points_faibles") or [])
         base.append((it, features, score, ex_cost, clean_cv))
+    # Extrait cité par l'IA : le CV structuré aplati (déjà anonymisé) quand il
+    # existe → chaque « … » cité se retrouve tel quel dans un champ affiché de la
+    # vue « CV analysé » (surlignage exact). Repli sur le CV brut pseudonymisé.
     llm_outs = await _gather_bounded([
         llm_score(features, it, ao, weights,
-                  cv_excerpt=clean_cv, human_feedback=feedback.get(it.get("consultant_id")))
+                  cv_excerpt=(flatten_structured(it.get("cv_structured")) or clean_cv),
+                  human_feedback=feedback.get(it.get("consultant_id")))
         for (it, features, _s, _c, clean_cv) in base
     ])
 
@@ -283,6 +288,22 @@ async def _score_all(
     return results, total_cost
 
 
+def _fetch_submissions(ao_id: str) -> list:
+    """Soumissions d'un AO pour le scoring. Tente d'inclure `cv_structured` (CV
+    canonique GRP-IT → citations IA exactes) ; retombe sans cette colonne si la
+    migration 0002 n'est pas appliquée, pour ne jamais casser le matching."""
+    base_cols = (
+        "id, cv_text, consultant_id, submitted_by, submitter:profiles!submitted_by(id, name), "
+        "consultants(id, name, tjm, skills, experience_years, employment_type)"
+    )
+    try:
+        return supabase.table("submissions").select(
+            base_cols + ", cv_structured"
+        ).eq("ao_id", ao_id).execute().data
+    except Exception:
+        return supabase.table("submissions").select(base_cols).eq("ao_id", ao_id).execute().data
+
+
 async def run_submission_matching(ao_id: str, ran_by: Optional[str], top_n: int = 5) -> dict:
     """
     Score every submitted CV for this AO and persist the top N.
@@ -295,10 +316,7 @@ async def run_submission_matching(ao_id: str, ran_by: Optional[str], top_n: int 
     except Exception:
         raise LookupError("AO introuvable")
 
-    submissions = supabase.table("submissions").select(
-        "id, cv_text, consultant_id, submitted_by, submitter:profiles!submitted_by(id, name), "
-        "consultants(id, name, tjm, skills, experience_years, employment_type)"
-    ).eq("ao_id", ao_id).execute().data
+    submissions = _fetch_submissions(ao_id)
 
     if not submissions:
         raise LookupError("Aucun CV soumis pour cet AO")
@@ -317,6 +335,8 @@ async def run_submission_matching(ao_id: str, ran_by: Optional[str], top_n: int 
             "skills": c.get("skills", ""),
             "experience_years": c.get("experience_years"),
             "cv_text": s["cv_text"],
+            # CV structuré (anonymisé) : si présent, l'IA cite depuis LUI (surlignage exact).
+            "cv_structured": s.get("cv_structured"),
         })
 
     if not items:

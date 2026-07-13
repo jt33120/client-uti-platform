@@ -201,6 +201,18 @@ async def get_cv_file(body: CvSourceRequest, user: dict = Depends(require_staff)
     )
 
 
+@router.post("/cv-structured")
+async def get_cv_structured(body: CvSourceRequest, user: dict = Depends(require_staff)):
+    """CV structuré canonique (format GRP-IT, anonymisé) de la soumission : source
+    de vérité de la vue « CV analysé » et des citations IA (surlignage exact).
+    Construit à la demande s'il n'existe pas encore. Staff only (admin/commerce)."""
+    from services import cv_structured
+    cv = await cv_structured.ensure_structured(body.submission_id)
+    if not cv:
+        raise HTTPException(status_code=404, detail="CV structuré indisponible pour cette soumission")
+    return {"cv": cv}
+
+
 @router.get("/results/{ao_id}")
 async def get_matching_results(ao_id: str, user: dict = Depends(get_current_user)):
     try:

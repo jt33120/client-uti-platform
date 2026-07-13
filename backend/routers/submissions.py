@@ -7,6 +7,7 @@ from services.cv_parser import (
 )
 from services.matching_runner import auto_rescore_ao
 from services.consultant_skills import auto_extract_skills
+from services.cv_structured import build_structured_bg
 from routers.auth import get_current_user, is_staff
 import uuid
 
@@ -212,6 +213,11 @@ async def create_submission(
 
     # Auto-pipeline: every new CV triggers a re-score of the AO so the
     # ranking stays current without anyone pressing a button.
+    # CV structuré canonique (format GRP-IT) AVANT le re-score : ainsi le tout
+    # premier scoring cite déjà des extraits du CV structuré (surlignage exact).
+    # Best-effort ; en cas d'échec le scoring retombe sur le CV brut.
+    background_tasks.add_task(build_structured_bg, submission_uuid)
+    # Auto-pipeline : chaque nouveau CV déclenche un re-score de l'AO.
     background_tasks.add_task(auto_rescore_ao, ao_id, user["sub"])
     # Enrichissement du vivier : déduire les compétences du CV si le consultant
     # n'en a pas encore (best-effort, ne bloque pas la soumission).

@@ -770,3 +770,109 @@ async def update_ticket(ticket_id: str, body: TicketUpdate, user: dict = Depends
     except Exception:
         # Détail loggé côté serveur ; réponse 500 générique (handler global).
         raise
+
+
+# Plancher « profil faible » (aligné sur la reco du front) : un profil retenu
+# sous ce score est un « outsider retenu » (écart IA↔humain notable).
+_DECISION_LOW = 50
+
+
+@router.get("/decision-insights")
+async def decision_insights(days: int = 90, user: dict = Depends(require_admin)):
+    """Analytics d'écart IA↔humain (N2) à partir des décisions (`human_decision`).
+    Révèle OÙ la reco IA est le plus corrigée par les opérateurs — matière à
+    calibrer la grille et les prompts. Purement analytique (aucun changement de
+    modèle). Admin only."""
+    days = max(7, min(int(days or 90), 365))
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    try:
+        rows = supabase.table("human_decision").select(
+            "ao_id, consultant_id, ai_rank, ai_score, decision, justification, decided_by, decided_at"
+        ).gte("decided_at", since).order("decided_at", desc=True).execute().data or []
+    except Exception:
+        rows = []
+
+    totals = {"total": len(rows), "retained": 0, "rejected": 0, "overridden": 0}
+    ecarts = {"overridden": 0, "rejected_top": 0, "retained_low": 0}
+
+    def _ecart(r: dict):
+        d = r.get("decision")
+        if d == "overridden":
+            return "overridden"                       # désaccord explicite
+        if d == "rejected" and (r.get("ai_rank") or 99) <= 2:
+            return "rejected_top"                      # top IA écarté
+        if d == "retained" and r.get("ai_score") is not None and r["ai_score"] < _DECISION_LOW:
+            return "retained_low"                      # outsider retenu
+        return None
+
+    ao_ids, op_ids = set(), set()
+    by_ao, by_op, weekly = {}, {}, {}
+    recent_overrides = []
+    for r in rows:
+        d = r.get("decision")
+        if d in totals:
+            totals[d] += 1
+        e = _ecart(r)
+        if e:
+            ecarts[e] += 1
+        aid, oid = r.get("ao_id"), r.get("decided_by")
+        if aid:
+            ao_ids.add(aid)
+            a = by_ao.setdefault(aid, {"ao_id": aid, "total": 0, "ecarts": 0})
+            a["total"] += 1
+            a["ecarts"] += 1 if e else 0
+        if oid:
+            op_ids.add(oid)
+            o = by_op.setdefault(oid, {"id": oid, "total": 0, "overrides": 0})
+            o["total"] += 1
+            o["overrides"] += 1 if d == "overridden" else 0
+        try:
+            dt = datetime.fromisoformat(str(r.get("decided_at")).replace("Z", "+00:00"))
+            iso = dt.isocalendar()
+            wk = f"{iso[0]}-W{iso[1]:02d}"
+        except Exception:
+            wk = "?"
+        w = weekly.setdefault(wk, {"week": wk, "total": 0, "ecarts": 0})
+        w["total"] += 1
+        w["ecarts"] += 1 if e else 0
+        if d == "overridden" and len(recent_overrides) < 15:
+            recent_overrides.append({
+                "decided_at": r.get("decided_at"), "ao_id": aid,
+                "ai_rank": r.get("ai_rank"), "ai_score": r.get("ai_score"),
+                "justification": (r.get("justification") or "")[:400],
+            })
+
+    ao_titles, op_names = {}, {}
+    if ao_ids:
+        try:
+            for a in supabase.table("aos").select("id, title").in_("id", list(ao_ids)).execute().data or []:
+                ao_titles[a["id"]] = a.get("title")
+        except Exception:
+            pass
+    if op_ids:
+        try:
+            for p in supabase.table("profiles").select("id, name, email").in_("id", list(op_ids)).execute().data or []:
+                op_names[p["id"]] = p.get("name") or p.get("email")
+        except Exception:
+            pass
+
+    for a in by_ao.values():
+        a["title"] = ao_titles.get(a["ao_id"]) or "—"
+    for o in by_op.values():
+        o["name"] = op_names.get(o["id"]) or "—"
+        o["override_rate"] = round(o["overrides"] / o["total"] * 100) if o["total"] else 0
+    for ro in recent_overrides:
+        ro["ao_title"] = ao_titles.get(ro["ao_id"]) or "—"
+
+    total_ecarts = sum(ecarts.values())
+    return {
+        "period_days": days,
+        "totals": totals,
+        "override_rate": round(totals["overridden"] / totals["total"] * 100) if totals["total"] else 0,
+        "ecarts": {**ecarts, "total": total_ecarts,
+                   "rate": round(total_ecarts / totals["total"] * 100) if totals["total"] else 0},
+        "by_ao": sorted(by_ao.values(), key=lambda x: (x["ecarts"], x["total"]), reverse=True)[:8],
+        "by_operator": sorted(by_op.values(), key=lambda x: x["total"], reverse=True)[:8],
+        "weekly": [weekly[k] for k in sorted(weekly.keys()) if k != "?"],
+        "recent_overrides": recent_overrides,
+    }

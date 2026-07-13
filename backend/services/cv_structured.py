@@ -15,15 +15,36 @@ from services.supabase_client import supabase
 from services import cv_harmonizer
 from services.error_log import record as _record_err
 
+# Passe à True quand la colonne submissions.cv_structured est détectée absente
+# (migration 0002 non appliquée) : on cesse alors d'harmoniser en boucle (ni la
+# vue ni l'upload ne pourraient stocker le résultat). Réinitialisé au redémarrage
+# du process (donc à chaque déploiement, où la migration est censée être posée).
+_STRUCTURED_DISABLED = False
+
+
+def _looks_like_missing_column(err: Exception) -> bool:
+    s = str(err).lower()
+    return any(k in s for k in ("cv_structured", "column", "pgrst204", "42703", "schema cache"))
+
 
 def flatten_structured(cv: Optional[dict]) -> str:
     """Aplati le CV structuré en texte, DANS L'ORDRE D'AFFICHAGE de la vue
     « CV analysé ». C'est ce texte que l'IA reçoit et cite → chaque extrait cité
-    se retrouve tel quel dans un champ affiché (surlignage exact)."""
+    se retrouve tel quel dans un champ affiché (surlignage exact).
+
+    Ne lève JAMAIS : tourne dans le chemin de scoring, un CV malformé ne doit
+    pas faire échouer tout le run (repli sur le CV brut côté appelant)."""
     if not isinstance(cv, dict):
         return ""
+    try:
+        return _flatten(cv)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _flatten(cv: dict) -> str:
     out: list[str] = []
-    title = (cv.get("title") or "").strip()
+    title = str(cv.get("title") or "").strip()
     if title:
         out.append(title)
     for s in (cv.get("synthese") or []):
@@ -66,13 +87,18 @@ def flatten_structured(cv: Optional[dict]) -> str:
 
 def get_structured(submission_id: str) -> Optional[dict]:
     """Lit le CV structuré stocké (None si absent/colonne non migrée)."""
-    if not submission_id:
+    global _STRUCTURED_DISABLED
+    if _STRUCTURED_DISABLED or not submission_id:
         return None
     try:
         row = supabase.table("submissions").select("cv_structured").eq(
             "id", submission_id).single().execute().data
-    except Exception:
-        return None  # colonne absente (migration non appliquée) ou soumission introuvable
+    except Exception as e:  # noqa: BLE001
+        # Colonne absente (migration non appliquée) → on coupe la structuration
+        # pour ne pas harmoniser en boucle inutilement.
+        if _looks_like_missing_column(e):
+            _STRUCTURED_DISABLED = True
+        return None
     cv = (row or {}).get("cv_structured")
     return cv if isinstance(cv, dict) and (cv.get("title") or cv.get("experiences")) else None
 
@@ -84,6 +110,9 @@ def _persist(submission_id: str, cv: dict) -> None:
     except Exception as e:  # noqa: BLE001
         # Colonne non migrée / cache PostgREST périmé : on ne persiste pas, mais
         # l'appelant a quand même le CV (recalculé au besoin). Pas une panne.
+        if _looks_like_missing_column(e):
+            global _STRUCTURED_DISABLED
+            _STRUCTURED_DISABLED = True
         _record_err("cv.structured.persist",
                     f"cv_structured non persisté pour la soumission {submission_id} "
                     f"(colonne absente ? appliquer migrations/0002) : {e}",
@@ -99,6 +128,10 @@ async def ensure_structured(
     cached = get_structured(submission_id)
     if cached:
         return cached
+    # Colonne absente : inutile d'harmoniser, on ne pourrait pas stocker le résultat
+    # (get_structured a déjà positionné le flag). Repli propre côté appelant.
+    if _STRUCTURED_DISABLED:
+        return None
     if not cv_harmonizer.is_available():
         return None
     if not (cv_text and cv_text.strip()):

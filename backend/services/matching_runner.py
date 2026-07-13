@@ -245,9 +245,12 @@ async def _score_all(
     # Extrait cité par l'IA : le CV structuré aplati (déjà anonymisé) quand il
     # existe → chaque « … » cité se retrouve tel quel dans un champ affiché de la
     # vue « CV analysé » (surlignage exact). Repli sur le CV brut pseudonymisé.
+    # strip_pii en défense : le CV structuré est censé être anonymisé (garantie
+    # « soft » du harmoniseur) ; on repasse quand même le nom au filtre PII avant
+    # de l'envoyer au fournisseur de scoring. Repli sur le CV brut pseudonymisé.
     llm_outs = await _gather_bounded([
         llm_score(features, it, ao, weights,
-                  cv_excerpt=(flatten_structured(it.get("cv_structured")) or clean_cv),
+                  cv_excerpt=(strip_pii(flatten_structured(it.get("cv_structured")), it.get("name")) or clean_cv),
                   human_feedback=feedback.get(it.get("consultant_id")))
         for (it, features, _s, _c, clean_cv) in base
     ])

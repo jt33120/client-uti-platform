@@ -879,7 +879,7 @@ async def decision_insights(days: int = 90, user: dict = Depends(require_admin))
 
 
 @router.post("/backfill-structured")
-async def backfill_structured(background_tasks: BackgroundTasks, limit: int = 100,
+async def backfill_structured(background_tasks: BackgroundTasks, limit: int = 50,
                               user: dict = Depends(require_admin)):
     """Backfill du CV structuré (format GRP-IT) pour les soumissions existantes qui
     n'en ont pas encore. Sans lui, un ancien CV n'est structuré qu'à la 1re ouverture
@@ -897,7 +897,7 @@ async def backfill_structured(background_tasks: BackgroundTasks, limit: int = 10
             status_code=409,
             detail="Colonne submissions.cv_structured absente — appliquer d'abord migrations/0002_cv_structured.sql.",
         )
-    todo = todo[:max(1, min(limit, 500))]
+    todo = todo[:max(1, min(limit, 200))]
     for sid in todo:
         background_tasks.add_task(build_structured_bg, sid)
     return {"queued": len(todo)}

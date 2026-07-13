@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import api from '../lib/api'
 import { useAuth } from '../contexts/AuthContext'
@@ -6,7 +6,7 @@ import { useConfirm } from '../contexts/ConfirmContext'
 import {
   ArrowLeft, Zap, Euro, MapPin, Clock, Users, CheckCircle,
   AlertCircle, TrendingUp, Award, ChevronDown, ChevronUp, ChevronLeft, ChevronRight,
-  Loader2, FileText, FileSearch, Trash2, RotateCcw, Building2, Plus,
+  Loader2, FileText, FileSearch, Highlighter, Trash2, RotateCcw, Building2, Plus,
   Upload, X, UserCircle2, Briefcase, Calendar, Pencil,
   CalendarClock, AlertTriangle, BarChart3, Sparkles,
   UploadCloud, Download, Target, Hash, Send, Bell, Mail, MessageSquareWarning, Languages, GripVertical, HelpCircle,
@@ -402,9 +402,268 @@ function splitHighlights(cats) {
   return { forts, faibles }
 }
 
+// ── Vue « Transparence » (P0) : CV harmonisé à gauche, analyse IA reliée à droite.
+// Les justifications IA citent le CV entre « … » ; on retrouve ces extraits dans le
+// CV harmonisé et on les SURLIGNE (une couleur par critère), pour rendre la notation
+// lisible et inviter le commercial à lire le CV, guidé vers l'essentiel. 100 % front,
+// sur les données existantes. (P1 backend fiabilisera l'ancrage via extraits exacts.)
+const HL_PALETTE = [
+  { mark: 'rgba(99,102,241,.22)', line: '#6366f1' },
+  { mark: 'rgba(13,148,136,.26)', line: '#0d9488' },
+  { mark: 'rgba(217,119,6,.28)', line: '#d97706' },
+  { mark: 'rgba(22,163,74,.24)', line: '#16a34a' },
+  { mark: 'rgba(139,92,246,.24)', line: '#8b5cf6' },
+  { mark: 'rgba(219,39,119,.22)', line: '#db2777' },
+]
+const _escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+const _normTxt = (s) => (s || '').toLowerCase().replace(/\s+/g, ' ').trim()
+function extractQuotes(justif) {
+  const out = []
+  const push = (re) => { let m; while ((m = re.exec(justif || ''))) { const q = m[1].trim(); if (q.length >= 6) out.push(q) } }
+  push(/«\s*([^»]+?)\s*»/g)
+  push(/"([^"]{6,}?)"/g)
+  return out
+}
+
+function CvTransparencyView({ result, ao, onClose }) {
+  const [cv, setCv] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [pulse, setPulse] = useState(null)      // critère mis en évidence (flash)
+  const leftRef = useRef(null)
+  const rightRef = useRef(null)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true); setError('')
+    api.post('/cv/harmonize', { submission_id: result.submission_id, consultant_id: result.consultant_id, lang: 'fr' })
+      .then(r => { if (!cancelled) setCv(r.data.cv) })
+      .catch(e => { if (!cancelled) setError(e.response?.data?.detail || 'CV indisponible') })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [result.submission_id, result.consultant_id])
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  // Annotations = critères notés + justification, couleur assignée.
+  const annos = useMemo(() => {
+    const lbd = result.llm_breakdown || {}
+    const hbd = result.hybrid_breakdown || null
+    const bd = result.breakdown || {}
+    const weights = result.weights || null
+    return activeCats(weights)
+      .map(c => ({
+        key: c.det, label: c.label,
+        max: (weights && weights[c.wKey]) || c.dflt,
+        val: hbd?.[c.det] ?? bd[c.det] ?? 0,
+        justif: lbd?.[c.llm]?.justification || '',
+      }))
+      .filter(a => a.justif)
+      .map((a, i) => ({ ...a, idx: i, color: HL_PALETTE[i % HL_PALETTE.length], quotes: extractQuotes(a.justif) }))
+  }, [result])
+
+  // Texte plat normalisé du CV (test de présence des extraits).
+  const cvNorm = useMemo(() => {
+    if (!cv) return ''
+    const parts = []
+    ;(cv.synthese || []).forEach(s => parts.push(s))
+    ;(cv.experiences || []).forEach(e => { if (e.context) parts.push(e.context); (e.missions || []).forEach(m => parts.push(m)); if (e.environment) parts.push(e.environment) })
+    const c = cv.competences || {}
+    ;['metier', 'fonctionnelles', 'soft_skills', 'techniques'].forEach(k => (c[k] || []).forEach(x => parts.push(x)))
+    ;(cv.langues || []).forEach(x => parts.push(x))
+    ;(cv.formation || []).forEach(x => parts.push(x))
+    return _normTxt(parts.join('  '))
+  }, [cv])
+
+  // Fragments réellement présents dans le CV (extrait complet, ou début significatif).
+  const fragments = useMemo(() => {
+    const frags = []
+    annos.forEach(a => a.quotes.forEach((q, qi) => {
+      const words = q.split(/\s+/)
+      let chosen = null
+      for (const n of [words.length, 12, 9, 6, 4]) {
+        if (n > words.length) continue
+        const cand = words.slice(0, n).join(' ')
+        if (cand.length >= 6 && cvNorm.includes(_normTxt(cand))) { chosen = cand; break }
+      }
+      if (chosen) frags.push({ frag: chosen, key: `${a.idx}-${qi}`, annoIdx: a.idx, color: a.color })
+    }))
+    return frags.sort((x, y) => y.frag.length - x.frag.length)
+  }, [annos, cvNorm])
+
+  const matchedAnnos = useMemo(() => new Set(fragments.map(f => f.annoIdx)), [fragments])
+  const regex = fragments.length ? new RegExp('(' + fragments.map(f => _escRe(f.frag)).join('|') + ')', 'gi') : null
+  const assigned = useRef(new Set())
+  assigned.current = new Set()  // 1re occurrence = ancre de scroll ; reset à chaque rendu
+
+  const flash = (idx) => { setPulse(idx); setTimeout(() => setPulse(p => (p === idx ? null : p)), 1300) }
+  const toAnno = (idx) => { flash(idx); rightRef.current?.querySelector(`#anno-${idx}`)?.scrollIntoView({ block: 'center', behavior: 'smooth' }) }
+  const toMark = (idx) => { flash(idx); leftRef.current?.querySelector(`[data-anno="${idx}"]`)?.scrollIntoView({ block: 'center', behavior: 'smooth' }) }
+
+  // Rend un texte du CV avec les extraits surlignés.
+  const hl = (text) => {
+    const t = (text || '').replace(/\s+/g, ' ').trim()
+    if (!t) return null
+    if (!regex) return t
+    return t.split(regex).map((part, i) => {
+      if (!part) return null
+      const f = fragments.find(fr => fr.frag.toLowerCase() === part.toLowerCase())
+      if (!f) return <span key={i}>{part}</span>
+      let id
+      if (!assigned.current.has(f.key)) { assigned.current.add(f.key); id = `hl-${f.key}` }
+      const on = pulse === f.annoIdx
+      return (
+        <mark key={i} id={id} data-anno={f.annoIdx} onClick={() => toAnno(f.annoIdx)}
+          style={{ background: f.color.mark, color: 'inherit', borderRadius: 2, padding: '0 1px', cursor: 'pointer',
+            boxShadow: `inset 0 -2px 0 ${f.color.line}${on ? `, 0 0 0 2px ${f.color.line}` : ''}` }}>
+          {part}
+        </mark>
+      )
+    })
+  }
+
+  const Bullets = ({ items }) => (
+    <ul className="space-y-1 mt-1" style={{ listStyle: 'disc', paddingLeft: 18 }}>
+      {(items || []).map((x, i) => <li key={i} className="text-[12.5px] leading-relaxed" style={{ color: 'var(--text)' }}>{hl(x)}</li>)}
+    </ul>
+  )
+  const SecH = ({ children }) => (
+    <p className="text-[11px] font-bold uppercase tracking-wide mt-4 mb-1 pb-1 border-b" style={{ color: 'var(--accent-text)', borderColor: 'var(--border)' }}>{children}</p>
+  )
+
+  const c = cv?.competences || {}
+  const bilan = bilanPhrase(result.llm_global)
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-stretch justify-center p-3 sm:p-4" onClick={onClose}>
+      <div className="card p-0 w-full max-w-6xl max-h-[95vh] flex flex-col" onClick={e => e.stopPropagation()}>
+        {/* En-tête : identité + essentiel + légende couleurs */}
+        <div className="p-4 border-b shrink-0" style={{ borderColor: 'var(--border)' }}>
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <h2 className="text-sm font-semibold flex items-center gap-2" style={{ color: 'var(--text)' }}>
+                <Highlighter size={15} className="text-brand-400 shrink-0" />
+                Dossier de transparence — {result.consultant_name}
+              </h2>
+              {bilan && <p className="text-[12.5px] mt-1.5 leading-relaxed" style={{ color: 'var(--text-muted)' }}>{bilan}</p>}
+            </div>
+            <button onClick={onClose} className="btn-ghost !p-1.5 shrink-0" title="Fermer (Échap)"><X size={16} /></button>
+          </div>
+          {annos.length > 0 && (
+            <div className="flex flex-wrap gap-x-3 gap-y-1 mt-3">
+              {annos.map(a => (
+                <button key={a.idx} onClick={() => (matchedAnnos.has(a.idx) ? toMark(a.idx) : toAnno(a.idx))}
+                  className="inline-flex items-center gap-1.5 text-[10.5px] font-medium"
+                  style={{ color: 'var(--text-muted)', opacity: matchedAnnos.has(a.idx) ? 1 : 0.5 }}
+                  title={matchedAnnos.has(a.idx) ? 'Surligné dans le CV' : 'Extrait non retrouvé dans le CV harmonisé'}>
+                  <span className="inline-block w-3 h-3 rounded-sm" style={{ background: a.color.mark, boxShadow: `inset 0 -2px 0 ${a.color.line}` }} />
+                  {a.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {loading ? (
+          <div className="flex-1 flex items-center justify-center gap-2 text-sm" style={{ color: 'var(--text-muted)' }}>
+            <Loader2 size={16} className="animate-spin" /> Génération du CV harmonisé…
+          </div>
+        ) : error ? (
+          <div className="flex-1 flex items-center justify-center text-sm p-6 text-center" style={{ color: 'var(--text-muted)' }}>
+            {error}. Le CV soumis reste consultable via le bouton « CV » de la carte.
+          </div>
+        ) : (
+          <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-2 divide-y lg:divide-y-0 lg:divide-x" style={{ borderColor: 'var(--border)' }}>
+            {/* Gauche : CV harmonisé surligné */}
+            <div ref={leftRef} className="overflow-y-auto p-4 lg:p-5">
+              <p className="text-[10px] font-semibold uppercase tracking-wider mb-3" style={{ color: 'var(--text-faint)' }}>CV — format Groupement-IT</p>
+              {cv?.title && <p className="text-base font-bold uppercase" style={{ color: 'var(--text)' }}>{cv.title}</p>}
+              {cv?.synthese?.length > 0 && (<><SecH>Synthèse des compétences</SecH><Bullets items={cv.synthese} /></>)}
+              {cv?.experiences?.length > 0 && (
+                <>
+                  <SecH>Expériences</SecH>
+                  <div className="space-y-3 mt-1">
+                    {cv.experiences.map((e, i) => (
+                      <div key={i}>
+                        <p className="text-[13px] font-semibold" style={{ color: 'var(--text)' }}>{e.company}{e.role ? ` — ${e.role}` : ''}</p>
+                        {e.period && <p className="text-[11px]" style={{ color: 'var(--text-faint)' }}>{e.period}</p>}
+                        {e.context && <p className="text-[12px] italic mt-0.5" style={{ color: 'var(--text-muted)' }}>Contexte : {hl(e.context)}</p>}
+                        {e.missions?.length > 0 && <Bullets items={e.missions} />}
+                        {e.environment && <p className="text-[12px] mt-1" style={{ color: 'var(--text-muted)' }}><span className="font-semibold">Environnement technique :</span> {hl(e.environment)}</p>}
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+              {(c.metier?.length || c.fonctionnelles?.length || c.soft_skills?.length || c.techniques?.length) ? (
+                <>
+                  <SecH>Compétences</SecH>
+                  {c.metier?.length > 0 && (<><p className="text-[11px] font-semibold mt-1" style={{ color: 'var(--text)' }}>Métier</p><Bullets items={c.metier} /></>)}
+                  {c.fonctionnelles?.length > 0 && (<><p className="text-[11px] font-semibold mt-1" style={{ color: 'var(--text)' }}>Fonctionnelles</p><Bullets items={c.fonctionnelles} /></>)}
+                  {c.soft_skills?.length > 0 && (<><p className="text-[11px] font-semibold mt-1" style={{ color: 'var(--text)' }}>Soft skills</p><Bullets items={c.soft_skills} /></>)}
+                  {c.techniques?.length > 0 && (<><p className="text-[11px] font-semibold mt-1" style={{ color: 'var(--text)' }}>Techniques</p><Bullets items={c.techniques} /></>)}
+                </>
+              ) : null}
+              {cv?.langues?.length > 0 && (<><SecH>Langues</SecH><Bullets items={cv.langues} /></>)}
+              {cv?.formation?.length > 0 && (<><SecH>Formation</SecH><Bullets items={cv.formation} /></>)}
+            </div>
+
+            {/* Droite : analyse reliée */}
+            <div ref={rightRef} className="overflow-y-auto p-4 lg:p-5" style={{ background: 'var(--surface-2)' }}>
+              <p className="text-[10px] font-semibold uppercase tracking-wider mb-3 flex items-center gap-1" style={{ color: 'var(--text-faint)' }}>
+                <Sparkles size={11} className="text-violet-400" /> Analyse reliée au CV
+              </p>
+              <div className="space-y-2.5">
+                {annos.map(a => {
+                  const pct = a.max ? Math.min((a.val / a.max) * 100, 100) : 0
+                  const on = pulse === a.idx
+                  const has = matchedAnnos.has(a.idx)
+                  return (
+                    <div key={a.idx} id={`anno-${a.idx}`} onClick={() => has && toMark(a.idx)}
+                      className="rounded-lg p-3 border transition-shadow"
+                      style={{ background: 'var(--surface)', borderColor: on ? a.color.line : 'var(--border)', cursor: has ? 'pointer' : 'default', boxShadow: on ? `0 0 0 2px ${a.color.line}` : 'none' }}>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="inline-flex items-center gap-1.5 text-[12px] font-semibold" style={{ color: 'var(--text)' }}>
+                          <span className="inline-block w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: a.color.line }} />
+                          {a.label}
+                        </span>
+                        <span className="text-[11px] tabular font-semibold" style={{ color: 'var(--text-muted)' }}>{a.val}/{a.max}</span>
+                      </div>
+                      <div className="h-1 rounded-full overflow-hidden my-1.5" style={{ background: 'var(--surface-2)' }}>
+                        <div className="h-full rounded-full" style={{ width: `${pct}%`, background: a.color.line }} />
+                      </div>
+                      <p className="text-[12px] leading-relaxed" style={{ color: 'var(--text-muted)' }}>{a.justif}</p>
+                      {has && (
+                        <button onClick={(e) => { e.stopPropagation(); toMark(a.idx) }}
+                          className="mt-1.5 inline-flex items-center gap-1 text-[10.5px] font-medium" style={{ color: a.color.line }}>
+                          <Highlighter size={11} /> Voir dans le CV
+                        </button>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+              {fragments.length === 0 && annos.length > 0 && (
+                <p className="text-[11px] mt-3 italic" style={{ color: 'var(--text-faint)' }}>
+                  Surlignage indisponible : les extraits cités n'ont pas été retrouvés tels quels dans le CV harmonisé (l'ancrage exact arrivera avec l'enrichissement backend).
+                </p>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function MatchCard({ result, rank, aoId, isAdmin, ao, onContact, expanded: expandedProp, onToggleExpand, decision }) {
   const [contactStatus, setContactStatus] = useState(result.contact_status || 'none')
   useEffect(() => { setContactStatus(result.contact_status || 'none') }, [result.contact_status])
+  const [showCv, setShowCv] = useState(false)  // vue « Transparence » (languette droite)
   // Vue détaillée/réduite : contrôlée par le parent (carousel) si fourni, pour
   // conserver le mode choisi quand on change de profil ; sinon état local.
   const [expandedLocal, setExpandedLocal] = useState(rank === 1)
@@ -466,8 +725,10 @@ function MatchCard({ result, rank, aoId, isAdmin, ao, onContact, expanded: expan
     }
   }
 
+  const showLanguette = isAdmin && !!result.submission_id
+
   return (
-    <div className={clsx('card overflow-hidden transition-all duration-200', rank === 1 && 'border-emerald-500/30 bg-emerald-500/3')}>
+    <div className={clsx('card overflow-hidden transition-all duration-200 relative', rank === 1 && 'border-emerald-500/30 bg-emerald-500/3')}>
       {rank === 1 && (
         <div className="bg-emerald-500/10 border-b border-emerald-500/20 px-4 py-1.5 flex items-center gap-1.5">
           <Award size={12} className="text-emerald-400" />
@@ -475,7 +736,17 @@ function MatchCard({ result, rank, aoId, isAdmin, ao, onContact, expanded: expan
         </div>
       )}
 
-      <div className="flex items-center gap-4 p-4 cursor-pointer hover:bg-white/2 transition-colors"
+      {/* Languette « Transparence » : ouvre le dossier CV + analyse reliée. */}
+      {showLanguette && (
+        <button onClick={(e) => { e.stopPropagation(); setShowCv(true) }}
+          title="Ouvrir le dossier de transparence : CV surligné + analyse reliée"
+          className="absolute right-0 top-1/2 -translate-y-1/2 z-10 flex flex-col items-center gap-1.5 py-3 px-1.5 rounded-l-lg border border-r-0 border-brand-500/40 bg-brand-500/10 text-brand-500 dark:text-brand-300 hover:bg-brand-500/20 transition-colors">
+          <Highlighter size={13} />
+          <span className="text-[9px] font-bold uppercase tracking-wider" style={{ writingMode: 'vertical-rl' }}>Transparence</span>
+        </button>
+      )}
+
+      <div className={clsx('flex items-center gap-4 p-4 cursor-pointer hover:bg-white/2 transition-colors', showLanguette && 'pr-9')}
            onClick={toggleExpand}>
         <div className="w-7 h-7 rounded-full bg-white/5 border border-white/10 flex items-center justify-center text-xs font-bold text-slate-400 shrink-0">
           {rank}
@@ -723,6 +994,8 @@ function MatchCard({ result, rank, aoId, isAdmin, ao, onContact, expanded: expan
           )}
         </div>
       )}
+
+      {showCv && <CvTransparencyView result={result} ao={ao} onClose={() => setShowCv(false)} />}
     </div>
   )
 }

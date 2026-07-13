@@ -566,7 +566,7 @@ function CvTransparencyView({ result, ao, onClose }) {
             <div className="min-w-0">
               <h2 className="text-sm font-semibold flex items-center gap-2" style={{ color: 'var(--text)' }}>
                 <Highlighter size={15} className="text-brand-400 shrink-0" />
-                Dossier de transparence — {result.consultant_name}
+                CV analysé — {result.consultant_name}
               </h2>
               {bilan && <p className="text-[12.5px] mt-1.5 leading-relaxed" style={{ color: 'var(--text-muted)' }}>{bilan}</p>}
             </div>
@@ -765,13 +765,13 @@ function MatchCard({ result, rank, aoId, isAdmin, ao, onContact, expanded: expan
         </div>
       )}
 
-      {/* Languette « Transparence » : ouvre le dossier CV + analyse reliée. */}
+      {/* Languette « CV analysé » : ouvre le CV surligné + analyse reliée. */}
       {showLanguette && (
         <button onClick={(e) => { e.stopPropagation(); setShowCv(true) }}
-          title="Ouvrir le dossier de transparence : CV surligné + analyse IA reliée"
+          title="Ouvrir le CV analysé : CV surligné + analyse IA reliée"
           className="absolute right-0 top-1/2 -translate-y-1/2 z-10 flex flex-col items-center gap-1.5 py-3.5 px-1.5 rounded-l-lg bg-brand-600 text-white shadow-lg shadow-brand-600/30 hover:bg-brand-500 hover:px-2 transition-all">
           <Highlighter size={14} />
-          <span className="text-[9.5px] font-bold uppercase tracking-wider" style={{ writingMode: 'vertical-rl' }}>Transparence CV</span>
+          <span className="text-[9.5px] font-bold uppercase tracking-wider" style={{ writingMode: 'vertical-rl' }}>CV analysé</span>
         </button>
       )}
 

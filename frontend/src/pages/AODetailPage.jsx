@@ -426,7 +426,8 @@ function extractQuotes(justif) {
 }
 
 function CvTransparencyView({ result, ao, onClose }) {
-  const [cv, setCv] = useState(null)
+  const [src, setSrc] = useState(null)          // P1 : texte du CV lu par l'IA (ancrage exact)
+  const [cv, setCv] = useState(null)            // repli : CV harmonisé (reformulé)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [pulse, setPulse] = useState(null)      // critère mis en évidence (flash)
@@ -435,11 +436,23 @@ function CvTransparencyView({ result, ao, onClose }) {
 
   useEffect(() => {
     let cancelled = false
-    setLoading(true); setError('')
-    api.post('/cv/harmonize', { submission_id: result.submission_id, consultant_id: result.consultant_id, lang: 'fr' })
-      .then(r => { if (!cancelled) setCv(r.data.cv) })
-      .catch(e => { if (!cancelled) setError(e.response?.data?.detail || 'CV indisponible') })
-      .finally(() => { if (!cancelled) setLoading(false) })
+    setLoading(true); setError(''); setSrc(null); setCv(null)
+    // P1 — on affiche le TEXTE que l'IA a réellement lu (pseudonymisé) : les
+    // justifications en citent des extraits → surlignage fiable. Repli sur le CV
+    // harmonisé (reformulé) si la source n'est pas disponible.
+    api.post('/matching/cv-source', { submission_id: result.submission_id, consultant_id: result.consultant_id })
+      .then(r => {
+        if (cancelled) return
+        const t = (r.data?.text || '').trim()
+        if (!t) throw new Error('empty')
+        setSrc(t); setLoading(false)
+      })
+      .catch(() => {
+        api.post('/cv/harmonize', { submission_id: result.submission_id, consultant_id: result.consultant_id, lang: 'fr' })
+          .then(r => { if (!cancelled) setCv(r.data.cv) })
+          .catch(e => { if (!cancelled) setError(e.response?.data?.detail || 'CV indisponible') })
+          .finally(() => { if (!cancelled) setLoading(false) })
+      })
     return () => { cancelled = true }
   }, [result.submission_id, result.consultant_id])
 
@@ -466,8 +479,14 @@ function CvTransparencyView({ result, ao, onClose }) {
       .map((a, i) => ({ ...a, idx: i, color: HL_PALETTE[i % HL_PALETTE.length], quotes: extractQuotes(a.justif) }))
   }, [result])
 
+  // Paragraphes du texte source (P1) pour le rendu du panneau gauche.
+  const pieces = useMemo(() => (
+    src ? src.split(/\n+/).map(s => s.replace(/[ \t]+/g, ' ').trim()).filter(Boolean) : null
+  ), [src])
+
   // Texte plat normalisé du CV (test de présence des extraits).
   const cvNorm = useMemo(() => {
+    if (src) return _normTxt(src)
     if (!cv) return ''
     const parts = []
     ;(cv.synthese || []).forEach(s => parts.push(s))
@@ -477,7 +496,7 @@ function CvTransparencyView({ result, ao, onClose }) {
     ;(cv.langues || []).forEach(x => parts.push(x))
     ;(cv.formation || []).forEach(x => parts.push(x))
     return _normTxt(parts.join('  '))
-  }, [cv])
+  }, [src, cv])
 
   // Fragments réellement présents dans le CV (extrait complet, ou début significatif).
   const fragments = useMemo(() => {
@@ -570,7 +589,7 @@ function CvTransparencyView({ result, ao, onClose }) {
 
         {loading ? (
           <div className="flex-1 flex items-center justify-center gap-2 text-sm" style={{ color: 'var(--text-muted)' }}>
-            <Loader2 size={16} className="animate-spin" /> Génération du CV harmonisé…
+            <Loader2 size={16} className="animate-spin" /> Chargement du CV…
           </div>
         ) : error ? (
           <div className="flex-1 flex items-center justify-center text-sm p-6 text-center" style={{ color: 'var(--text-muted)' }}>
@@ -578,9 +597,18 @@ function CvTransparencyView({ result, ao, onClose }) {
           </div>
         ) : (
           <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-2 divide-y lg:divide-y-0 lg:divide-x" style={{ borderColor: 'var(--border)' }}>
-            {/* Gauche : CV harmonisé surligné */}
+            {/* Gauche : CV surligné (texte source lu par l'IA en P1, sinon harmonisé) */}
             <div ref={leftRef} className="overflow-y-auto p-4 lg:p-5">
-              <p className="text-[10px] font-semibold uppercase tracking-wider mb-3" style={{ color: 'var(--text-faint)' }}>CV — format Groupement-IT</p>
+              <p className="text-[10px] font-semibold uppercase tracking-wider mb-3" style={{ color: 'var(--text-faint)' }}>
+                {src ? 'CV — texte lu par l’IA (anonymisé)' : 'CV — format Groupement-IT (reformulé)'}
+              </p>
+              {src ? (
+                <div className="space-y-2">
+                  {pieces.map((p, i) => (
+                    <p key={i} className="text-[12.5px] leading-relaxed" style={{ color: 'var(--text)' }}>{hl(p)}</p>
+                  ))}
+                </div>
+              ) : (<>
               {cv?.title && <p className="text-base font-bold uppercase" style={{ color: 'var(--text)' }}>{cv.title}</p>}
               {cv?.synthese?.length > 0 && (<><SecH>Synthèse des compétences</SecH><Bullets items={cv.synthese} /></>)}
               {cv?.experiences?.length > 0 && (
@@ -610,6 +638,7 @@ function CvTransparencyView({ result, ao, onClose }) {
               ) : null}
               {cv?.langues?.length > 0 && (<><SecH>Langues</SecH><Bullets items={cv.langues} /></>)}
               {cv?.formation?.length > 0 && (<><SecH>Formation</SecH><Bullets items={cv.formation} /></>)}
+              </>)}
             </div>
 
             {/* Droite : analyse reliée */}
@@ -739,10 +768,10 @@ function MatchCard({ result, rank, aoId, isAdmin, ao, onContact, expanded: expan
       {/* Languette « Transparence » : ouvre le dossier CV + analyse reliée. */}
       {showLanguette && (
         <button onClick={(e) => { e.stopPropagation(); setShowCv(true) }}
-          title="Ouvrir le dossier de transparence : CV surligné + analyse reliée"
-          className="absolute right-0 top-1/2 -translate-y-1/2 z-10 flex flex-col items-center gap-1.5 py-3 px-1.5 rounded-l-lg border border-r-0 border-brand-500/40 bg-brand-500/10 text-brand-500 dark:text-brand-300 hover:bg-brand-500/20 transition-colors">
-          <Highlighter size={13} />
-          <span className="text-[9px] font-bold uppercase tracking-wider" style={{ writingMode: 'vertical-rl' }}>Transparence</span>
+          title="Ouvrir le dossier de transparence : CV surligné + analyse IA reliée"
+          className="absolute right-0 top-1/2 -translate-y-1/2 z-10 flex flex-col items-center gap-1.5 py-3.5 px-1.5 rounded-l-lg bg-brand-600 text-white shadow-lg shadow-brand-600/30 hover:bg-brand-500 hover:px-2 transition-all">
+          <Highlighter size={14} />
+          <span className="text-[9.5px] font-bold uppercase tracking-wider" style={{ writingMode: 'vertical-rl' }}>Transparence CV</span>
         </button>
       )}
 
@@ -924,10 +953,7 @@ function MatchCard({ result, rank, aoId, isAdmin, ao, onContact, expanded: expan
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3">
               {cats.map(c => (
                 <div key={c.key}>
-                  <div className="flex justify-between text-xs text-slate-400 mb-1">
-                    <span>{c.label}</span>
-                    <span className="tabular text-white font-medium">{c.hybridVal}/{c.max}</span>
-                  </div>
+                  <div className="text-xs text-slate-400 mb-1">{c.label}</div>
                   <div className="h-1.5 bg-white/5 rounded-full overflow-hidden">
                     <div className="h-full bg-brand-500 rounded-full transition-all duration-700"
                          style={{ width: `${Math.min((c.hybridVal / c.max) * 100, 100)}%` }} />

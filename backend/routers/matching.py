@@ -142,6 +142,35 @@ def _contact_targets(results: list[dict]) -> dict:
     return out
 
 
+class CvSourceRequest(BaseModel):
+    submission_id: str
+    consultant_id: Optional[str] = None
+
+
+@router.post("/cv-source")
+async def get_cv_source(body: CvSourceRequest, user: dict = Depends(require_staff)):
+    """Texte du CV tel que l'IA l'a LU au scoring : brut, pseudonymisé (PII retirées).
+    C'est la source fidèle des extraits cités dans les justifications → la vue
+    « Transparence » peut surligner de façon fiable. Staff only (admin/commerce)."""
+    try:
+        sub = supabase.table("submissions").select("cv_text").eq(
+            "id", body.submission_id).single().execute().data
+    except Exception:
+        sub = None
+    if not sub or not (sub.get("cv_text") or "").strip():
+        raise HTTPException(status_code=404, detail="Texte du CV indisponible pour cette soumission")
+    name = None
+    if body.consultant_id:
+        try:
+            c = supabase.table("consultants").select("name").eq(
+                "id", body.consultant_id).single().execute().data
+            name = (c or {}).get("name")
+        except Exception:
+            name = None
+    from services.pseudonymize import strip_pii
+    return {"text": strip_pii(sub["cv_text"], name)}
+
+
 @router.get("/results/{ao_id}")
 async def get_matching_results(ao_id: str, user: dict = Depends(get_current_user)):
     try:

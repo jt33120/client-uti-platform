@@ -6,7 +6,7 @@ import { useConfirm } from '../contexts/ConfirmContext'
 import {
   ArrowLeft, Zap, Euro, MapPin, Clock, Users, CheckCircle,
   AlertCircle, TrendingUp, Award, ChevronDown, ChevronUp, ChevronLeft, ChevronRight,
-  Loader2, FileText, Trash2, RotateCcw, Building2, Plus,
+  Loader2, FileText, FileSearch, Trash2, RotateCcw, Building2, Plus,
   Upload, X, UserCircle2, Briefcase, Calendar, Pencil,
   CalendarClock, AlertTriangle, BarChart3, Sparkles,
   UploadCloud, Download, Target, Hash, Send, Bell, Mail, MessageSquareWarning, Languages, GripVertical, HelpCircle,
@@ -485,6 +485,15 @@ function MatchCard({ result, rank, aoId, isAdmin, ao, onContact, expanded: expan
           <div className="flex items-center gap-2 flex-wrap">
             <h3 className="text-sm font-semibold text-white">{result.consultant_name}</h3>
             <RecoTag reco={reco} />
+            {/* Consulter le CV — remonté près du nom, avec les autres actions. */}
+            {result.cv_url && (
+              <a href={result.cv_url} target="_blank" rel="noopener noreferrer"
+                onClick={e => e.stopPropagation()}
+                title="Consulter le CV soumis"
+                className="btn-ghost !h-7 !px-2.5 text-[11px] gap-1 shrink-0 text-slate-300 hover:text-white border border-white/10">
+                <FileSearch size={12} /> CV
+              </a>
+            )}
             {/* Contacter le partenaire — juste à côté du nom/trigramme (compact),
                 plutôt qu'un bouton pleine largeur en bas de carte. */}
             {isAdmin && (
@@ -637,22 +646,24 @@ function MatchCard({ result, rank, aoId, isAdmin, ao, onContact, expanded: expan
             </div>
           </div>
 
-          {/* Détail par critère : barre hybride + justification IA */}
+          {/* Détail par critère : barres seules, 2 colonnes. Le « pourquoi »
+              (justifications citées du CV) vit dans le bilan À retenir / Vigilance. */}
           <div className="space-y-3" data-tour="match-criteria">
             <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Détail par critère</p>
-            {cats.map(c => (
-              <div key={c.key}>
-                <div className="flex justify-between text-xs text-slate-400 mb-1">
-                  <span>{c.label}</span>
-                  <span className="tabular text-white font-medium">{c.hybridVal}/{c.max}</span>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3">
+              {cats.map(c => (
+                <div key={c.key}>
+                  <div className="flex justify-between text-xs text-slate-400 mb-1">
+                    <span>{c.label}</span>
+                    <span className="tabular text-white font-medium">{c.hybridVal}/{c.max}</span>
+                  </div>
+                  <div className="h-1.5 bg-white/5 rounded-full overflow-hidden">
+                    <div className="h-full bg-brand-500 rounded-full transition-all duration-700"
+                         style={{ width: `${Math.min((c.hybridVal / c.max) * 100, 100)}%` }} />
+                  </div>
                 </div>
-                <div className="h-1.5 bg-white/5 rounded-full overflow-hidden">
-                  <div className="h-full bg-brand-500 rounded-full transition-all duration-700"
-                       style={{ width: `${Math.min((c.hybridVal / c.max) * 100, 100)}%` }} />
-                </div>
-                {c.justif && <p className="text-[11px] text-slate-500 mt-1">{c.justif}</p>}
-              </div>
-            ))}
+              ))}
+            </div>
 
             {/* Langues détectées au CV + contrôle de la langue imposée par l'AO */}
             {(() => {
@@ -680,12 +691,6 @@ function MatchCard({ result, rank, aoId, isAdmin, ao, onContact, expanded: expan
               )
             })()}
           </div>
-          {result.cv_url && (
-            <a href={result.cv_url} target="_blank" rel="noopener noreferrer"
-               className="btn-ghost text-xs w-full justify-center">
-              <FileText size={13} /> Consulter le CV soumis
-            </a>
-          )}
 
           {/* Suivi du contact (le bouton « Contacter » est désormais à côté du
               nom, en tête de carte). Ici : seulement le statut + actions de suivi. */}

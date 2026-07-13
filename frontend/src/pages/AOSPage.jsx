@@ -6,7 +6,7 @@ import { useConfirm } from '../contexts/ConfirmContext'
 import {
   FileText, Plus, Euro, MapPin, Clock, ArrowRight, Search,
   Building2, Users, Calendar, CalendarClock,
-  Pencil, X, Loader2, ChevronDown, Check, Trash2, ArrowDownUp, Sparkles,
+  Pencil, X, Loader2, ChevronDown, ChevronLeft, ChevronRight, Check, Trash2, ArrowDownUp, Sparkles,
 } from 'lucide-react'
 import { TierBadge } from '../components/badges'
 import { EmptyState } from '../components/EmptyState'
@@ -496,6 +496,156 @@ function AOTable({ items, isStaff, navigate, onEdit, onDelete, selected, onToggl
   )
 }
 
+// ── AO calendar (vue agenda — échéances de réponse) ───────────────────────────
+// Grille mensuelle : chaque AO se pose sur sa date d'échéance. Pensé pour voir
+// d'un coup d'œil les fermetures à venir (format agenda) plutôt qu'en liste.
+const WEEKDAYS = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim']
+
+function AOCalendar({ items, navigate }) {
+  // Mois affiché (1er du mois). On démarre sur le mois courant.
+  const [cursor, setCursor] = useState(() => {
+    const t = new Date()
+    return new Date(t.getFullYear(), t.getMonth(), 1)
+  })
+
+  // AO regroupés par jour d'échéance (clé = année-mois-jour, en local).
+  const byDay = useMemo(() => {
+    const m = new Map()
+    for (const ao of items) {
+      const d = parseDateLocal(ao.deadline)
+      if (!d) continue
+      const key = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`
+      if (!m.has(key)) m.set(key, [])
+      m.get(key).push(ao)
+    }
+    return m
+  }, [items])
+
+  const noDeadline = useMemo(
+    () => items.filter(a => !parseDateLocal(a.deadline)).length,
+    [items]
+  )
+
+  const year = cursor.getFullYear()
+  const month = cursor.getMonth()
+  const today = new Date(); today.setHours(0, 0, 0, 0)
+
+  // Grille alignée sur lundi ; on ne rend que le nombre de semaines nécessaire.
+  const startOffset = (new Date(year, month, 1).getDay() + 6) % 7 // 0 = lundi
+  const daysInMonth = new Date(year, month + 1, 0).getDate()
+  const weeks = Math.ceil((startOffset + daysInMonth) / 7)
+  const cells = Array.from({ length: weeks * 7 }, (_, i) => new Date(year, month, 1 - startOffset + i))
+
+  // Nombre d'échéances tombant dans le mois affiché (indicateur d'en-tête).
+  const monthCount = cells.reduce((n, d) => {
+    if (d.getMonth() !== month) return n
+    return n + (byDay.get(`${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`)?.length || 0)
+  }, 0)
+
+  const goMonth = (delta) => setCursor(new Date(year, month + delta, 1))
+  const goToday = () => { const t = new Date(); setCursor(new Date(t.getFullYear(), t.getMonth(), 1)) }
+  const monthLabel = new Intl.DateTimeFormat('fr-FR', { month: 'long', year: 'numeric' }).format(cursor)
+
+  return (
+    <div className="card overflow-hidden">
+      {/* En-tête : navigation mois + compteur d'échéances */}
+      <div className="flex items-center justify-between gap-3 px-4 py-3"
+        style={{ borderBottom: '1px solid var(--border)' }}>
+        <div className="flex items-center gap-2">
+          <button onClick={() => goMonth(-1)} className="btn-ghost p-1.5" title="Mois précédent">
+            <ChevronLeft size={15} />
+          </button>
+          <h2 className="text-sm font-semibold capitalize min-w-[150px] text-center" style={{ color: 'var(--text)' }}>
+            {monthLabel}
+          </h2>
+          <button onClick={() => goMonth(1)} className="btn-ghost p-1.5" title="Mois suivant">
+            <ChevronRight size={15} />
+          </button>
+          <button onClick={goToday} className="btn-ghost text-xs px-2.5 py-1 ml-1">
+            Aujourd'hui
+          </button>
+        </div>
+        <span className="text-xs" style={{ color: 'var(--text-faint)' }}>
+          {monthCount} échéance{monthCount > 1 ? 's' : ''} ce mois-ci
+        </span>
+      </div>
+
+      <div className="overflow-x-auto">
+        <div className="min-w-[720px]">
+          {/* Bandeau jours de la semaine */}
+          <div className="grid grid-cols-7">
+            {WEEKDAYS.map(w => (
+              <div key={w} className="px-2 py-2 text-[11px] font-medium uppercase tracking-wide text-center"
+                style={{ color: 'var(--text-faint)', borderBottom: '1px solid var(--border)' }}>
+                {w}
+              </div>
+            ))}
+          </div>
+
+          {/* Cellules du mois */}
+          <div className="grid grid-cols-7">
+            {cells.map((d, i) => {
+              const inMonth = d.getMonth() === month
+              const isToday = d.getTime() === today.getTime()
+              const dayAos = byDay.get(`${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`) || []
+              return (
+                <div
+                  key={i}
+                  className="min-h-[104px] p-1.5 flex flex-col gap-1"
+                  style={{
+                    borderBottom: '1px solid var(--border)',
+                    borderRight: (i % 7 !== 6) ? '1px solid var(--border)' : undefined,
+                    background: inMonth ? undefined : 'var(--surface-2)',
+                    opacity: inMonth ? 1 : 0.55,
+                  }}
+                >
+                  <div className="flex items-center justify-between">
+                    <span
+                      className="text-[11px] tabular w-5 h-5 flex items-center justify-center rounded-full"
+                      style={isToday
+                        ? { background: 'var(--accent)', color: '#fff', fontWeight: 600 }
+                        : { color: 'var(--text-muted)' }}
+                    >
+                      {d.getDate()}
+                    </span>
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    {dayAos.slice(0, 3).map(ao => {
+                      const dl = deadlineMeta(ao.deadline)
+                      return (
+                        <button
+                          key={ao.id}
+                          onClick={() => navigate(`/aos/${ao.id}`)}
+                          className="text-left w-full px-1.5 py-1 rounded text-[11px] font-medium leading-tight truncate transition-opacity hover:opacity-80"
+                          style={DEADLINE_TONE[dl?.tone] || { background: 'var(--surface-2)', color: 'var(--text-muted)' }}
+                          title={`${ao.clients?.name ? ao.clients.name + ' · ' : ''}${ao.title}${dl ? ' · ' + dl.rel : ''}`}
+                        >
+                          {ao.clients?.name ? `${ao.clients.name} — ` : ''}{ao.title}
+                        </button>
+                      )
+                    })}
+                    {dayAos.length > 3 && (
+                      <span className="text-[10px] px-1.5" style={{ color: 'var(--text-faint)' }}>
+                        +{dayAos.length - 3} autre{dayAos.length - 3 > 1 ? 's' : ''}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      </div>
+
+      {noDeadline > 0 && (
+        <div className="px-4 py-2.5 text-[11px]" style={{ color: 'var(--text-faint)', borderTop: '1px solid var(--border)' }}>
+          {noDeadline} AO{noDeadline > 1 ? 's' : ''} sans date d'échéance {noDeadline > 1 ? 'ne sont' : "n'est"} pas affiché{noDeadline > 1 ? 's' : ''} ici.
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function AOSPage() {
   const { isStaff } = useAuth()
   const confirm = useConfirm()
@@ -710,6 +860,7 @@ export default function AOSPage() {
             { k: 'client', l: 'Par client' },
             { k: 'cards', l: 'Cartes' },
             { k: 'table', l: 'Tableau' },
+            { k: 'calendar', l: 'Calendrier' },
           ].map(o => (
             <button
               key={o.k}
@@ -773,6 +924,8 @@ export default function AOSPage() {
             )}
           </>}
         />
+      ) : view === 'calendar' ? (
+        <AOCalendar items={sorted} navigate={navigate} />
       ) : view === 'table' ? (
         <AOTable
           items={sorted}

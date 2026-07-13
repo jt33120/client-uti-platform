@@ -5,7 +5,7 @@ import ErrorJournal from '../components/ErrorJournal'
 import UTILoader, { ChartLoader } from '../components/UTILoader'
 import {
   Activity, Coins, Radio, RefreshCw, Cpu, TrendingUp,
-  Wallet, ShieldCheck, Layers, FileText, Users, AlertTriangle,
+  Wallet, ShieldCheck, Layers, FileText, Users, AlertTriangle, Loader2,
 } from 'lucide-react'
 
 const TABS = [
@@ -62,6 +62,40 @@ function Sparkline({ values, color = 'var(--accent)', width = 104, height = 30 }
   )
 }
 
+// Jauge « dépense vs budget » d'une période, avec limite éditable + marqueur 80 %.
+function BudgetRow({ label, periodHint, spend, limitDraft, onLimit }) {
+  const limit = Number(limitDraft) || 0
+  const pct = (limit > 0 && spend != null) ? (spend / limit) * 100 : null
+  const tone = pct == null ? 'var(--text-faint)' : pct >= 100 ? 'var(--danger)' : pct >= 80 ? 'var(--warning)' : 'var(--success)'
+  return (
+    <div>
+      <div className="flex items-center justify-between gap-3 mb-1.5">
+        <span className="text-[12.5px] font-medium" style={{ color: 'var(--text)' }}>
+          {label} <span style={{ color: 'var(--text-faint)' }}>· {periodHint}</span>
+        </span>
+        <div className="flex items-center gap-1">
+          <span className="text-[12px]" style={{ color: 'var(--text-faint)' }}>$</span>
+          <input type="number" min="0" step="1" value={limitDraft}
+            onChange={(e) => onLimit(e.target.value)}
+            className="input !h-8 w-24 text-right text-[13px]" placeholder="0" />
+        </div>
+      </div>
+      <div className="relative h-2 rounded-full overflow-hidden" style={{ background: 'var(--surface-2)' }}>
+        {pct != null && <div className="h-full rounded-full" style={{ width: `${Math.min(100, pct)}%`, background: tone }} />}
+        {limit > 0 && <div className="absolute top-[-2px] bottom-[-2px] w-px" style={{ left: '80%', background: 'var(--border-strong)' }} title="Seuil d'alerte 80 %" />}
+      </div>
+      <div className="flex items-center justify-between mt-1 text-[11px]">
+        <span style={{ color: 'var(--text-faint)' }} className="tabular">
+          {spend != null ? `Dépensé : $${spend.toFixed(2)}` : 'Dépense indisponible'}
+        </span>
+        <span style={{ color: pct != null ? tone : 'var(--text-faint)' }} className="tabular font-medium">
+          {limit > 0 ? (pct != null ? `${Math.round(pct)} % du budget` : `budget $${limit}`) : 'aucune limite'}
+        </span>
+      </div>
+    </div>
+  )
+}
+
 // ── Onglet Usage & coûts IA — miroir OpenRouter + traçabilité ────
 function AiUsageTab() {
   const [win, setWin] = useState('30d')
@@ -77,6 +111,37 @@ function AiUsageTab() {
     api.get('/admin/rum', { params: { window: w === '90d' ? '30d' : w } }).then(r => setRum(r.data)).catch(() => setRum(null))
   }
   useEffect(() => { load(win) }, [win])
+
+  // Budget IA (indépendant de la fenêtre) — chargé une fois.
+  const [budget, setBudget] = useState(null)
+  const [budgetDraft, setBudgetDraft] = useState(null)
+  const [savingBudget, setSavingBudget] = useState(false)
+  useEffect(() => {
+    api.get('/admin/settings')
+      .then(r => { setBudget(r.data.ai_budget); setBudgetDraft(r.data.ai_budget) })
+      .catch(() => {})
+  }, [])
+  const budgetDirty = budget && budgetDraft && (
+    !!budget.enabled !== !!budgetDraft.enabled ||
+    Number(budget.weekly_usd) !== Number(budgetDraft.weekly_usd) ||
+    Number(budget.monthly_usd) !== Number(budgetDraft.monthly_usd)
+  )
+  const saveBudget = async () => {
+    if (!budgetDraft) return
+    setSavingBudget(true)
+    try {
+      const r = await api.put('/admin/settings/ai-budget', {
+        enabled: !!budgetDraft.enabled,
+        weekly_usd: Number(budgetDraft.weekly_usd) || 0,
+        monthly_usd: Number(budgetDraft.monthly_usd) || 0,
+      })
+      setBudget(r.data.ai_budget); setBudgetDraft(r.data.ai_budget)
+    } catch (e) {
+      alert(e.response?.data?.detail || "Erreur lors de l'enregistrement du budget")
+    } finally {
+      setSavingBudget(false)
+    }
+  }
 
   const winLabel = (AI_WINDOWS.find(w => w.k === win) || {}).l || win
   const orLoading = orr === undefined            // valeurs en cours de recherche
@@ -187,6 +252,44 @@ function AiUsageTab() {
             Seul le solde du compte est visible. Ajouter la <strong>clé de provisioning</strong> (<code>OPENROUTER_PROVISIONING_KEY</code>)
             côté serveur pour le détail par modèle, par jour et par clé — comme le dashboard OpenRouter.
           </span>
+        </div>
+      )}
+
+      {/* Budget IA — limites hebdo/mensuelle + alerte email aux admins (80 % / 100 %) */}
+      {budgetDraft && (
+        <div>
+          <p className="text-[11px] uppercase tracking-[0.08em] font-semibold mb-2 flex items-center gap-1.5 flex-wrap" style={{ color: 'var(--text-faint)' }}>
+            <Wallet size={13} /> Budget IA
+            <span className="normal-case tracking-normal font-normal" style={{ color: 'var(--text-faint)' }}>
+              · alerte email aux admins à 80 % puis 100 % · sans coupure de l'IA
+            </span>
+          </p>
+          <div className="card p-4 space-y-4">
+            <div className="flex items-center justify-between gap-3">
+              <label className="flex items-center gap-2 text-[12.5px] cursor-pointer" style={{ color: 'var(--text-muted)' }}>
+                <input type="checkbox" checked={!!budgetDraft.enabled}
+                  onChange={(e) => setBudgetDraft(d => ({ ...d, enabled: e.target.checked }))} />
+                Surveillance active
+              </label>
+              <button onClick={saveBudget} disabled={!budgetDirty || savingBudget}
+                className="btn-primary !h-8 text-xs px-4 flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-default">
+                {savingBudget ? <Loader2 size={13} className="animate-spin" /> : 'Enregistrer'}
+              </button>
+            </div>
+            <div className="grid sm:grid-cols-2 gap-x-8 gap-y-5">
+              <BudgetRow label="Hebdomadaire" periodHint="7 j" spend={pc ? pc.weekly : null}
+                limitDraft={budgetDraft.weekly_usd}
+                onLimit={(v) => setBudgetDraft(d => ({ ...d, weekly_usd: v }))} />
+              <BudgetRow label="Mensuel" periodHint="mois en cours" spend={pc ? pc.monthly : null}
+                limitDraft={budgetDraft.monthly_usd}
+                onLimit={(v) => setBudgetDraft(d => ({ ...d, monthly_usd: v }))} />
+            </div>
+            <p className="text-[11px]" style={{ color: 'var(--text-faint)' }}>
+              Dépense réelle OpenRouter (clés plateforme). Une limite à <strong>0</strong> ne surveille pas la période.
+              Le contrôle tourne chaque heure ; une alerte au plus par palier et par période.
+              {!hasProv && ' La dépense en direct nécessite la clé de provisioning OpenRouter côté serveur.'}
+            </p>
+          </div>
         </div>
       )}
 

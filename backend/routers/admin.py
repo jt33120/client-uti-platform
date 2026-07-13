@@ -11,7 +11,10 @@ from typing import Literal, Optional
 import httpx
 
 from services.supabase_client import supabase
-from services.app_settings import get_notification_settings, set_notification_settings
+from services.app_settings import (
+    get_notification_settings, set_notification_settings,
+    get_ai_budget_settings, set_ai_budget_settings,
+)
 from routers.auth import require_admin
 from config import settings
 
@@ -630,10 +633,19 @@ class NotificationSettings(BaseModel):
     relance_max: Optional[int] = None
 
 
+class AiBudgetSettings(BaseModel):
+    enabled: Optional[bool] = None
+    weekly_usd: Optional[float] = None
+    monthly_usd: Optional[float] = None
+
+
 @router.get("/settings")
 async def get_settings(user: dict = Depends(require_admin)):
-    """Réglages globaux pilotés par l'admin (notifications + relances)."""
-    return {"notifications": get_notification_settings()}
+    """Réglages globaux pilotés par l'admin (notifications + relances + budget IA)."""
+    return {
+        "notifications": get_notification_settings(),
+        "ai_budget": get_ai_budget_settings(),
+    }
 
 
 @router.put("/settings/notifications")
@@ -642,6 +654,16 @@ async def update_notif_settings(body: NotificationSettings, user: dict = Depends
     if not patch:
         raise HTTPException(status_code=422, detail="Aucun réglage fourni.")
     return {"notifications": set_notification_settings(patch)}
+
+
+@router.put("/settings/ai-budget")
+async def update_ai_budget_settings(body: AiBudgetSettings, user: dict = Depends(require_admin)):
+    """Budgets IA hebdo/mensuel (USD). Alerte email aux admins à 80 % puis 100 %.
+    Une limite à 0 désactive la surveillance de cette période. Alerte seulement."""
+    patch = body.model_dump(exclude_none=True)
+    if not patch:
+        raise HTTPException(status_code=422, detail="Aucun réglage fourni.")
+    return {"ai_budget": set_ai_budget_settings(patch)}
 
 
 @router.get("/errors")

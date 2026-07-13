@@ -143,6 +143,20 @@ function AiUsageTab() {
     }
   }
 
+  const [testingAlert, setTestingAlert] = useState(false)
+  const [testResult, setTestResult] = useState(null) // { ok, msg }
+  const testAlert = async () => {
+    setTestingAlert(true); setTestResult(null)
+    try {
+      const r = await api.post('/admin/ai-budget/test')
+      setTestResult({ ok: true, msg: `Email envoyé à ${r.data.to} · ${r.data.admin_count} admin(s) alerté(s) en condition réelle.` })
+    } catch (e) {
+      setTestResult({ ok: false, msg: e.response?.data?.detail || "Échec de l'envoi de l'email de test." })
+    } finally {
+      setTestingAlert(false)
+    }
+  }
+
   const winLabel = (AI_WINDOWS.find(w => w.k === win) || {}).l || win
   const orLoading = orr === undefined            // valeurs en cours de recherche
   const orConfigured = orr && orr.configured
@@ -265,17 +279,30 @@ function AiUsageTab() {
             </span>
           </p>
           <div className="card p-4 space-y-4">
-            <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
               <label className="flex items-center gap-2 text-[12.5px] cursor-pointer" style={{ color: 'var(--text-muted)' }}>
                 <input type="checkbox" checked={!!budgetDraft.enabled}
                   onChange={(e) => setBudgetDraft(d => ({ ...d, enabled: e.target.checked }))} />
                 Surveillance active
               </label>
-              <button onClick={saveBudget} disabled={!budgetDirty || savingBudget}
-                className="btn-primary !h-8 text-xs px-4 flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-default">
-                {savingBudget ? <Loader2 size={13} className="animate-spin" /> : 'Enregistrer'}
-              </button>
+              <div className="flex items-center gap-2">
+                <button onClick={testAlert} disabled={testingAlert}
+                  className="btn-ghost !h-8 text-xs px-3 flex items-center gap-1.5 disabled:opacity-40"
+                  title="Envoie un email d'alerte d'exemple à votre adresse">
+                  {testingAlert ? <Loader2 size={13} className="animate-spin" /> : <Radio size={13} />}
+                  Tester l'alerte
+                </button>
+                <button onClick={saveBudget} disabled={!budgetDirty || savingBudget}
+                  className="btn-primary !h-8 text-xs px-4 flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-default">
+                  {savingBudget ? <Loader2 size={13} className="animate-spin" /> : 'Enregistrer'}
+                </button>
+              </div>
             </div>
+            {testResult && (
+              <p className="text-[12px] -mt-1" style={{ color: testResult.ok ? 'var(--success)' : 'var(--danger)' }}>
+                {testResult.msg}
+              </p>
+            )}
             <div className="grid sm:grid-cols-2 gap-x-8 gap-y-5">
               <BudgetRow label="Hebdomadaire" periodHint="7 j" spend={pc ? pc.weekly : null}
                 limitDraft={budgetDraft.weekly_usd}

@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import api from '../lib/api'
+// pdfjs (~400 Ko) chargé à la demande, seulement quand la vue « CV analysé » s'ouvre.
+const loadPdfLib = () => import('../lib/pdfHighlight')
 import { useAuth } from '../contexts/AuthContext'
 import { useConfirm } from '../contexts/ConfirmContext'
 import {
@@ -402,11 +404,14 @@ function splitHighlights(cats) {
   return { forts, faibles }
 }
 
-// ── Vue « Transparence » (P0) : CV harmonisé à gauche, analyse IA reliée à droite.
-// Les justifications IA citent le CV entre « … » ; on retrouve ces extraits dans le
-// CV harmonisé et on les SURLIGNE (une couleur par critère), pour rendre la notation
-// lisible et inviter le commercial à lire le CV, guidé vers l'essentiel. 100 % front,
-// sur les données existantes. (P1 backend fiabilisera l'ancrage via extraits exacts.)
+// ── Vue « CV analysé » : le VRAI PDF à gauche, annotations de l'IA reliées à droite.
+// On rend les pages du PDF telles quelles (via pdfjs), puis on pose PAR-DESSUS des
+// zones de surlignage (une couleur par critère) calées sur la géométrie du texte —
+// comme un relecteur humain qui surligne et annote. Les justifications IA citent le
+// CV entre « … » ; on retrouve ces extraits dans la couche texte du PDF et on les
+// surligne. Repli sur le texte anonymisé lu par l'IA, puis le CV harmonisé, si le
+// PDF est indisponible. Objectif : rendre la notation transparente et guider le
+// commercial vers l'essentiel du CV.
 const HL_PALETTE = [
   { mark: 'rgba(99,102,241,.22)', line: '#6366f1' },
   { mark: 'rgba(13,148,136,.26)', line: '#0d9488' },
@@ -426,35 +431,76 @@ function extractQuotes(justif) {
 }
 
 function CvTransparencyView({ result, ao, onClose }) {
-  const [src, setSrc] = useState(null)          // P1 : texte du CV lu par l'IA (ancrage exact)
-  const [cv, setCv] = useState(null)            // repli : CV harmonisé (reformulé)
+  const [pages, setPages] = useState(null)     // PDF rendu (mode principal)
+  const [src, setSrc] = useState(null)         // repli : texte anonymisé lu par l'IA
+  const [cv, setCv] = useState(null)           // repli : CV harmonisé (reformulé)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [pulse, setPulse] = useState(null)      // critère mis en évidence (flash)
+  const [pulse, setPulse] = useState(null)     // critère mis en évidence (flash)
   const leftRef = useRef(null)
   const rightRef = useRef(null)
+  const pagesRef = useRef(null)                 // pour révoquer les object URLs
+  const modRef = useRef(null)                   // module pdfHighlight (chargé à la demande)
+  // Libère les object URLs des pages (indépendant du module lazy).
+  const revoke = (pgs) => (pgs || []).forEach(p => { if (p?.imgUrl) { try { URL.revokeObjectURL(p.imgUrl) } catch { /* noop */ } } })
 
+  // Annotations = critères notés + justification + couleur + citations (« … »).
+  const annos = useMemo(() => {
+    const lbd = result.llm_breakdown || {}
+    const hbd = result.hybrid_breakdown || null
+    const bd = result.breakdown || {}
+    const weights = result.weights || null
+    return activeCats(weights)
+      .map(c => {
+        const max = (weights && weights[c.wKey]) || c.dflt
+        const val = hbd?.[c.det] ?? bd[c.det] ?? 0
+        return {
+          key: c.det, label: c.label, max, val,
+          pct: max ? Math.min((val / max) * 100, 100) : 0,
+          justif: lbd?.[c.llm]?.justification || '',
+        }
+      })
+      .filter(a => a.justif)
+      .map((a, i) => ({ ...a, idx: i, color: HL_PALETTE[i % HL_PALETTE.length], quotes: extractQuotes(a.justif) }))
+  }, [result])
+
+  // Chargement : le VRAI PDF d'abord (octets servis par le backend → surlignage
+  // géométrique posé par-dessus). Repli sur le texte lu par l'IA, puis le CV
+  // harmonisé, si le PDF est indisponible (autre format, extraction impossible…).
   useEffect(() => {
     let cancelled = false
-    setLoading(true); setError(''); setSrc(null); setCv(null)
-    // P1 — on affiche le TEXTE que l'IA a réellement lu (pseudonymisé) : les
-    // justifications en citent des extraits → surlignage fiable. Repli sur le CV
-    // harmonisé (reformulé) si la source n'est pas disponible.
-    api.post('/matching/cv-source', { submission_id: result.submission_id, consultant_id: result.consultant_id })
-      .then(r => {
-        if (cancelled) return
+    if (pagesRef.current) { revoke(pagesRef.current); pagesRef.current = null }
+    setLoading(true); setError(''); setPages(null); setSrc(null); setCv(null)
+    const ids = { submission_id: result.submission_id, consultant_id: result.consultant_id }
+    ;(async () => {
+      try {
+        const resp = await api.post('/matching/cv-file', ids, { responseType: 'arraybuffer' })
+        const mod = modRef.current || (modRef.current = await loadPdfLib())
+        const rendered = await mod.renderCvPdf(resp.data, { targetWidth: 1240 })
+        if (cancelled) { revoke(rendered); return }
+        if (!rendered.length) throw new Error('empty')
+        pagesRef.current = rendered
+        setPages(rendered); setLoading(false)
+        return
+      } catch { /* repli texte ci-dessous */ }
+      try {
+        const r = await api.post('/matching/cv-source', ids)
         const t = (r.data?.text || '').trim()
         if (!t) throw new Error('empty')
-        setSrc(t); setLoading(false)
-      })
-      .catch(() => {
-        api.post('/cv/harmonize', { submission_id: result.submission_id, consultant_id: result.consultant_id, lang: 'fr' })
-          .then(r => { if (!cancelled) setCv(r.data.cv) })
-          .catch(e => { if (!cancelled) setError(e.response?.data?.detail || 'CV indisponible') })
-          .finally(() => { if (!cancelled) setLoading(false) })
-      })
+        if (!cancelled) { setSrc(t); setLoading(false) }
+        return
+      } catch { /* repli harmonisé ci-dessous */ }
+      try {
+        const r = await api.post('/cv/harmonize', { ...ids, lang: 'fr' })
+        if (!cancelled) { setCv(r.data.cv); setLoading(false) }
+      } catch (e) {
+        if (!cancelled) { setError(e.response?.data?.detail || 'CV indisponible'); setLoading(false) }
+      }
+    })()
     return () => { cancelled = true }
   }, [result.submission_id, result.consultant_id])
+
+  useEffect(() => () => { if (pagesRef.current) revoke(pagesRef.current) }, [])
 
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose() }
@@ -462,30 +508,20 @@ function CvTransparencyView({ result, ao, onClose }) {
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
 
-  // Annotations = critères notés + justification, couleur assignée.
-  const annos = useMemo(() => {
-    const lbd = result.llm_breakdown || {}
-    const hbd = result.hybrid_breakdown || null
-    const bd = result.breakdown || {}
-    const weights = result.weights || null
-    return activeCats(weights)
-      .map(c => ({
-        key: c.det, label: c.label,
-        max: (weights && weights[c.wKey]) || c.dflt,
-        val: hbd?.[c.det] ?? bd[c.det] ?? 0,
-        justif: lbd?.[c.llm]?.justification || '',
-      }))
-      .filter(a => a.justif)
-      .map((a, i) => ({ ...a, idx: i, color: HL_PALETTE[i % HL_PALETTE.length], quotes: extractQuotes(a.justif) }))
-  }, [result])
+  // ── Mode PDF : surlignages géométriques par page.
+  const marks = useMemo(() => (pages && modRef.current ? modRef.current.matchAnnotations(pages, annos) : []), [pages, annos])
+  const marksByPage = useMemo(() => {
+    const m = {}
+    marks.forEach(mk => { (m[mk.page] || (m[mk.page] = [])).push(mk) })
+    return m
+  }, [marks])
 
-  // Paragraphes du texte source (P1) pour le rendu du panneau gauche.
+  // ── Mode texte (repli) : recherche des extraits dans le texte affiché.
   const pieces = useMemo(() => (
     src ? src.split(/\n+/).map(s => s.replace(/[ \t]+/g, ' ').trim()).filter(Boolean) : null
   ), [src])
-
-  // Texte plat normalisé du CV (test de présence des extraits).
   const cvNorm = useMemo(() => {
+    if (pages) return ''
     if (src) return _normTxt(src)
     if (!cv) return ''
     const parts = []
@@ -496,13 +532,12 @@ function CvTransparencyView({ result, ao, onClose }) {
     ;(cv.langues || []).forEach(x => parts.push(x))
     ;(cv.formation || []).forEach(x => parts.push(x))
     return _normTxt(parts.join('  '))
-  }, [src, cv])
-
-  // Fragments réellement présents dans le CV (extrait complet, ou début significatif).
-  const fragments = useMemo(() => {
+  }, [pages, src, cv])
+  const textFrags = useMemo(() => {
+    if (pages) return []
     const frags = []
     annos.forEach(a => a.quotes.forEach((q, qi) => {
-      const words = q.split(/\s+/)
+      const words = q.replace(/\[[^\]]{1,24}\]/g, ' ').split(/\s+/).filter(Boolean)
       let chosen = null
       for (const n of [words.length, 12, 9, 6, 4]) {
         if (n > words.length) continue
@@ -512,31 +547,31 @@ function CvTransparencyView({ result, ao, onClose }) {
       if (chosen) frags.push({ frag: chosen, key: `${a.idx}-${qi}`, annoIdx: a.idx, color: a.color })
     }))
     return frags.sort((x, y) => y.frag.length - x.frag.length)
-  }, [annos, cvNorm])
+  }, [pages, annos, cvNorm])
+  const regex = textFrags.length ? new RegExp('(' + textFrags.map(f => _escRe(f.frag)).join('|') + ')', 'gi') : null
 
-  const matchedAnnos = useMemo(() => new Set(fragments.map(f => f.annoIdx)), [fragments])
-  const regex = fragments.length ? new RegExp('(' + fragments.map(f => _escRe(f.frag)).join('|') + ')', 'gi') : null
-  const assigned = useRef(new Set())
-  assigned.current = new Set()  // 1re occurrence = ancre de scroll ; reset à chaque rendu
+  // Critères effectivement retrouvés (surlignés) selon le mode actif.
+  const matchedAnnos = useMemo(() => (
+    pages ? new Set(marks.map(m => m.annoIdx)) : new Set(textFrags.map(f => f.annoIdx))
+  ), [pages, marks, textFrags])
+  const markCount = (idx) => (pages ? marks.filter(m => m.annoIdx === idx).length : textFrags.filter(f => f.annoIdx === idx).length)
 
-  const flash = (idx) => { setPulse(idx); setTimeout(() => setPulse(p => (p === idx ? null : p)), 1300) }
+  const flash = (idx) => { setPulse(idx); setTimeout(() => setPulse(p => (p === idx ? null : p)), 1400) }
   const toAnno = (idx) => { flash(idx); rightRef.current?.querySelector(`#anno-${idx}`)?.scrollIntoView({ block: 'center', behavior: 'smooth' }) }
   const toMark = (idx) => { flash(idx); leftRef.current?.querySelector(`[data-anno="${idx}"]`)?.scrollIntoView({ block: 'center', behavior: 'smooth' }) }
 
-  // Rend un texte du CV avec les extraits surlignés.
+  // Rend un texte (mode repli) avec les extraits surlignés.
   const hl = (text) => {
     const t = (text || '').replace(/\s+/g, ' ').trim()
     if (!t) return null
     if (!regex) return t
     return t.split(regex).map((part, i) => {
       if (!part) return null
-      const f = fragments.find(fr => fr.frag.toLowerCase() === part.toLowerCase())
+      const f = textFrags.find(fr => fr.frag.toLowerCase() === part.toLowerCase())
       if (!f) return <span key={i}>{part}</span>
-      let id
-      if (!assigned.current.has(f.key)) { assigned.current.add(f.key); id = `hl-${f.key}` }
       const on = pulse === f.annoIdx
       return (
-        <mark key={i} id={id} data-anno={f.annoIdx} onClick={() => toAnno(f.annoIdx)}
+        <mark key={i} data-anno={f.annoIdx} onClick={() => toAnno(f.annoIdx)}
           style={{ background: f.color.mark, color: 'inherit', borderRadius: 2, padding: '0 1px', cursor: 'pointer',
             boxShadow: `inset 0 -2px 0 ${f.color.line}${on ? `, 0 0 0 2px ${f.color.line}` : ''}` }}>
           {part}
@@ -544,7 +579,6 @@ function CvTransparencyView({ result, ao, onClose }) {
       )
     })
   }
-
   const Bullets = ({ items }) => (
     <ul className="space-y-1 mt-1" style={{ listStyle: 'disc', paddingLeft: 18 }}>
       {(items || []).map((x, i) => <li key={i} className="text-[12.5px] leading-relaxed" style={{ color: 'var(--text)' }}>{hl(x)}</li>)}
@@ -559,7 +593,7 @@ function CvTransparencyView({ result, ao, onClose }) {
 
   return (
     <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-stretch justify-center p-3 sm:p-4" onClick={onClose}>
-      <div className="card p-0 w-full max-w-6xl max-h-[95vh] flex flex-col" onClick={e => e.stopPropagation()}>
+      <div className="card p-0 w-full max-w-7xl max-h-[95vh] flex flex-col" onClick={e => e.stopPropagation()}>
         {/* En-tête : identité + essentiel + légende couleurs */}
         <div className="p-4 border-b shrink-0" style={{ borderColor: 'var(--border)' }}>
           <div className="flex items-start justify-between gap-3">
@@ -577,8 +611,8 @@ function CvTransparencyView({ result, ao, onClose }) {
               {annos.map(a => (
                 <button key={a.idx} onClick={() => (matchedAnnos.has(a.idx) ? toMark(a.idx) : toAnno(a.idx))}
                   className="inline-flex items-center gap-1.5 text-[10.5px] font-medium"
-                  style={{ color: 'var(--text-muted)', opacity: matchedAnnos.has(a.idx) ? 1 : 0.5 }}
-                  title={matchedAnnos.has(a.idx) ? 'Surligné dans le CV' : 'Extrait non retrouvé dans le CV harmonisé'}>
+                  style={{ color: 'var(--text-muted)', opacity: matchedAnnos.has(a.idx) ? 1 : 0.45 }}
+                  title={matchedAnnos.has(a.idx) ? 'Surligné dans le CV' : 'Extrait non localisé dans le CV'}>
                   <span className="inline-block w-3 h-3 rounded-sm" style={{ background: a.color.mark, boxShadow: `inset 0 -2px 0 ${a.color.line}` }} />
                   {a.label}
                 </button>
@@ -589,96 +623,132 @@ function CvTransparencyView({ result, ao, onClose }) {
 
         {loading ? (
           <div className="flex-1 flex items-center justify-center gap-2 text-sm" style={{ color: 'var(--text-muted)' }}>
-            <Loader2 size={16} className="animate-spin" /> Chargement du CV…
+            <Loader2 size={16} className="animate-spin" /> Rendu du CV…
           </div>
         ) : error ? (
           <div className="flex-1 flex items-center justify-center text-sm p-6 text-center" style={{ color: 'var(--text-muted)' }}>
             {error}. Le CV soumis reste consultable via le bouton « CV » de la carte.
           </div>
         ) : (
-          <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-2 divide-y lg:divide-y-0 lg:divide-x" style={{ borderColor: 'var(--border)' }}>
-            {/* Gauche : CV surligné (texte source lu par l'IA en P1, sinon harmonisé) */}
-            <div ref={leftRef} className="overflow-y-auto p-4 lg:p-5">
-              <p className="text-[10px] font-semibold uppercase tracking-wider mb-3" style={{ color: 'var(--text-faint)' }}>
-                {src ? 'CV — texte lu par l’IA (anonymisé)' : 'CV — format Groupement-IT (reformulé)'}
+          <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[1.15fr_1fr] divide-y lg:divide-y-0 lg:divide-x" style={{ borderColor: 'var(--border)' }}>
+            {/* Gauche : le CV. En mode PDF, pages réelles + surlignages par zone. */}
+            <div ref={leftRef} className="overflow-y-auto p-3 sm:p-4" style={{ background: 'var(--surface-2)' }}>
+              <p className="text-[10px] font-semibold uppercase tracking-wider mb-3 flex items-center gap-1" style={{ color: 'var(--text-faint)' }}>
+                <FileText size={11} />
+                {pages ? 'CV soumis — surligné par l’IA' : (src ? 'CV — texte lu par l’IA (anonymisé)' : 'CV — format Groupement-IT (reformulé)')}
               </p>
-              {src ? (
-                <div className="space-y-2">
+
+              {pages ? (
+                <div className="mx-auto space-y-4" style={{ maxWidth: 780 }}>
+                  {pages.map((pg, pi) => (
+                    <div key={pg.pageNum} className="relative rounded-md overflow-hidden shadow-sm" style={{ border: '1px solid var(--border)', background: '#fff' }}>
+                      <img src={pg.imgUrl} alt={`CV page ${pg.pageNum}`} className="block w-full select-none" draggable={false} />
+                      {pages.length > 1 && (
+                        <span className="absolute top-1.5 left-1.5 text-[9px] font-semibold px-1.5 py-0.5 rounded" style={{ background: 'rgba(0,0,0,0.55)', color: '#fff' }}>
+                          Page {pg.pageNum}
+                        </span>
+                      )}
+                      {(marksByPage[pi] || []).map(mk => mk.rects.map((r, ri) => {
+                        const on = pulse === mk.annoIdx
+                        return (
+                          <div key={`${mk.key}-${ri}`} data-anno={mk.annoIdx} onClick={() => toAnno(mk.annoIdx)}
+                            title={`${annos[mk.annoIdx]?.label || ''} — voir le commentaire`}
+                            className="absolute cursor-pointer"
+                            style={{
+                              left: `${r.lPct}%`, top: `${r.tPct}%`, width: `${r.wPct}%`, height: `${r.hPct}%`,
+                              background: on ? mk.color.line + '55' : mk.color.mark,
+                              borderRadius: 3,
+                              boxShadow: on ? `0 0 0 2px ${mk.color.line}` : `inset 0 -2px 0 ${mk.color.line}80`,
+                              transition: 'background .15s, box-shadow .15s',
+                              zIndex: on ? 3 : 1,
+                            }} />
+                        )
+                      }))}
+                    </div>
+                  ))}
+                  <p className="text-[10px] text-center pt-1 pb-2" style={{ color: 'var(--text-faint)' }}>
+                    Surlignage posé par l’IA d’après ses justifications · cliquez un passage pour lire le commentaire.
+                  </p>
+                </div>
+              ) : src ? (
+                <div className="space-y-2 max-w-3xl">
                   {pieces.map((p, i) => (
                     <p key={i} className="text-[12.5px] leading-relaxed" style={{ color: 'var(--text)' }}>{hl(p)}</p>
                   ))}
                 </div>
               ) : (<>
-              {cv?.title && <p className="text-base font-bold uppercase" style={{ color: 'var(--text)' }}>{cv.title}</p>}
-              {cv?.synthese?.length > 0 && (<><SecH>Synthèse des compétences</SecH><Bullets items={cv.synthese} /></>)}
-              {cv?.experiences?.length > 0 && (
-                <>
-                  <SecH>Expériences</SecH>
-                  <div className="space-y-3 mt-1">
-                    {cv.experiences.map((e, i) => (
-                      <div key={i}>
-                        <p className="text-[13px] font-semibold" style={{ color: 'var(--text)' }}>{e.company}{e.role ? ` — ${e.role}` : ''}</p>
-                        {e.period && <p className="text-[11px]" style={{ color: 'var(--text-faint)' }}>{e.period}</p>}
-                        {e.context && <p className="text-[12px] italic mt-0.5" style={{ color: 'var(--text-muted)' }}>Contexte : {hl(e.context)}</p>}
-                        {e.missions?.length > 0 && <Bullets items={e.missions} />}
-                        {e.environment && <p className="text-[12px] mt-1" style={{ color: 'var(--text-muted)' }}><span className="font-semibold">Environnement technique :</span> {hl(e.environment)}</p>}
-                      </div>
-                    ))}
-                  </div>
-                </>
-              )}
-              {(c.metier?.length || c.fonctionnelles?.length || c.soft_skills?.length || c.techniques?.length) ? (
-                <>
-                  <SecH>Compétences</SecH>
-                  {c.metier?.length > 0 && (<><p className="text-[11px] font-semibold mt-1" style={{ color: 'var(--text)' }}>Métier</p><Bullets items={c.metier} /></>)}
-                  {c.fonctionnelles?.length > 0 && (<><p className="text-[11px] font-semibold mt-1" style={{ color: 'var(--text)' }}>Fonctionnelles</p><Bullets items={c.fonctionnelles} /></>)}
-                  {c.soft_skills?.length > 0 && (<><p className="text-[11px] font-semibold mt-1" style={{ color: 'var(--text)' }}>Soft skills</p><Bullets items={c.soft_skills} /></>)}
-                  {c.techniques?.length > 0 && (<><p className="text-[11px] font-semibold mt-1" style={{ color: 'var(--text)' }}>Techniques</p><Bullets items={c.techniques} /></>)}
-                </>
-              ) : null}
-              {cv?.langues?.length > 0 && (<><SecH>Langues</SecH><Bullets items={cv.langues} /></>)}
-              {cv?.formation?.length > 0 && (<><SecH>Formation</SecH><Bullets items={cv.formation} /></>)}
+                {cv?.title && <p className="text-base font-bold uppercase" style={{ color: 'var(--text)' }}>{cv.title}</p>}
+                {cv?.synthese?.length > 0 && (<><SecH>Synthèse des compétences</SecH><Bullets items={cv.synthese} /></>)}
+                {cv?.experiences?.length > 0 && (
+                  <>
+                    <SecH>Expériences</SecH>
+                    <div className="space-y-3 mt-1">
+                      {cv.experiences.map((e, i) => (
+                        <div key={i}>
+                          <p className="text-[13px] font-semibold" style={{ color: 'var(--text)' }}>{e.company}{e.role ? ` — ${e.role}` : ''}</p>
+                          {e.period && <p className="text-[11px]" style={{ color: 'var(--text-faint)' }}>{e.period}</p>}
+                          {e.context && <p className="text-[12px] italic mt-0.5" style={{ color: 'var(--text-muted)' }}>Contexte : {hl(e.context)}</p>}
+                          {e.missions?.length > 0 && <Bullets items={e.missions} />}
+                          {e.environment && <p className="text-[12px] mt-1" style={{ color: 'var(--text-muted)' }}><span className="font-semibold">Environnement technique :</span> {hl(e.environment)}</p>}
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+                {(c.metier?.length || c.fonctionnelles?.length || c.soft_skills?.length || c.techniques?.length) ? (
+                  <>
+                    <SecH>Compétences</SecH>
+                    {c.metier?.length > 0 && (<><p className="text-[11px] font-semibold mt-1" style={{ color: 'var(--text)' }}>Métier</p><Bullets items={c.metier} /></>)}
+                    {c.fonctionnelles?.length > 0 && (<><p className="text-[11px] font-semibold mt-1" style={{ color: 'var(--text)' }}>Fonctionnelles</p><Bullets items={c.fonctionnelles} /></>)}
+                    {c.soft_skills?.length > 0 && (<><p className="text-[11px] font-semibold mt-1" style={{ color: 'var(--text)' }}>Soft skills</p><Bullets items={c.soft_skills} /></>)}
+                    {c.techniques?.length > 0 && (<><p className="text-[11px] font-semibold mt-1" style={{ color: 'var(--text)' }}>Techniques</p><Bullets items={c.techniques} /></>)}
+                  </>
+                ) : null}
+                {cv?.langues?.length > 0 && (<><SecH>Langues</SecH><Bullets items={cv.langues} /></>)}
+                {cv?.formation?.length > 0 && (<><SecH>Formation</SecH><Bullets items={cv.formation} /></>)}
               </>)}
             </div>
 
-            {/* Droite : analyse reliée */}
-            <div ref={rightRef} className="overflow-y-auto p-4 lg:p-5" style={{ background: 'var(--surface-2)' }}>
+            {/* Droite : annotations de l'IA, reliées aux surlignages (comme un relecteur). */}
+            <div ref={rightRef} className="overflow-y-auto p-4 lg:p-5">
               <p className="text-[10px] font-semibold uppercase tracking-wider mb-3 flex items-center gap-1" style={{ color: 'var(--text-faint)' }}>
-                <Sparkles size={11} className="text-violet-400" /> Analyse reliée au CV
+                <Sparkles size={11} className="text-violet-400" /> Annotations de l’IA
               </p>
               <div className="space-y-2.5">
                 {annos.map(a => {
-                  const pct = a.max ? Math.min((a.val / a.max) * 100, 100) : 0
                   const on = pulse === a.idx
                   const has = matchedAnnos.has(a.idx)
+                  const n = markCount(a.idx)
                   return (
                     <div key={a.idx} id={`anno-${a.idx}`} onClick={() => has && toMark(a.idx)}
-                      className="rounded-lg p-3 border transition-shadow"
-                      style={{ background: 'var(--surface)', borderColor: on ? a.color.line : 'var(--border)', cursor: has ? 'pointer' : 'default', boxShadow: on ? `0 0 0 2px ${a.color.line}` : 'none' }}>
-                      <div className="flex items-center justify-between gap-2">
+                      className="rounded-lg p-3 transition-shadow"
+                      style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderLeft: `3px solid ${a.color.line}`,
+                        cursor: has ? 'pointer' : 'default', boxShadow: on ? `0 0 0 2px ${a.color.line}` : 'none' }}>
+                      <div className="flex items-center justify-between gap-3">
                         <span className="inline-flex items-center gap-1.5 text-[12px] font-semibold" style={{ color: 'var(--text)' }}>
                           <span className="inline-block w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: a.color.line }} />
                           {a.label}
                         </span>
-                        <span className="text-[11px] tabular font-semibold" style={{ color: 'var(--text-muted)' }}>{a.val}/{a.max}</span>
+                        <div className="h-1.5 rounded-full overflow-hidden shrink-0" style={{ background: 'var(--surface-2)', width: 72 }} title="Force relative du critère">
+                          <div className="h-full rounded-full" style={{ width: `${a.pct}%`, background: a.color.line }} />
+                        </div>
                       </div>
-                      <div className="h-1 rounded-full overflow-hidden my-1.5" style={{ background: 'var(--surface-2)' }}>
-                        <div className="h-full rounded-full" style={{ width: `${pct}%`, background: a.color.line }} />
-                      </div>
-                      <p className="text-[12px] leading-relaxed" style={{ color: 'var(--text-muted)' }}>{a.justif}</p>
-                      {has && (
+                      <p className="text-[12px] leading-relaxed mt-1.5" style={{ color: 'var(--text-muted)' }}>{a.justif}</p>
+                      {has ? (
                         <button onClick={(e) => { e.stopPropagation(); toMark(a.idx) }}
-                          className="mt-1.5 inline-flex items-center gap-1 text-[10.5px] font-medium" style={{ color: a.color.line }}>
-                          <Highlighter size={11} /> Voir dans le CV
+                          className="mt-2 inline-flex items-center gap-1 text-[10.5px] font-semibold" style={{ color: a.color.line }}>
+                          <Highlighter size={11} /> Voir dans le CV{n > 1 ? ` · ${n} passages` : ''}
                         </button>
+                      ) : (
+                        <p className="mt-1.5 text-[10px] italic" style={{ color: 'var(--text-faint)' }}>Passage non localisé dans le CV.</p>
                       )}
                     </div>
                   )
                 })}
               </div>
-              {fragments.length === 0 && annos.length > 0 && (
+              {matchedAnnos.size === 0 && annos.length > 0 && (
                 <p className="text-[11px] mt-3 italic" style={{ color: 'var(--text-faint)' }}>
-                  Surlignage indisponible : les extraits cités n'ont pas été retrouvés tels quels dans le CV harmonisé (l'ancrage exact arrivera avec l'enrichissement backend).
+                  Surlignage indisponible : les extraits cités n’ont pas été retrouvés tels quels dans le CV. Les commentaires ci-dessus restent valables.
                 </p>
               )}
             </div>

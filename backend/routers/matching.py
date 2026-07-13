@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from typing import Optional
-from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
+from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Response
 from pydantic import BaseModel
 from services.supabase_client import supabase
 from services.matching_runner import run_submission_matching
@@ -169,6 +169,36 @@ async def get_cv_source(body: CvSourceRequest, user: dict = Depends(require_staf
             name = None
     from services.pseudonymize import strip_pii
     return {"text": strip_pii(sub["cv_text"], name)}
+
+
+@router.post("/cv-file")
+async def get_cv_file(body: CvSourceRequest, user: dict = Depends(require_staff)):
+    """Octets bruts du PDF du CV soumis, pour l'afficher tel quel (inline) dans la
+    vue « CV analysé » et poser le surlignage par-dessus. Passe par le backend :
+    même chemin auth/CORS que le reste de l'API, sans dépendre du CORS du bucket
+    de stockage (OVH S3 / Supabase). Staff only (admin/commerce)."""
+    try:
+        sub = supabase.table("submissions").select("cv_url, cv_filename").eq(
+            "id", body.submission_id).single().execute().data
+    except Exception:
+        sub = None
+    stored = (sub or {}).get("cv_url")
+    if not stored:
+        raise HTTPException(status_code=404, detail="CV introuvable pour cette soumission")
+    try:
+        data = storage.download("cvs", storage._object_path("cvs", stored))
+    except Exception:
+        raise HTTPException(status_code=404, detail="CV indisponible")
+    fname = (sub or {}).get("cv_filename") or "cv.pdf"
+    lower = fname.lower()
+    media = "application/pdf"
+    if lower.endswith((".doc", ".docx")):
+        media = "application/octet-stream"
+    return Response(
+        content=bytes(data),
+        media_type=media,
+        headers={"Content-Disposition": f'inline; filename="{fname}"'},
+    )
 
 
 @router.get("/results/{ao_id}")

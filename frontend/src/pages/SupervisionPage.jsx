@@ -5,13 +5,14 @@ import ErrorJournal from '../components/ErrorJournal'
 import UTILoader, { ChartLoader } from '../components/UTILoader'
 import {
   Activity, Coins, Radio, RefreshCw, Cpu, TrendingUp,
-  Wallet, ShieldCheck, Layers, FileText, Users, AlertTriangle, Loader2,
+  Wallet, ShieldCheck, Layers, FileText, Users, AlertTriangle, Loader2, Scale,
 } from 'lucide-react'
 
 const TABS = [
   { k: 'logs', label: "Journal d'erreurs", icon: Activity },
   { k: 'ia', label: 'Usage & coûts IA', icon: Coins },
   { k: 'rum', label: 'RUM (activité)', icon: Radio },
+  { k: 'decisions', label: 'Écarts IA↔Humain', icon: Scale },
 ]
 
 const fmtUsd = (v) => (v == null ? '—' : `$${Number(v).toFixed(Math.abs(v) < 1 ? 4 : 2)}`)
@@ -945,6 +946,167 @@ function RumTab() {
   )
 }
 
+const DECISION_WINDOWS = [{ k: 30, l: '30 j' }, { k: 90, l: '90 j' }, { k: 365, l: '12 mois' }]
+
+// N2 — Écarts IA↔Humain : là où les opérateurs corrigent la reco IA. Analytique
+// pur (aucun changement de modèle) : matière à calibrer la grille et les prompts.
+function DecisionsTab() {
+  const [days, setDays] = useState(90)
+  const [data, setData] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [err, setErr] = useState('')
+
+  useEffect(() => {
+    let c = false
+    setLoading(true); setErr('')
+    api.get(`/admin/decision-insights?days=${days}`)
+      .then(r => { if (!c) setData(r.data) })
+      .catch(e => { if (!c) setErr(e.response?.data?.detail || 'Indisponible') })
+      .finally(() => { if (!c) setLoading(false) })
+    return () => { c = true }
+  }, [days])
+
+  const Stat = ({ label, value, sub, tone }) => (
+    <div className="card p-3">
+      <div className="text-[11px]" style={{ color: 'var(--text-faint)' }}>{label}</div>
+      <div className="text-2xl font-bold tabular leading-tight mt-0.5" style={{ color: tone || 'var(--text)' }}>
+        {value}{sub ? <span className="text-xs font-normal ml-0.5" style={{ color: 'var(--text-faint)' }}>{sub}</span> : null}
+      </div>
+    </div>
+  )
+  const SecTitle = ({ icon: Icon, children }) => (
+    <p className="text-xs font-semibold uppercase tracking-wide flex items-center gap-1.5 mb-2 mt-6" style={{ color: 'var(--text-muted)' }}>
+      {Icon && <Icon size={13} className="text-[var(--accent-text)]" />}{children}
+    </p>
+  )
+
+  const t = data?.totals
+  const ec = data?.ecarts
+  const empty = data && (!t || t.total === 0)
+
+  return (
+    <div>
+      <div className="flex items-center justify-between gap-2 flex-wrap mb-1">
+        <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
+          Où les opérateurs <strong>corrigent la reco IA</strong> — pour calibrer la grille et les prompts.
+        </p>
+        <div className="flex bg-[var(--surface-2)] rounded-lg p-0.5">
+          {DECISION_WINDOWS.map(w => (
+            <button key={w.k} onClick={() => setDays(w.k)}
+              className={`px-2.5 py-1 text-xs rounded-md font-medium ${days === w.k ? 'seg-active' : 'text-slate-400 hover:text-slate-200'}`}>
+              {w.l}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="py-20 flex justify-center"><UTILoader /></div>
+      ) : err ? (
+        <div className="card p-6 text-center text-sm" style={{ color: 'var(--text-muted)' }}>{err}</div>
+      ) : empty ? (
+        <div className="card p-8 text-center">
+          <Scale size={22} className="mx-auto mb-2" style={{ color: 'var(--text-faint)' }} />
+          <p className="text-sm font-medium" style={{ color: 'var(--text)' }}>Aucune décision sur la période</p>
+          <p className="text-xs mt-1" style={{ color: 'var(--text-faint)' }}>
+            Les décisions Retenir / Écarter / Signaler un désaccord (fiche AO) alimenteront ce tableau.
+          </p>
+        </div>
+      ) : (
+        <>
+          {/* Définition */}
+          <div className="rounded-lg px-3 py-2 mb-4 flex items-start gap-2 text-[12px]" style={{ background: 'var(--accent-soft)', color: 'var(--accent-text)' }}>
+            <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+            <span>Un <strong>écart IA↔humain</strong> = un désaccord signalé, un <strong>top IA écarté</strong> (rang ≤ 2 rejeté), ou un <strong>outsider retenu</strong> (score &lt; 50 conservé). Un écart récurrent sur un même axe = grille à recalibrer.</span>
+          </div>
+
+          {/* KPIs */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <Stat label="Décisions" value={fmtInt(t.total)} />
+            <Stat label="Écarts IA↔humain" value={fmtInt(ec.total)} sub={` · ${ec.rate}%`} tone={ec.rate >= 30 ? 'var(--danger)' : ec.rate >= 15 ? 'var(--warning)' : 'var(--text)'} />
+            <Stat label="Désaccords signalés" value={fmtInt(t.overridden)} sub={` · ${data.override_rate}%`} tone="var(--warning)" />
+            <Stat label="Retenus / Écartés" value={`${fmtInt(t.retained)} / ${fmtInt(t.rejected)}`} />
+          </div>
+
+          {/* Répartition des écarts + tendance */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-4 items-start">
+            <div className="card p-4">
+              <p className="text-[11px] font-semibold uppercase tracking-wide mb-3" style={{ color: 'var(--text-faint)' }}>Répartition des écarts</p>
+              {[
+                { l: 'Désaccords signalés', v: ec.overridden, c: 'var(--viz-6)' },
+                { l: 'Top IA écarté (rang ≤ 2)', v: ec.rejected_top, c: 'var(--viz-3)' },
+                { l: 'Outsider retenu (score < 50)', v: ec.retained_low, c: 'var(--viz-1)' },
+              ].map((x, i) => {
+                const max = Math.max(1, ec.overridden, ec.rejected_top, ec.retained_low)
+                return (
+                  <div key={i} className="mb-2.5 last:mb-0">
+                    <div className="flex justify-between text-[12px] mb-1">
+                      <span style={{ color: 'var(--text)' }}>{x.l}</span>
+                      <span className="tabular font-semibold" style={{ color: 'var(--text-muted)' }}>{fmtInt(x.v)}</span>
+                    </div>
+                    <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--surface-2)' }}>
+                      <div className="h-full rounded-full" style={{ width: `${Math.max(2, (x.v / max) * 100)}%`, background: x.c }} />
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+            <div className="card p-4">
+              <p className="text-[11px] font-semibold uppercase tracking-wide mb-2" style={{ color: 'var(--text-faint)' }}>Écarts par semaine</p>
+              {data.weekly?.length > 1 ? (
+                <>
+                  <Sparkline values={data.weekly.map(w => w.ecarts)} color="var(--viz-3)" width={260} height={54} />
+                  <div className="flex justify-between text-[9.5px] mt-1" style={{ color: 'var(--text-faint)' }}>
+                    <span>{data.weekly[0].week}</span><span>{data.weekly[data.weekly.length - 1].week}</span>
+                  </div>
+                </>
+              ) : (
+                <p className="text-[12px] italic" style={{ color: 'var(--text-faint)' }}>Pas assez d'historique pour une tendance.</p>
+              )}
+            </div>
+          </div>
+
+          {/* AO les plus corrigés + par opérateur */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-2">
+            <div>
+              <SecTitle icon={FileText}>AO les plus corrigés</SecTitle>
+              {data.by_ao?.length ? (
+                <HBars items={data.by_ao.map(a => ({ label: a.title, value: a.ecarts }))} fmt={fmtInt} tone="var(--viz-3)" />
+              ) : <p className="text-[12px] italic px-1" style={{ color: 'var(--text-faint)' }}>—</p>}
+            </div>
+            <div>
+              <SecTitle icon={Users}>Désaccords par opérateur</SecTitle>
+              {data.by_operator?.length ? (
+                <HBars items={data.by_operator.map(o => ({ label: `${o.name} (${o.override_rate}%)`, value: o.overrides }))} fmt={fmtInt} tone="var(--viz-6)" />
+              ) : <p className="text-[12px] italic px-1" style={{ color: 'var(--text-faint)' }}>—</p>}
+            </div>
+          </div>
+
+          {/* Désaccords récents (signal qualitatif → prompts) */}
+          {data.recent_overrides?.length > 0 && (
+            <>
+              <SecTitle icon={AlertTriangle}>Désaccords récents — le pourquoi (matière à prompts)</SecTitle>
+              <div className="space-y-2">
+                {data.recent_overrides.map((o, i) => (
+                  <div key={i} className="card p-3">
+                    <div className="flex items-center justify-between gap-2 text-[11px] mb-1" style={{ color: 'var(--text-faint)' }}>
+                      <span className="truncate font-medium" style={{ color: 'var(--text-muted)' }}>{o.ao_title}</span>
+                      <span className="tabular shrink-0">
+                        {o.ai_rank != null ? `rang IA #${o.ai_rank}` : ''}{o.ai_score != null ? ` · ${o.ai_score}/100` : ''} · {fmtDay(o.decided_at)}
+                      </span>
+                    </div>
+                    <p className="text-[12.5px] leading-relaxed" style={{ color: 'var(--text)' }}>{o.justification || <span className="italic" style={{ color: 'var(--text-faint)' }}>(sans commentaire)</span>}</p>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
 export default function SupervisionPage() {
   const [params, setParams] = useSearchParams()
   const tab = TABS.some(t => t.k === params.get('tab')) ? params.get('tab') : 'logs'
@@ -979,6 +1141,7 @@ export default function SupervisionPage() {
       {tab === 'logs' && <ErrorJournal embedded />}
       {tab === 'ia' && <AiUsageTab />}
       {tab === 'rum' && <RumTab />}
+      {tab === 'decisions' && <DecisionsTab />}
     </div>
   )
 }

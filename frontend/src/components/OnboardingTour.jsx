@@ -24,27 +24,35 @@ export default function OnboardingTour({ steps, onClose }) {
   const step = liveSteps[i]
   const last = i >= liveSteps.length - 1
 
-  const measure = useCallback(() => {
+  // Ne fait QUE relire la position (aucun scroll) — sûr à brancher sur scroll/resize.
+  const updateRect = useCallback(() => {
+    if (!step?.selector) { setRect(null); return }
+    const el = document.querySelector(step.selector)
+    setRect(el ? el.getBoundingClientRect() : null)
+  }, [step])
+
+  // Amène la cible au centre UNE SEULE FOIS par étape. Le surlignage suit ensuite
+  // le défilement via updateRect (sur l'écouteur scroll) — sans relancer de scroll,
+  // ce qui évitait la boucle scroll→scrollIntoView→scroll (effet de « vibration »).
+  useLayoutEffect(() => {
     if (!step?.selector) { setRect(null); return }
     const el = document.querySelector(step.selector)
     if (!el) { setRect(null); return }
     // 'center' (et non 'nearest') : la cible et sa bulle restent dans la fenêtre,
     // même pour un élément bas de page (sinon on devait scroller à la main).
     el.scrollIntoView({ block: 'center', behavior: 'smooth' })
-    setRect(el.getBoundingClientRect())
-  }, [step])
-
-  useLayoutEffect(() => { measure() }, [measure])
+    updateRect()
+  }, [step, updateRect])
 
   useEffect(() => {
-    measure()
-    window.addEventListener('resize', measure)
-    window.addEventListener('scroll', measure, true)
+    updateRect()
+    window.addEventListener('resize', updateRect)
+    window.addEventListener('scroll', updateRect, true)
     return () => {
-      window.removeEventListener('resize', measure)
-      window.removeEventListener('scroll', measure, true)
+      window.removeEventListener('resize', updateRect)
+      window.removeEventListener('scroll', updateRect, true)
     }
-  }, [measure])
+  }, [updateRect])
 
   useEffect(() => {
     const onKey = (e) => {

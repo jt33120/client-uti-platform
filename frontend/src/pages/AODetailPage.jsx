@@ -9,7 +9,8 @@ import {
   Loader2, FileText, Trash2, RotateCcw, Building2, Plus,
   Upload, X, UserCircle2, Briefcase, Calendar, Pencil,
   CalendarClock, AlertTriangle, BarChart3, Sparkles,
-  UploadCloud, Download, Target, Hash, Send, Bell, Mail, MessageSquareWarning, Languages, GripVertical, HelpCircle
+  UploadCloud, Download, Target, Hash, Send, Bell, Mail, MessageSquareWarning, Languages, GripVertical, HelpCircle,
+  Infinity as InfinityIcon
 } from 'lucide-react'
 import ScoringPriorities, { DEFAULT_STARS } from '../components/ScoringPriorities'
 import HarmonizedCvModal from '../components/HarmonizedCvModal'
@@ -2342,12 +2343,16 @@ export default function AODetailPage() {
             <span className="text-sm font-normal text-slate-400"> reçus</span>
           </span>
         </div>
-        {ao.created_at && (
-          <div className="card p-4 flex flex-col gap-1">
-            <span className="text-xs text-slate-500 flex items-center gap-1"><Calendar size={11} className="text-slate-400" />Date d'ajout</span>
-            <span className="text-sm font-semibold text-white leading-tight">{formatDate(ao.created_at)}</span>
-          </div>
-        )}
+        <div className="card p-4 flex flex-col gap-1">
+          <span className="text-xs text-slate-500 flex items-center gap-1"><CalendarClock size={11} className="text-slate-400" />Échéance</span>
+          {ao.deadline ? (
+            <span className="text-sm font-semibold text-white leading-tight">{formatDate(ao.deadline)}</span>
+          ) : (
+            <span className="text-white leading-tight flex items-center h-[1.5rem]" title="Sans échéance (durée non renseignée)">
+              <InfinityIcon size={22} strokeWidth={2.25} />
+            </span>
+          )}
+        </div>
       </div>
       )}
 

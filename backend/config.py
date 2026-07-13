@@ -75,10 +75,12 @@ class Settings(BaseSettings):
     mip_rum_read_url: Optional[str] = None    # ex. https://mip-rum-console.vercel.app/api
     mip_rum_read_token: Optional[str] = None  # token d'accès délivré à UTI par MIP
     # ── MIP RUM — API console v1 (séries fines : LCP dans le temps, heatmap…) ──
-    # Base = .../api/v1. Jeton CONSOLE scopé à l'app (ex. "<secret>@gip-plateforme"),
-    # DISTINCT du token /rum/summary. Sert au proxy /admin/rum-vitals.
+    # Base = .../api/v1. Jeton CONSOLE, DISTINCT du token /rum/summary.
+    # ⚠️ Ici on met le secret NU (ex. "mip_xxx"), SANS "@app". Le périmètre
+    # (@gip-plateforme) vit côté MIP dans la variable d'env CONSOLE_API_TOKENS
+    # (entrée "<secret>@gip-plateforme") — pas dans le token envoyé par le client.
     mip_rum_console_url: Optional[str] = None    # ex. https://mip-rum-console.vercel.app/api/v1
-    mip_rum_console_token: Optional[str] = None
+    mip_rum_console_token: Optional[str] = None  # secret nu, ex. "mip_xxx"
 
     model_config = {
         "env_file": ".env",

@@ -521,7 +521,7 @@ function MatchCard({ result, rank, aoId, isAdmin, ao, onContact, expanded: expan
                 </button>
                 <button onClick={() => setOverrideMode(o => !o)} disabled={decLoading}
                   title="Signaler un désaccord avec le classement IA (réinjecté au prochain « Relancer »)"
-                  className={clsx('btn-ghost !h-7 !px-2.5 text-[11px] gap-1 shrink-0 text-amber-400 hover:text-amber-300 border border-amber-500/30',
+                  className={clsx('btn-ghost !h-7 !px-2.5 text-[11px] gap-1 shrink-0 text-amber-600 dark:text-amber-400 hover:text-amber-700 dark:hover:text-amber-300 border border-amber-500/40',
                     overrideMode && 'bg-amber-500/10')}>
                   <MessageSquareWarning size={12} /> Désaccord
                 </button>
@@ -582,7 +582,7 @@ function MatchCard({ result, rank, aoId, isAdmin, ao, onContact, expanded: expan
         </div>
       )}
       {canDecide && recorded === 'overridden' && (
-        <p className="px-4 pb-3 -mt-1 text-[11px] text-amber-300/90 flex items-start gap-1.5">
+        <p className="px-4 pb-3 -mt-1 text-[11px] text-amber-700 dark:text-amber-300 flex items-start gap-1.5">
           <MessageSquareWarning size={12} className="shrink-0 mt-0.5" />
           Désaccord enregistré. Relancez l'analyse (bouton « Relancer » en haut) : l'IA réévaluera ce profil en tenant compte de votre retour.
         </p>
@@ -606,17 +606,17 @@ function MatchCard({ result, rank, aoId, isAdmin, ao, onContact, expanded: expan
                 <>
                   <p className="text-sm text-slate-200 leading-relaxed">{bilan}</p>
                   {(forts.length > 0 || faibles.length > 0) && (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3 mt-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-5 mt-4">
                       {forts.length > 0 && (
                         <div>
-                          <p className="text-[10.5px] font-semibold uppercase tracking-wide text-emerald-400 flex items-center gap-1 mb-1.5">
+                          <p className="text-[10.5px] font-semibold uppercase tracking-wide text-emerald-500 dark:text-emerald-400 flex items-center gap-1 mb-2.5">
                             <CheckCircle size={11} /> À retenir
                           </p>
-                          <ul className="space-y-1.5">
+                          <ul className="space-y-3">
                             {forts.map(c => (
-                              <li key={c.key} className="text-[11.5px] text-slate-300 leading-snug flex gap-1.5">
-                                <span className="text-emerald-400 mt-[3px] shrink-0 leading-none">▪</span>
-                                <span><span className="text-slate-200 font-medium">{c.label} — </span>{c.justif}</span>
+                              <li key={c.key} className="text-[11.5px] text-slate-300 leading-relaxed flex gap-2">
+                                <span className="text-emerald-500 dark:text-emerald-400 mt-[5px] shrink-0 leading-none">▪</span>
+                                <span><span className="text-slate-200 font-semibold">{c.label} — </span>{c.justif}</span>
                               </li>
                             ))}
                           </ul>
@@ -624,14 +624,14 @@ function MatchCard({ result, rank, aoId, isAdmin, ao, onContact, expanded: expan
                       )}
                       {faibles.length > 0 && (
                         <div>
-                          <p className="text-[10.5px] font-semibold uppercase tracking-wide text-amber-400 flex items-center gap-1 mb-1.5">
+                          <p className="text-[10.5px] font-semibold uppercase tracking-wide text-amber-600 dark:text-amber-400 flex items-center gap-1 mb-2.5">
                             <AlertTriangle size={11} /> Points de vigilance
                           </p>
-                          <ul className="space-y-1.5">
+                          <ul className="space-y-3">
                             {faibles.map(c => (
-                              <li key={c.key} className="text-[11.5px] text-slate-300 leading-snug flex gap-1.5">
-                                <span className="text-amber-400 mt-[3px] shrink-0 leading-none">▪</span>
-                                <span><span className="text-slate-200 font-medium">{c.label} — </span>{c.justif}</span>
+                              <li key={c.key} className="text-[11.5px] text-slate-300 leading-relaxed flex gap-2">
+                                <span className="text-amber-600 dark:text-amber-400 mt-[5px] shrink-0 leading-none">▪</span>
+                                <span><span className="text-slate-200 font-semibold">{c.label} — </span>{c.justif}</span>
                               </li>
                             ))}
                           </ul>
@@ -679,7 +679,7 @@ function MatchCard({ result, rank, aoId, isAdmin, ao, onContact, expanded: expan
                         ? <span className="inline-flex items-center gap-1 text-emerald-400">
                             <CheckCircle size={11} /> {ao.langue_requise}{req.level ? ` · ${req.level}` : ''}
                           </span>
-                        : <span className="inline-flex items-center gap-1 text-amber-400">
+                        : <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400">
                             <AlertTriangle size={11} /> {ao.langue_requise} non détecté
                           </span>
                     )}
@@ -715,7 +715,7 @@ function MatchCard({ result, rank, aoId, isAdmin, ao, onContact, expanded: expan
                   </div>
                 </div>
               ) : (
-                <p className="text-[11px] text-amber-400/80">
+                <p className="text-[11px] text-amber-700 dark:text-amber-400/90">
                   Aucun email de contact trouvé (ni partenaire, ni consultant) : le brouillon « Contacter » s'ouvrira sans destinataire (à compléter).
                 </p>
               )}

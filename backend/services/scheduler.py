@@ -116,10 +116,19 @@ async def _process_relances(now: datetime, cfg: dict) -> None:
 
 
 async def _tick() -> None:
+    now = datetime.now(timezone.utc)
+    # Surveillance du budget IA — indépendante du toggle notifications AO, et
+    # isolée : son échec ne doit pas empêcher les envois AO ci-dessous.
+    try:
+        from services.ai_budget import process_ai_budget
+        await process_ai_budget(now)
+    except Exception as e:  # noqa: BLE001
+        print(f"[SCHED] surveillance budget IA en erreur (ignorée): {e}")
+        _record_err("scheduler", "Surveillance du budget IA en erreur", exc=e)
+
     cfg = get_notification_settings()
     if not cfg.get("enabled"):
         return
-    now = datetime.now(timezone.utc)
     await _process_due_list2(now)
     await _process_relances(now, cfg)
 

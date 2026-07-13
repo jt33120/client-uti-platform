@@ -5,7 +5,7 @@ import ErrorJournal from '../components/ErrorJournal'
 import UTILoader, { ChartLoader } from '../components/UTILoader'
 import {
   Activity, Coins, Radio, RefreshCw, Cpu, TrendingUp,
-  Wallet, ShieldCheck, Layers, FileText, Users, AlertTriangle,
+  Wallet, ShieldCheck, Layers, FileText, Users, AlertTriangle, Loader2,
 } from 'lucide-react'
 
 const TABS = [
@@ -62,17 +62,86 @@ function Sparkline({ values, color = 'var(--accent)', width = 104, height = 30 }
   )
 }
 
+// Jauge « dépense vs budget » d'une période, avec limite éditable + marqueur 80 %.
+function BudgetRow({ label, periodHint, spend, limitDraft, onLimit }) {
+  const limit = Number(limitDraft) || 0
+  const pct = (limit > 0 && spend != null) ? (spend / limit) * 100 : null
+  const tone = pct == null ? 'var(--text-faint)' : pct >= 100 ? 'var(--danger)' : pct >= 80 ? 'var(--warning)' : 'var(--success)'
+  return (
+    <div>
+      <div className="flex items-center justify-between gap-3 mb-1.5">
+        <span className="text-[12.5px] font-medium" style={{ color: 'var(--text)' }}>
+          {label} <span style={{ color: 'var(--text-faint)' }}>· {periodHint}</span>
+        </span>
+        <div className="flex items-center gap-1">
+          <span className="text-[12px]" style={{ color: 'var(--text-faint)' }}>$</span>
+          <input type="number" min="0" step="1" value={limitDraft}
+            onChange={(e) => onLimit(e.target.value)}
+            className="input !h-8 w-24 text-right text-[13px]" placeholder="0" />
+        </div>
+      </div>
+      <div className="relative h-2 rounded-full overflow-hidden" style={{ background: 'var(--surface-2)' }}>
+        {pct != null && <div className="h-full rounded-full" style={{ width: `${Math.min(100, pct)}%`, background: tone }} />}
+        {limit > 0 && <div className="absolute top-[-2px] bottom-[-2px] w-px" style={{ left: '80%', background: 'var(--border-strong)' }} title="Seuil d'alerte 80 %" />}
+      </div>
+      <div className="flex items-center justify-between mt-1 text-[11px]">
+        <span style={{ color: 'var(--text-faint)' }} className="tabular">
+          {spend != null ? `Dépensé : $${spend.toFixed(2)}` : 'Dépense indisponible'}
+        </span>
+        <span style={{ color: pct != null ? tone : 'var(--text-faint)' }} className="tabular font-medium">
+          {limit > 0 ? (pct != null ? `${Math.round(pct)} % du budget` : `budget $${limit}`) : 'aucune limite'}
+        </span>
+      </div>
+    </div>
+  )
+}
+
 // ── Onglet Usage & coûts IA — miroir OpenRouter + traçabilité ────
 function AiUsageTab() {
   const [win, setWin] = useState('30d')
   const [data, setData] = useState(null)   // registre interne (attribution)
   const [orr, setOrr] = useState(undefined) // undefined=chargement, null=indispo
+  const [rum, setRum] = useState(undefined) // télémétrie IA via MIP (latence / erreur)
   const load = (w = win) => {
-    setData(null); setOrr(undefined)
+    setData(null); setOrr(undefined); setRum(undefined)
     api.get('/admin/ai-usage', { params: { window: w } }).then(r => setData(r.data)).catch(() => setData(false))
     api.get('/admin/ai-openrouter', { params: { window: w } }).then(r => setOrr(r.data)).catch(() => setOrr(null))
+    // MIP /rum/summary porte aussi la perf IA (latence p75, taux d'erreur) que
+    // la facturation OpenRouter n'a pas. Fenêtre MIP : 30 j max (90 j → 30 j).
+    api.get('/admin/rum', { params: { window: w === '90d' ? '30d' : w } }).then(r => setRum(r.data)).catch(() => setRum(null))
   }
   useEffect(() => { load(win) }, [win])
+
+  // Budget IA (indépendant de la fenêtre) — chargé une fois.
+  const [budget, setBudget] = useState(null)
+  const [budgetDraft, setBudgetDraft] = useState(null)
+  const [savingBudget, setSavingBudget] = useState(false)
+  useEffect(() => {
+    api.get('/admin/settings')
+      .then(r => { setBudget(r.data.ai_budget); setBudgetDraft(r.data.ai_budget) })
+      .catch(() => {})
+  }, [])
+  const budgetDirty = budget && budgetDraft && (
+    !!budget.enabled !== !!budgetDraft.enabled ||
+    Number(budget.weekly_usd) !== Number(budgetDraft.weekly_usd) ||
+    Number(budget.monthly_usd) !== Number(budgetDraft.monthly_usd)
+  )
+  const saveBudget = async () => {
+    if (!budgetDraft) return
+    setSavingBudget(true)
+    try {
+      const r = await api.put('/admin/settings/ai-budget', {
+        enabled: !!budgetDraft.enabled,
+        weekly_usd: Number(budgetDraft.weekly_usd) || 0,
+        monthly_usd: Number(budgetDraft.monthly_usd) || 0,
+      })
+      setBudget(r.data.ai_budget); setBudgetDraft(r.data.ai_budget)
+    } catch (e) {
+      alert(e.response?.data?.detail || "Erreur lors de l'enregistrement du budget")
+    } finally {
+      setSavingBudget(false)
+    }
+  }
 
   const winLabel = (AI_WINDOWS.find(w => w.k === win) || {}).l || win
   const orLoading = orr === undefined            // valeurs en cours de recherche
@@ -183,6 +252,44 @@ function AiUsageTab() {
             Seul le solde du compte est visible. Ajouter la <strong>clé de provisioning</strong> (<code>OPENROUTER_PROVISIONING_KEY</code>)
             côté serveur pour le détail par modèle, par jour et par clé — comme le dashboard OpenRouter.
           </span>
+        </div>
+      )}
+
+      {/* Budget IA — limites hebdo/mensuelle + alerte email aux admins (80 % / 100 %) */}
+      {budgetDraft && (
+        <div>
+          <p className="text-[11px] uppercase tracking-[0.08em] font-semibold mb-2 flex items-center gap-1.5 flex-wrap" style={{ color: 'var(--text-faint)' }}>
+            <Wallet size={13} /> Budget IA
+            <span className="normal-case tracking-normal font-normal" style={{ color: 'var(--text-faint)' }}>
+              · alerte email aux admins à 80 % puis 100 % · sans coupure de l'IA
+            </span>
+          </p>
+          <div className="card p-4 space-y-4">
+            <div className="flex items-center justify-between gap-3">
+              <label className="flex items-center gap-2 text-[12.5px] cursor-pointer" style={{ color: 'var(--text-muted)' }}>
+                <input type="checkbox" checked={!!budgetDraft.enabled}
+                  onChange={(e) => setBudgetDraft(d => ({ ...d, enabled: e.target.checked }))} />
+                Surveillance active
+              </label>
+              <button onClick={saveBudget} disabled={!budgetDirty || savingBudget}
+                className="btn-primary !h-8 text-xs px-4 flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-default">
+                {savingBudget ? <Loader2 size={13} className="animate-spin" /> : 'Enregistrer'}
+              </button>
+            </div>
+            <div className="grid sm:grid-cols-2 gap-x-8 gap-y-5">
+              <BudgetRow label="Hebdomadaire" periodHint="7 j" spend={pc ? pc.weekly : null}
+                limitDraft={budgetDraft.weekly_usd}
+                onLimit={(v) => setBudgetDraft(d => ({ ...d, weekly_usd: v }))} />
+              <BudgetRow label="Mensuel" periodHint="mois en cours" spend={pc ? pc.monthly : null}
+                limitDraft={budgetDraft.monthly_usd}
+                onLimit={(v) => setBudgetDraft(d => ({ ...d, monthly_usd: v }))} />
+            </div>
+            <p className="text-[11px]" style={{ color: 'var(--text-faint)' }}>
+              Dépense réelle OpenRouter (clés plateforme). Une limite à <strong>0</strong> ne surveille pas la période.
+              Le contrôle tourne chaque heure ; une alerte au plus par palier et par période.
+              {!hasProv && ' La dépense en direct nécessite la clé de provisioning OpenRouter côté serveur.'}
+            </p>
+          </div>
         </div>
       )}
 
@@ -324,17 +431,63 @@ function AiUsageTab() {
         </div>
       )}
 
-      {/* Performance IA (MIP) — à venir via l'API de lecture */}
-      <div className="card p-4">
-        <p className="text-[11px] uppercase tracking-[0.08em] font-semibold mb-1.5 flex items-center gap-1.5" style={{ color: 'var(--text-faint)' }}>
-          <Radio size={13} /> Performance IA (MIP) — latence, gouvernance PII, lien session
-        </p>
-        <p className="text-[12px] leading-relaxed" style={{ color: 'var(--text-muted)' }}>
-          La couche observabilité (latence p75 par usage, gouvernance des données / PII, corrélation à la session RUM)
-          est collectée par MIP à partir des spans <code>gen_ai</code> du backend. Elle sera recopiée ici dès que l'API de
-          lecture MIP expose l'endpoint <code>/ai/summary</code> — comme l'onglet RUM.
-        </p>
-      </div>
+      {/* Performance IA (MIP) — latence & fiabilité, via /rum/summary (ce qu'OpenRouter n'a pas) */}
+      {(() => {
+        const rumLoading = rum === undefined
+        const rd = (rum && rum.ok && rum.data) ? rum.data : null
+        const hasAi = rd && (rd.ai_calls != null || rd.ai_p75_latency_ms != null || rd.ai_cost_usd != null)
+        const mipWinLabel = win === '90d' ? '30 j' : winLabel
+        return (
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.08em] font-semibold mb-2 flex items-center gap-1.5 flex-wrap" style={{ color: 'var(--text-faint)' }}>
+              <Radio size={13} /> Performance IA (MIP)
+              <span className="normal-case tracking-normal font-normal" style={{ color: 'var(--text-faint)' }}>
+                · latence &amp; fiabilité · app <code>gip-plateforme</code> · {mipWinLabel}
+              </span>
+              <MipBadge />
+            </p>
+            {rumLoading ? (
+              <ChartLoader height={90} label="Lecture de la télémétrie MIP…" />
+            ) : !hasAi ? (
+              <div className="card p-4">
+                <p className="text-[12px] leading-relaxed" style={{ color: 'var(--text-muted)' }}>
+                  {rum && rum.configured === false
+                    ? <>API MIP RUM non configurée côté serveur (<code>MIP_RUM_READ_URL</code> / <code>MIP_RUM_READ_TOKEN</code>). La latence p75 et le taux d'erreur des appels IA — que la facturation OpenRouter n'expose pas — apparaîtront ici une fois branchés.</>
+                    : <>Aucun appel IA rattaché à cette app sur la période (ou télémétrie MIP momentanément indisponible).</>}
+                </p>
+              </div>
+            ) : (
+              <>
+                <div className="card p-4 grid grid-cols-2 lg:grid-cols-4 gap-y-5">
+                  {[
+                    { label: 'Latence p75', value: fmtMs(rd.ai_p75_latency_ms), sub: 'appels LLM backend' },
+                    { label: "Taux d'erreur IA", value: fmtPct(rd.ai_error_rate), sub: 'appels en échec' },
+                    { label: 'Appels IA', value: fmtInt(rd.ai_calls), sub: `${fmtTok(rd.ai_tokens)} tokens` },
+                    { label: 'Coût IA (MIP)', value: fmtUsd(rd.ai_cost_usd), sub: 'attribué à cette app' },
+                  ].map((k, i) => (
+                    <div key={i} className="flex flex-col gap-1.5 lg:px-5 lg:border-l lg:first:border-l-0 lg:first:pl-0 border-[color:var(--border)]">
+                      <span className="text-[11px] uppercase tracking-[0.07em] font-semibold" style={{ color: 'var(--text-faint)' }}>{k.label}</span>
+                      <span className="text-[22px] font-semibold tabular leading-none" style={{ color: 'var(--text)' }}>{k.value}</span>
+                      <span className="text-[11px]" style={{ color: 'var(--text-faint)' }}>{k.sub}</span>
+                    </div>
+                  ))}
+                </div>
+                {Array.isArray(rd.ai_by_model) && rd.ai_by_model.length > 0 && (
+                  <div className="mt-4">
+                    <p className="text-[11px] mb-2 flex items-center gap-1.5" style={{ color: 'var(--text-faint)' }}>
+                      <Cpu size={12} /> Coût IA par modèle <span style={{ color: 'var(--text-faint)' }}>· attribution MIP (cette app)</span>
+                    </p>
+                    <HBars
+                      items={rd.ai_by_model.slice(0, 8).map(m => ({ label: shortModel(m.model), value: m.cost_usd, tone: 'var(--viz-1)' }))}
+                      fmt={fmtUsd}
+                    />
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )
+      })()}
 
       {/* Modèles configurés */}
       <div>

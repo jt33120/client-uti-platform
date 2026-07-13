@@ -361,8 +361,10 @@ async def ai_openrouter(window: str = "30d", user: dict = Depends(require_admin)
                             m["cost"] += cost; m["requests"] += reqs
                             m["prompt_tokens"] += pin; m["completion_tokens"] += pout
                             day = dt.isoformat()
-                            e = by_day.setdefault(day, {"date": day, "cost": 0.0, "requests": 0, "tokens": 0})
+                            e = by_day.setdefault(day, {"date": day, "cost": 0.0, "requests": 0, "tokens": 0, "models": {}})
                             e["cost"] += cost; e["requests"] += reqs; e["tokens"] += pin + pout
+                            # Ventilation par modèle DANS la journée → graphe empilé (façon OpenRouter).
+                            e["models"][md] = e["models"].get(md, 0.0) + cost
                             t = out["totals"]
                             t["cost"] += cost; t["requests"] += reqs
                             t["prompt_tokens"] += pin; t["completion_tokens"] += pout
@@ -374,7 +376,9 @@ async def ai_openrouter(window: str = "30d", user: dict = Depends(require_admin)
                             m["tokens"] = m["prompt_tokens"] + m["completion_tokens"]
                         out["by_model"] = sorted(by_model.values(), key=lambda x: x["cost"], reverse=True)
                         out["series"] = [{"date": k, "cost": round(v["cost"], 4), "requests": v["requests"],
-                                          "tokens": v["tokens"]} for k, v in sorted(by_day.items())]
+                                          "tokens": v["tokens"],
+                                          "models": {m: round(c, 4) for m, c in v.get("models", {}).items()}}
+                                         for k, v in sorted(by_day.items())]
                 except Exception:
                     pass
                 # Usage par clé — restreint aux clés DE LA PLATEFORME (les autres

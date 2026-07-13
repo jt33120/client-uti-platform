@@ -33,6 +33,35 @@ const OP_LABELS = {
 }
 const AI_WINDOWS = [{ k: '24h', l: '24 h' }, { k: '7d', l: '7 j' }, { k: '30d', l: '30 j' }, { k: '90d', l: '90 j' }]
 
+// Palette catégorielle data-viz (tokens --viz-* dans index.css, validés CVD).
+// Assignée par rang de coût du modèle ; au-delà du 6ᵉ → « Autres » (gris).
+const VIZ = ['var(--viz-1)', 'var(--viz-2)', 'var(--viz-3)', 'var(--viz-4)', 'var(--viz-5)', 'var(--viz-6)']
+const VIZ_OTHER = 'var(--text-faint)'
+const shortModel = (m) => (m || '—').replace(/^[^/]+\//, '')
+
+// Mini-courbe d'évolution (façon tuiles OpenRouter). Aire + trait + point final.
+function Sparkline({ values, color = 'var(--accent)', width = 104, height = 30 }) {
+  const vals = Array.isArray(values) ? values.filter(v => Number.isFinite(v)) : []
+  if (vals.length < 2) return null
+  const max = Math.max(...vals), min = Math.min(...vals)
+  const span = max - min || 1
+  const n = vals.length
+  const pts = vals.map((v, i) => [
+    (i / (n - 1)) * width,
+    height - 2 - ((v - min) / span) * (height - 4),
+  ])
+  const line = pts.map(([x, y], i) => `${i ? 'L' : 'M'}${x.toFixed(1)},${y.toFixed(1)}`).join(' ')
+  const area = `${line} L${width.toFixed(1)},${height} L0,${height} Z`
+  const [lx, ly] = pts[n - 1]
+  return (
+    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} aria-hidden="true" className="shrink-0">
+      <path d={area} fill={color} opacity="0.12" />
+      <path d={line} fill="none" stroke={color} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+      <circle cx={lx} cy={ly} r="2.1" fill={color} />
+    </svg>
+  )
+}
+
 // ── Onglet Usage & coûts IA — miroir OpenRouter + traçabilité ────
 function AiUsageTab() {
   const [win, setWin] = useState('30d')
@@ -64,10 +93,39 @@ function AiUsageTab() {
   const topUsers = (data && data.top_users) || []
   const models = (data && data.models) || {}
 
+  // Séries par jour pour les mini-courbes des tuiles (données réelles OpenRouter).
+  const costSpark = orSeries.map(d => d.cost)
+  const reqSpark = orSeries.map(d => d.requests)
+  const tokSpark = orSeries.map(d => d.tokens)
+
+  // Rang → couleur pour l'empilement par modèle (l'entité, pas le rang, garde
+  // sa couleur au sein d'un même rendu). Top 6 colorés, le reste → « Autres ».
+  const modelRank = new Map(orModels.map((m, i) => [m.model, i]))
+  const colorOf = (m) => (modelRank.get(m) < 6 ? VIZ[modelRank.get(m)] : VIZ_OTHER)
+  const topModels = orModels.slice(0, 6)
+  const hasOther = orModels.length > 6
+
+  // Segments empilés d'une journée, ordonnés par rang (rang 0 en bas).
+  const daySegments = (d) => {
+    const models = d.models || {}
+    const segs = []
+    let other = 0
+    for (const [m, c] of Object.entries(models)) {
+      if (modelRank.get(m) < 6) segs.push({ model: m, cost: c, color: colorOf(m) })
+      else other += c
+    }
+    segs.sort((a, b) => modelRank.get(a.model) - modelRank.get(b.model))
+    if (other > 0) segs.push({ model: 'Autres', cost: other, color: VIZ_OTHER })
+    // Rétrocompat : si le backend n'expose pas encore le détail par modèle,
+    // on retombe sur une barre unique (couleur accent) = coût total du jour.
+    if (segs.length === 0 && d.cost > 0) segs.push({ model: '—', cost: d.cost, color: 'var(--accent)' })
+    return segs
+  }
+
   const kpis = [
-    { label: 'Dépense', value: (hasProv && platCost != null) ? fmtUsd(platCost) : (hasProv ? fmtUsd(orT.cost) : '—'), sub: `Plateforme · ${winLabel}` },
-    { label: 'Requêtes', value: hasProv ? fmtInt(orT.requests) : '—', sub: 'appels facturés' },
-    { label: 'Tokens', value: hasProv ? fmtTok(orT.tokens) : '—', sub: hasProv ? `${fmtTok(orT.prompt_tokens)} in · ${fmtTok(orT.completion_tokens)} out` : '' },
+    { label: 'Dépense', value: (hasProv && platCost != null) ? fmtUsd(platCost) : (hasProv ? fmtUsd(orT.cost) : '—'), sub: `Plateforme · ${winLabel}`, spark: hasProv ? costSpark : null, sparkColor: 'var(--accent)' },
+    { label: 'Requêtes', value: hasProv ? fmtInt(orT.requests) : '—', sub: 'appels facturés', spark: hasProv ? reqSpark : null, sparkColor: 'var(--viz-2)' },
+    { label: 'Tokens', value: hasProv ? fmtTok(orT.tokens) : '—', sub: hasProv ? `${fmtTok(orT.prompt_tokens)} in · ${fmtTok(orT.completion_tokens)} out` : '', spark: hasProv ? tokSpark : null, sparkColor: 'var(--viz-1)' },
     { label: 'Solde', value: orConfigured ? fmtUsd(orr.balance) : '—', sub: orConfigured ? `${fmtUsd(orr.usage)} / ${fmtUsd(orr.total_credits)} consommé` : '' },
   ]
 
@@ -102,9 +160,14 @@ function AiUsageTab() {
         {kpis.map((k, i) => (
           <div key={i} className="flex flex-col gap-1.5 lg:px-5 lg:border-l lg:first:border-l-0 lg:first:pl-0 border-[color:var(--border)]">
             <span className="text-[11px] uppercase tracking-[0.07em] font-semibold" style={{ color: 'var(--text-faint)' }}>{k.label}</span>
-            <span className="text-[26px] font-semibold tabular leading-none flex items-center" style={{ color: 'var(--text)', minHeight: 26 }}>
-              {orLoading ? <UTILoader size={22} /> : k.value}
-            </span>
+            <div className="flex items-end justify-between gap-2">
+              <span className="text-[26px] font-semibold tabular leading-none flex items-center" style={{ color: 'var(--text)', minHeight: 26 }}>
+                {orLoading ? <UTILoader size={22} /> : k.value}
+              </span>
+              {!orLoading && k.spark && k.spark.length >= 2 && (
+                <Sparkline values={k.spark} color={k.sparkColor} width={96} height={28} />
+              )}
+            </div>
             <span className="text-[11px]" style={{ color: 'var(--text-faint)' }}>{orLoading ? '' : k.sub}</span>
           </div>
         ))}
@@ -122,22 +185,56 @@ function AiUsageTab() {
         </div>
       )}
 
-      {/* Coût par jour (OpenRouter) */}
+      {/* Dépense par modèle par jour (empilé, façon dashboard OpenRouter) */}
       {hasProv && (
         <div>
           <p className="text-[11px] uppercase tracking-[0.08em] font-semibold mb-3 flex items-center gap-1.5" style={{ color: 'var(--text-faint)' }}>
-            <TrendingUp size={13} /> Dépense par jour ({winLabel})
+            <TrendingUp size={13} /> Dépense par modèle par jour ({winLabel})
           </p>
           {orSeries.length === 0 ? (
             <p className="text-[12.5px] py-3" style={{ color: 'var(--text-faint)' }}>Aucune dépense sur la période.</p>
           ) : (
-            <div className="flex items-end gap-1 h-32">
-              {orSeries.map((d) => (
-                <div key={d.date} className="flex-1 flex flex-col items-center justify-end group" title={`${fmtDay(d.date)} · ${fmtUsd(d.cost)} · ${fmtInt(d.requests)} req · ${fmtTok(d.tokens)} tokens`}>
-                  <div className="w-full rounded-t" style={{ height: `${Math.max(3, (d.cost / maxOr) * 100)}%`, background: 'var(--accent)' }} />
+            <>
+              <div className="flex items-end gap-1 h-40">
+                {orSeries.map((d) => {
+                  const segs = daySegments(d)
+                  return (
+                    <div key={d.date} className="flex-1 h-full flex flex-col justify-end"
+                         title={`${fmtDay(d.date)} · ${fmtUsd(d.cost)} · ${fmtInt(d.requests)} req · ${fmtTok(d.tokens)} tokens`}>
+                      {/* rendu haut → bas : on inverse l'ordre (rang 0 reste en bas) */}
+                      {[...segs].reverse().map((s, i) => (
+                        <div key={s.model}
+                          style={{
+                            height: `${Math.max(1.5, (s.cost / maxOr) * 100)}%`,
+                            background: s.color,
+                            marginTop: i ? 2 : 0,
+                            borderRadius: i === 0 ? '3px 3px 0 0' : 0,
+                          }}
+                          title={`${shortModel(s.model)} · ${fmtDay(d.date)} · ${fmtUsd(s.cost)}`}
+                        />
+                      ))}
+                    </div>
+                  )
+                })}
+              </div>
+              {/* Légende — l'identité ne repose jamais sur la couleur seule */}
+              {topModels.length > 0 && (
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 mt-3">
+                  {topModels.map((m, i) => (
+                    <span key={m.model} className="inline-flex items-center gap-1.5 text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                      <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: VIZ[i] }} />
+                      <span className="font-mono text-[11px]">{shortModel(m.model)}</span>
+                      <span className="tabular" style={{ color: 'var(--text-faint)' }}>{fmtUsd(m.cost)}</span>
+                    </span>
+                  ))}
+                  {hasOther && (
+                    <span className="inline-flex items-center gap-1.5 text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                      <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: VIZ_OTHER }} /> Autres
+                    </span>
+                  )}
                 </div>
-              ))}
-            </div>
+              )}
+            </>
           )}
         </div>
       )}

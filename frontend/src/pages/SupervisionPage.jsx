@@ -693,12 +693,63 @@ function HBars({ items, fmt, tone = 'var(--accent)' }) {
 // Sévérité d'un temps de chargement (ms) → couleur de statut.
 const toneForMs = (v) => (v == null ? 'var(--text-faint)' : v <= 1000 ? 'var(--success)' : v <= 3000 ? 'var(--warning)' : 'var(--danger)')
 
+// Libellé d'un bucket temporel de série (ISO → jour + heure, sinon brut).
+const fmtBucket = (b) => {
+  const d = new Date(b)
+  if (isNaN(d.getTime())) return String(b)
+  return new Intl.DateTimeFormat('fr-FR', { day: '2-digit', month: 'short', hour: '2-digit' }).format(d)
+}
+
+// Courbe d'un Web Vital p75 dans le temps, avec bandes de seuil (bon / à améliorer
+// / médiocre) et lignes de seuil. Une seule série → pas de légende (le titre nomme).
+function VitalsSeriesChart({ rows, good, bad, fmt }) {
+  const pts = (Array.isArray(rows) ? rows : [])
+    .map(r => ({ b: r.bucket, y: Number(r.p75) }))
+    .filter(p => Number.isFinite(p.y))
+  if (pts.length < 2) return null
+  const W = 680, H = 210, padL = 46, padR = 14, padT = 14, padB = 24
+  const iw = W - padL - padR, ih = H - padT - padB
+  const maxY = Math.max(bad * 1.15, ...pts.map(p => p.y))
+  const X = (i) => padL + (i / (pts.length - 1)) * iw
+  const Y = (v) => padT + ih - (Math.max(0, v) / maxY) * ih
+  const line = pts.map((p, i) => `${i ? 'L' : 'M'}${X(i).toFixed(1)},${Y(p.y).toFixed(1)}`).join(' ')
+  const area = `${line} L${X(pts.length - 1).toFixed(1)},${(padT + ih).toFixed(1)} L${padL.toFixed(1)},${(padT + ih).toFixed(1)} Z`
+  const last = pts[pts.length - 1]
+  const toneOf = (v) => v <= good ? 'var(--success)' : v <= bad ? 'var(--warning)' : 'var(--danger)'
+  const gY = Y(good), bY = Y(bad)
+  return (
+    <div className="card p-3 overflow-x-auto">
+      <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{ minWidth: 480 }} role="img" aria-label="Web Vital p75 dans le temps">
+        <rect x={padL} y={padT} width={iw} height={Math.max(0, bY - padT)} fill="var(--danger-soft)" opacity="0.5" />
+        <rect x={padL} y={bY} width={iw} height={Math.max(0, gY - bY)} fill="var(--warning-soft)" opacity="0.5" />
+        <rect x={padL} y={gY} width={iw} height={Math.max(0, padT + ih - gY)} fill="var(--success-soft)" opacity="0.5" />
+        <line x1={padL} x2={padL + iw} y1={gY} y2={gY} stroke="var(--success)" strokeWidth="1" strokeDasharray="3 3" opacity="0.7" />
+        <line x1={padL} x2={padL + iw} y1={bY} y2={bY} stroke="var(--danger)" strokeWidth="1" strokeDasharray="3 3" opacity="0.7" />
+        <text x={padL - 6} y={gY} textAnchor="end" dominantBaseline="middle" fontSize="9" fill="var(--text-faint)">{fmt(good)}</text>
+        <text x={padL - 6} y={bY} textAnchor="end" dominantBaseline="middle" fontSize="9" fill="var(--text-faint)">{fmt(bad)}</text>
+        <path d={area} fill="var(--accent)" opacity="0.10" />
+        <path d={line} fill="none" stroke="var(--accent)" strokeWidth="1.75" strokeLinejoin="round" strokeLinecap="round" />
+        {pts.map((p, i) => (
+          <circle key={i} cx={X(i)} cy={Y(p.y)} r={i === pts.length - 1 ? 3 : 1.6}
+            fill={i === pts.length - 1 ? toneOf(p.y) : 'var(--accent)'}>
+            <title>{`${fmtBucket(p.b)} · ${fmt(p.y)}`}</title>
+          </circle>
+        ))}
+        <text x={padL} y={H - 6} textAnchor="start" fontSize="9" fill="var(--text-faint)">{fmtBucket(pts[0].b)}</text>
+        <text x={padL + iw} y={H - 6} textAnchor="end" fontSize="9" fill="var(--text-faint)">{fmtBucket(last.b)}</text>
+      </svg>
+    </div>
+  )
+}
+
 function RumTab() {
   const [win, setWin] = useState('30d')
   const [data, setData] = useState(null) // null=chargement, false=erreur réseau
+  const [vitals, setVitals] = useState(undefined) // séries fines via API console v1
   const load = (w = win) => {
-    setData(null)
+    setData(null); setVitals(undefined)
     api.get('/admin/rum', { params: { window: w } }).then(r => setData(r.data)).catch(() => setData(false))
+    api.get('/admin/rum-vitals', { params: { window: w, series: 'LCP' } }).then(r => setVitals(r.data)).catch(() => setVitals(null))
   }
   useEffect(() => { load(win) }, [win])
 
@@ -785,6 +836,24 @@ function RumTab() {
           </div>
         </div>
       )}
+
+      {/* LCP p75 dans le temps vs seuils — série fine via l'API console MIP v1 */}
+      {(() => {
+        const vd = (vitals && vitals.ok && vitals.data) ? vitals.data : null
+        const lcp = vd && vd.series && Array.isArray(vd.series.LCP) ? vd.series.LCP : null
+        if (!lcp || lcp.length < 2) return null
+        return (
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.08em] font-semibold mb-3 flex items-center gap-1.5 flex-wrap" style={{ color: 'var(--text-faint)' }}>
+              <TrendingUp size={13} /> LCP p75 dans le temps
+              <span className="normal-case tracking-normal font-normal" style={{ color: 'var(--text-faint)' }}>
+                · seuils Google (bon &lt; 2 s · médiocre &gt; 4 s){vitals.period ? ` · ${vitals.period}` : ''}
+              </span>
+            </p>
+            <VitalsSeriesChart rows={lcp} good={2000} bad={4000} fmt={fmtMs} />
+          </div>
+        )
+      })()}
 
       {series.length > 0 && (
         <div>

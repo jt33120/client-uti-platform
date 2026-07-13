@@ -666,6 +666,20 @@ async def update_ai_budget_settings(body: AiBudgetSettings, user: dict = Depends
     return {"ai_budget": set_ai_budget_settings(patch)}
 
 
+@router.post("/ai-budget/test")
+async def test_ai_budget_alert(user: dict = Depends(require_admin)):
+    """Envoie un email d'alerte budget d'EXEMPLE à l'admin courant, pour vérifier
+    la chaîne d'envoi (SMTP + template) sans attendre le tick horaire."""
+    from services.ai_budget import send_test_alert, _admin_recipients
+    to = user.get("email")
+    if not to:
+        raise HTTPException(status_code=400, detail="Aucune adresse email associée à ce compte.")
+    ok, err = send_test_alert(to)
+    if not ok:
+        raise HTTPException(status_code=502, detail=f"Envoi échoué : {err or 'SMTP indisponible'}")
+    return {"sent": True, "to": to, "admin_count": len(_admin_recipients())}
+
+
 @router.get("/errors")
 async def list_errors(limit: int = 100, level: Optional[str] = None, user: dict = Depends(require_admin)):
     """Journal des erreurs/dégradations récentes du backend (ring buffer en

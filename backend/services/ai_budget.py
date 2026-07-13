@@ -107,6 +107,34 @@ def _send_alert(period: str, threshold: int, spend: float, limit: float, pct: fl
     return ok_any
 
 
+def send_test_alert(to_email: str) -> tuple[bool, str | None]:
+    """Envoie un email d'alerte d'EXEMPLE au destinataire donné, pour vérifier la
+    chaîne d'envoi sans attendre le tick horaire. Utilise le budget hebdo configuré
+    et la dépense réelle si disponibles, sinon des valeurs d'exemple."""
+    cfg = get_ai_budget_settings()
+    cost = fetch_platform_cost() or {}
+    limit = float(cfg.get("weekly_usd") or 0) or 10.0
+    spend = float(cost.get("weekly") or 0) or round(limit * 0.8, 2)
+    pct = (spend / limit) * 100 if limit else 80.0
+    subject = "[TEST] ⚠️ Alerte budget IA — email de vérification"
+    body = (
+        "<p><strong>Ceci est un email de test</strong> déclenché manuellement depuis la "
+        "Supervision — aucun seuil n'a réellement été franchi.</p>"
+        "<p>En condition réelle, ce message part automatiquement à tous les administrateurs "
+        "lorsqu'un budget IA atteint 80 % puis 100 %.</p>"
+        f"<p style=\"font-size:15px;margin:14px 0\">Exemple (hebdomadaire) : "
+        f"<strong>${spend:.2f}</strong> &nbsp;/&nbsp; budget ${limit:.2f} "
+        f"(<strong>{pct:.0f}%</strong>)</p>"
+    )
+    html_body = render_email_html(
+        title="Test — alerte budget IA",
+        body_html=body,
+        cta={"label": "Ouvrir la Supervision", "url": f"{settings.frontend_url.rstrip('/')}/supervision?tab=ia"},
+        footer_note="Email de TEST — envoi déclenché manuellement par un administrateur.",
+    )
+    return send_email(to_email, subject, html_body)
+
+
 async def process_ai_budget(now: datetime) -> None:
     """Vérifie les budgets hebdo/mensuel et alerte au franchissement d'un palier."""
     cfg = get_ai_budget_settings()

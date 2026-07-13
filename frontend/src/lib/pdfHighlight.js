@@ -88,7 +88,11 @@ function normWithMap(raw) {
       if (prevSpace) continue
       norm += ' '; map.push(i); prevSpace = true
     } else {
-      norm += c.toLowerCase(); map.push(i); prevSpace = false
+      // toLowerCase() peut produire >1 unité UTF-16 (ex. « İ » → « i̇ », ligatures) :
+      // on pousse UNE entrée map par unité produite pour garder map.length === norm.length.
+      const lc = c.toLowerCase()
+      for (let j = 0; j < lc.length; j++) { norm += lc[j]; map.push(i) }
+      prevSpace = false
     }
   }
   while (norm.endsWith(' ')) { norm = norm.slice(0, -1); map.pop() }
@@ -154,7 +158,10 @@ export function matchAnnotations(pages, annos) {
   if (!pages?.length) return []
   const idxs = pages.map(buildPageIndex)
   const marks = []
-  const seen = new Set() // (page:l:t) → évite les surlignages en double
+  // Dédup PAR critère : évite qu'un même critère surligne deux fois le même endroit
+  // (deux de ses citations tombant au même point), sans jamais masquer le surlignage
+  // d'un AUTRE critère qui citerait la même phrase (clé incluant a.idx).
+  const seen = new Set() // (annoIdx:page:l:t)
 
   for (const a of annos) {
     let anchored = false
@@ -176,7 +183,7 @@ export function matchAnnotations(pages, annos) {
           if (!hit) continue
           const rects = itemsToRects(pages[pi].items, hit)
           if (!rects.length) continue
-          const dedupe = `${pi}:${Math.round(rects[0].l)}:${Math.round(rects[0].t)}`
+          const dedupe = `${a.idx}:${pi}:${Math.round(rects[0].l)}:${Math.round(rects[0].t)}`
           if (seen.has(dedupe)) { placed = true; break }
           seen.add(dedupe)
           marks.push({

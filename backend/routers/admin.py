@@ -483,6 +483,57 @@ async def rum_metrics(window: str = "30d", user: dict = Depends(require_admin)):
                 "message": "API MIP RUM injoignable."}
 
 
+# Séries fines Core Web Vitals via l'API console MIP v1 (token console distinct).
+_RUMV_CACHE: dict[str, tuple[float, dict]] = {}
+_RUMV_TTL = 60.0
+# v1 borne les périodes à 7 j max ; 30 j est rabattu sur 7 j.
+_V1_PERIODS = {"1h": "1h", "24h": "24h", "7d": "7d", "30d": "7d"}
+_VITALS_ALLOW = {"LCP", "INP", "CLS", "FCP", "TTFB"}
+
+
+@router.get("/rum-vitals")
+async def rum_vitals(window: str = "7d", series: str = "LCP", user: dict = Depends(require_admin)):
+    """Proxy vers l'API console MIP v1 (GET /vitals) pour les séries temporelles
+    Core Web Vitals (ex. LCP p75 dans le temps). Token console gardé côté serveur.
+    Renvoie l'objet `data` de l'enveloppe v1 ({p75, series}). Cache 60 s."""
+    import time
+    base = (settings.mip_rum_console_url or "").rstrip("/")
+    token = settings.mip_rum_console_token
+    if not base or not token:
+        return {"configured": False,
+                "message": "API console MIP non configurée (MIP_RUM_CONSOLE_URL / MIP_RUM_CONSOLE_TOKEN)."}
+    period = _V1_PERIODS.get(window, "7d")
+    sel = ",".join([s for s in (series or "").upper().split(",") if s in _VITALS_ALLOW]) or "LCP"
+    app_id = settings.mip_rum_app_id or "gip-plateforme"
+
+    ck = f"{sel}:{period}:{app_id}"
+    now = time.time()
+    hit = _RUMV_CACHE.get(ck)
+    if hit and now - hit[0] < _RUMV_TTL:
+        return hit[1]
+    try:
+        with httpx.Client(timeout=12) as client:
+            resp = client.get(
+                f"{base}/vitals",
+                params={"series": sel, "period": period, "app": app_id},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        if resp.status_code == 429:
+            return {"configured": True, "ok": False, "period": period,
+                    "message": "API console MIP : quota atteint (429), réessayez dans un instant."}
+        if resp.status_code >= 400:
+            return {"configured": True, "ok": False, "period": period,
+                    "message": f"API console MIP : HTTP {resp.status_code}."}
+        payload = {"configured": True, "ok": True, "period": period,
+                   "data": (resp.json() or {}).get("data") or {}}
+        _RUMV_CACHE[ck] = (now, payload)
+        return payload
+    except Exception as e:  # noqa: BLE001
+        print(f"[RUM-V1] lecture vitals MIP échouée: {e}")
+        return {"configured": True, "ok": False, "period": period,
+                "message": "API console MIP injoignable."}
+
+
 @router.get("/accounts")
 async def list_accounts(user: dict = Depends(require_admin)):
     """All accounts (admin, commerce, partners) + pending invitations."""

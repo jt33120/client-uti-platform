@@ -74,6 +74,11 @@ class Settings(BaseSettings):
     # Tant que non renseigné, l'onglet RUM affiche « en attente de l'API MIP ».
     mip_rum_read_url: Optional[str] = None    # ex. https://mip-rum-console.vercel.app/api
     mip_rum_read_token: Optional[str] = None  # token d'accès délivré à UTI par MIP
+    # ── MIP RUM — API console v1 (séries fines : LCP dans le temps, heatmap…) ──
+    # Base = .../api/v1. Jeton CONSOLE scopé à l'app (ex. "<secret>@gip-plateforme"),
+    # DISTINCT du token /rum/summary. Sert au proxy /admin/rum-vitals.
+    mip_rum_console_url: Optional[str] = None    # ex. https://mip-rum-console.vercel.app/api/v1
+    mip_rum_console_token: Optional[str] = None
 
     model_config = {
         "env_file": ".env",

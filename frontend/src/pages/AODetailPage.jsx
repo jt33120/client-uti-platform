@@ -1401,7 +1401,7 @@ function SubmitModal({ aoId, vivier, onClose, onSubmitted, prefill, clientName }
             )}
           </div>
 
-          {/* Évaluation renseignée par le partenaire (déplacée depuis Validation CV) */}
+          {/* Évaluation renseignée par le partenaire (déplacée depuis l'onglet Conclusion) */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="label">Points forts du CV *</label>
@@ -1546,7 +1546,7 @@ function SubmissionRow({ sub, onDelete, canDelete, isAdmin, aoSkillsRequired }) 
   )
 }
 
-// ─── Onglet « Validation CV » (demande Sullyvan) ────────────────
+// ─── Onglet « Conclusion » : validation finale des CV + envoi client ────
 // Reprend la liste des CV reçus, remplace le lien CV par les actions de
 // validation commerciale : retenu / non retenu GRP-IT → envoi client, +
 // indicateurs échange commercial / affaire gagnée-perdue.
@@ -1693,7 +1693,7 @@ function ValidationTab({ aoId, submissions, clientId, scores }) {
     <div className="card p-4">
       <div className="flex items-center justify-between gap-2 mb-3 flex-wrap">
         <div className="flex items-center gap-3">
-          <span className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Validation CV ({rows.length})</span>
+          <span className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Validation finale ({rows.length})</span>
           <button className="text-[11px] text-slate-400 hover:text-white"
             onClick={() => setSelected(selected.size === rows.length ? new Set() : new Set(rows.map(r => r.consultant_id)))}>
             {selected.size === rows.length && rows.length > 0 ? 'Tout désélectionner' : 'Tout sélectionner'}
@@ -1808,7 +1808,7 @@ function ValidationTab({ aoId, submissions, clientId, scores }) {
                 </button>
               </div>
               {/* Points forts / éléments différenciants : déplacés dans l'onglet
-                  « Analyse & CV » (carte du CV reçu), demande Sullyvan. */}
+                  « Matching CV » (carte du CV reçu), demande Sullyvan. */}
             </div>
           )
         })}
@@ -2645,13 +2645,13 @@ export default function AODetailPage() {
       {/* Deadline — big & red */}
       <DeadlineBanner deadline={ao.deadline} />
 
-      {/* Onglets : Présentation (la fiche) / Analyse & CV (matching) */}
+      {/* Onglets : Présentation · Diffusion · Matching CV · Conclusion */}
       <div className="flex items-center gap-1 mb-5 border-b border-white/10">
         {[
           { key: 'presentation', label: 'Présentation', icon: FileText },
-          ...(isAdmin ? [{ key: 'envoi', label: 'Envoi des e-mails', icon: Send }] : []),
-          { key: 'analyse', label: isAdmin ? 'Analyse & CV' : 'Ma candidature', icon: BarChart3 },
-          ...(isAdmin ? [{ key: 'validation', label: 'Validation CV', icon: CheckCircle }] : []),
+          ...(isAdmin ? [{ key: 'envoi', label: 'Diffusion', icon: Send }] : []),
+          { key: 'analyse', label: isAdmin ? 'Matching CV' : 'Ma candidature', icon: BarChart3 },
+          ...(isAdmin ? [{ key: 'validation', label: 'Conclusion', icon: CheckCircle }] : []),
         ].map(t => (
           <button
             key={t.key}
@@ -2726,7 +2726,7 @@ export default function AODetailPage() {
       </div>
       )}
 
-      {/* ── Onglet Envoi des e-mails : diffusion aux partenaires + couverture (staff) ── */}
+      {/* ── Onglet Diffusion : envoi aux partenaires + couverture (staff) ── */}
       {tab === 'envoi' && isAdmin && (
       <div className="flex flex-col gap-4 mb-5">
         <div className="card p-4">
@@ -2806,9 +2806,12 @@ export default function AODetailPage() {
       </div>
       )}
 
-      {/* ── Onglet Analyse & CV : top profils, CVs, couverture, diffusion (ordre adaptatif) ── */}
+      {/* ── Onglet Conclusion : décision finale + envoi client (staff) ── */}
       {tab === 'validation' && isAdmin && (
         <div className="mb-5">
+          <p className="text-sm text-slate-500 mb-3">
+            Étape finale : validez ou écartez chaque profil, puis envoyez les CV retenus au client.
+          </p>
           <ValidationTab aoId={id} submissions={submissions} clientId={ao.client_id}
             scores={(matchResults || []).reduce((m, r) => {
               if (r.consultant_id != null) m[r.consultant_id] = r.score_hybride ?? r.score_total
@@ -2841,7 +2844,7 @@ export default function AODetailPage() {
             </div>
           )}
 
-          {/* La diffusion e-mails aux partenaires est dans l'onglet « Envoi des e-mails ». */}
+          {/* La diffusion e-mails aux partenaires est dans l'onglet « Diffusion ». */}
 
           {/* Submissions list — repliable */}
           {submissions.length > 0 && (

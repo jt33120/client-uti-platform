@@ -539,7 +539,7 @@ export default function NewAOPage() {
               <span className="text-[13px] leading-snug">
                 Notifier la <strong>liste 1</strong> par e-mail dès la création
                 <span className="block text-[11px]" style={{ color: 'var(--text-faint)' }}>
-                  Décoché : aucun e-mail n'est envoyé maintenant (vous pourrez le faire depuis l'onglet « Envoi des e-mails »).
+                  Décoché : aucun e-mail n'est envoyé maintenant (vous pourrez le faire depuis l'onglet « Diffusion »).
                 </span>
               </span>
             </label>

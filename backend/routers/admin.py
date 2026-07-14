@@ -845,7 +845,7 @@ async def decision_insights(days: int = 90, user: dict = Depends(require_admin))
     ao_titles, op_names = {}, {}
     if ao_ids:
         try:
-            for a in supabase.table("aos").select("id, title").in_("id", list(ao_ids)).execute().data or []:
+            for a in supabase.table("appels_offres").select("id, title").in_("id", list(ao_ids)).execute().data or []:
                 ao_titles[a["id"]] = a.get("title")
         except Exception:
             pass

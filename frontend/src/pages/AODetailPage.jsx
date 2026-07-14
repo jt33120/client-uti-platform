@@ -444,6 +444,7 @@ function CvTransparencyView({ result, ao, onClose }) {
   const rightRef = useRef(null)
   const pagesRef = useRef(null)                 // pour révoquer les object URLs
   const modRef = useRef(null)                   // module pdfHighlight (chargé à la demande)
+  const pdfReqRef = useRef(false)               // garde : requête PDF lancée (évite l'auto-annulation)
   const revoke = (pgs) => (pgs || []).forEach(p => { if (p?.imgUrl) { try { URL.revokeObjectURL(p.imgUrl) } catch { /* noop */ } } })
 
   // Annotations = critères notés + justification + couleur + citations (« … »).
@@ -495,9 +496,13 @@ function CvTransparencyView({ result, ao, onClose }) {
     return () => { cancelled = true }
   }, [result.submission_id, result.consultant_id])
 
-  // Le PDF original n'est chargé QUE si l'utilisateur bascule sur cet onglet.
+  // Le PDF original n'est chargé QU'UNE FOIS, à la 1re bascule sur cet onglet.
+  // Le garde par ref (et NON pdfLoading dans les deps) évite que le setState de
+  // chargement ne relance l'effet et n'annule sa propre requête en vol (→ spinner
+  // infini). Le cleanup ne se déclenche donc qu'au démontage / changement de profil.
   useEffect(() => {
-    if (mode !== 'pdf' || pages || pdfLoading) return
+    if (mode !== 'pdf' || pdfReqRef.current || pagesRef.current) return
+    pdfReqRef.current = true
     let cancelled = false
     setPdfLoading(true); setPdfError('')
     const ids = { submission_id: result.submission_id, consultant_id: result.consultant_id }
@@ -511,11 +516,15 @@ function CvTransparencyView({ result, ao, onClose }) {
         pagesRef.current = rendered
         setPages(rendered); setPdfLoading(false)
       } catch {
-        if (!cancelled) { setPdfError('PDF original indisponible pour cette soumission.'); setPdfLoading(false) }
+        if (!cancelled) {
+          setPdfError('PDF original indisponible pour cette soumission.')
+          setPdfLoading(false)
+          pdfReqRef.current = false  // autorise une nouvelle tentative
+        }
       }
     })()
     return () => { cancelled = true }
-  }, [mode, pages, pdfLoading, result.submission_id, result.consultant_id])
+  }, [mode, result.submission_id, result.consultant_id])
 
   useEffect(() => () => { if (pagesRef.current) revoke(pagesRef.current) }, [])
 
@@ -2374,10 +2383,12 @@ function AOInsightsChart({ aoId }) {
   const consultantsMax = Math.max(
     stats.consultants_pool_eligible, stats.consultants_proposed, stats.consultants_eligible_not_proposed, 1
   )
+  // Bornage 0-100 % : le numérateur peut dépasser le dénominateur (doublons de
+  // soumission, vivier éligible recompté) → un « 200 % » n'a aucun sens à l'écran.
   const partnerCoverage = stats.partners_eligible > 0
-    ? Math.round((stats.partners_responded / stats.partners_eligible) * 100) : 0
+    ? Math.min(100, Math.round((stats.partners_responded / stats.partners_eligible) * 100)) : 0
   const consultantCoverage = stats.consultants_pool_eligible > 0
-    ? Math.round((stats.consultants_proposed / stats.consultants_pool_eligible) * 100) : 0
+    ? Math.min(100, Math.round((stats.consultants_proposed / stats.consultants_pool_eligible) * 100)) : 0
 
   return (
     <div className="card p-4">

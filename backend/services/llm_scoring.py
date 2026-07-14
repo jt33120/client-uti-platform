@@ -26,6 +26,7 @@ from mip_rum_ai import record_ai_call
 from services import ai_ledger
 from services.ai_matching import calculate_cost, _LLM_TIMEOUT
 from services.error_log import record as _record_err
+from services.cv_harmonizer import _extract_json  # parse JSON tolérant (fences/prose)
 
 _client = AsyncOpenAI(
     api_key=settings.openrouter_key,
@@ -176,7 +177,9 @@ async def _call_scoring(c: AsyncOpenAI, model: str, user: str, maxes: dict) -> t
     content = (choice.message.content or "").strip()
     if not content:
         raise ValueError("réponse LLM vide (modèle indisponible ou format non supporté)")
-    data = json.loads(content)
+    data = _extract_json(content)  # tolère un JSON entouré de ```/prose (sinon JSONDecodeError)
+    if not data:
+        raise ValueError("JSON de scoring illisible")
     usage = resp.usage
     # Après le parsing : un usage manquant ne doit pas invalider un avis réussi.
     cost = calculate_cost(getattr(usage, "prompt_tokens", None), getattr(usage, "completion_tokens", None))

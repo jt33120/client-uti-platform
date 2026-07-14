@@ -172,7 +172,7 @@ async def extract_structured_vision(images: list[bytes], lang: str = "fr") -> Op
         with record_ai_call(provider="openrouter", model=VISION_MODEL, operation="chat", route="cv/vision") as _call:
             resp = await _client.chat.completions.create(
                 model=VISION_MODEL,
-                temperature=0.2,
+                temperature=0,  # reproductible + limite l'invention sur images ambiguës
                 max_tokens=8000,
                 messages=[
                     {"role": "system", "content": _VISION_SYSTEM},

@@ -45,6 +45,12 @@ _mistral_client = AsyncOpenAI(
 SCORING_MODEL = settings.scoring_model
 _MISTRAL_SCORING_MODEL = settings.mistral_model
 
+# Densité : on donne au 2e avis IA le CV (structuré) et l'AO EN ENTIER, plus de
+# fenêtres tronquées à ~½ page qui masquaient expériences et exigences. Le contexte
+# des modèles Claude l'absorbe largement. (Correctif « matching faux par troncature ».)
+_CV_EXCERPT_CHARS = 40000
+_AO_CONTEXT_CHARS = 16000
+
 # Correspondance clés LLM ↔ clés du breakdown déterministe (`services.scoring`).
 # Depuis v2 : deux axes qualitatifs supplémentaires (points forts / différenciation)
 # que SEUL le LLM sait noter (la grille déterministe les pose en neutre).
@@ -119,7 +125,7 @@ def _ao_brief(ao: dict) -> str:
         f"Titre : {ao.get('title') or '—'}",
         f"Type / secteur : {ao.get('ao_type') or '—'}",
         f"Compétences attendues : {ao.get('skills_required') or '—'}",
-        f"Contexte : {(ao.get('context') or '—')[:600]}",
+        f"Contexte : {(ao.get('context') or '—')[:_AO_CONTEXT_CHARS]}",
         f"Durée : {ao.get('duration') or '—'}",
         f"Localisation : {ao.get('location') or '—'}",
         f"Budget max : {ao.get('budget_max') or '—'} €/j",
@@ -155,7 +161,7 @@ async def _call_scoring(c: AsyncOpenAI, model: str, user: str, maxes: dict) -> t
             ],
             response_format={"type": "json_object"},
             temperature=0,
-            max_tokens=1200,
+            max_tokens=1800,
             extra_body=(ai_ledger.OR_USAGE if _prov == "openrouter" else {}),
         )
         _u = resp.usage
@@ -211,7 +217,7 @@ async def llm_score(
     # générique. Borné pour tenir dans le contexte.
     if cv_excerpt and cv_excerpt.strip():
         parts.append("EXTRAIT DU CV (anonymisé — cite-le dans tes justifications) :\n"
-                     + cv_excerpt.strip()[:3500])
+                     + cv_excerpt.strip()[:_CV_EXCERPT_CHARS])
     # Retour humain : un opérateur a signalé un désaccord avec une évaluation
     # précédente ; l'IA doit en tenir compte (supervision effective, Art. 14).
     if human_feedback and human_feedback.strip():

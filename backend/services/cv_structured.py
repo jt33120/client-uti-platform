@@ -9,11 +9,18 @@ Construit une fois à l'upload (best-effort), stocké dans submissions.cv_struct
 backfillé à la demande. TOUT est résilient à l'absence de la colonne (migration
 0002 non encore appliquée) : on retombe alors sur le CV brut, sans jamais casser.
 """
+import asyncio
 from typing import Optional
 
 from services.supabase_client import supabase
-from services import cv_harmonizer
+from services import cv_harmonizer, cv_vision, storage
 from services.error_log import record as _record_err
+
+# Borne les analyses vision (Sonnet, coûteuses) concurrentes, tous appelants
+# confondus (upload, vue à la demande, backfill). Plafond dur de durée pour ne
+# jamais bloquer un re-score derrière un fournisseur lent.
+_VISION_SEM = asyncio.Semaphore(2)
+_VISION_DEADLINE = 90  # secondes
 
 # Passe à True quand la colonne submissions.cv_structured est détectée absente
 # (migration 0002 non appliquée) : on cesse alors d'harmoniser en boucle (ni la
@@ -119,37 +126,77 @@ def _persist(submission_id: str, cv: dict) -> None:
                     level="warning")
 
 
+def _is_pdf(filename: Optional[str], cv_url: Optional[str]) -> bool:
+    for s in (filename, cv_url):
+        if s and s.lower().split("?", 1)[0].rstrip().endswith(".pdf"):
+            return True
+    return False
+
+
+async def _try_vision(cv_url: Optional[str], filename: Optional[str],
+                      name: Optional[str] = None) -> Optional[dict]:
+    """Analyse VISION du PDF : rend les pages en image → un modèle multimodal lit
+    étoiles/jauges/graphiques/scanné. None si indisponible / non-PDF / échec / timeout.
+    Le téléchargement et la rasterisation (bloquants) sont déportés hors de l'event
+    loop ; le tout est borné en concurrence et en durée. `name` sert à masquer
+    l'identité (photo + nom/contacts) sur l'image avant envoi au fournisseur."""
+    if not cv_vision.is_available() or not cv_url or not _is_pdf(filename, cv_url):
+        return None
+    try:
+        async with _VISION_SEM:
+            data = await asyncio.to_thread(
+                storage.download, "cvs", storage._object_path("cvs", cv_url))
+            images = await asyncio.to_thread(cv_vision.render_pdf_images, data, name)
+            if not images:
+                return None
+            return await asyncio.wait_for(
+                cv_vision.extract_structured_vision(images), timeout=_VISION_DEADLINE)
+    except Exception as e:  # noqa: BLE001  (inclut asyncio.TimeoutError)
+        _record_err("cv.structured.vision", "Analyse vision du CV en échec/expirée",
+                    exc=e, level="warning")
+        return None
+
+
 async def ensure_structured(
     submission_id: str, cv_text: Optional[str] = None, lang: str = "fr",
 ) -> Optional[dict]:
-    """Retourne le CV structuré de la soumission : depuis la base si déjà là,
-    sinon le génère (harmonize) et le persiste. Best-effort : retourne None si
-    l'IA est indisponible ou si aucun texte de CV n'est exploitable."""
+    """Retourne le CV structuré (anonymisé) de la soumission : depuis la base si
+    déjà là, sinon le génère et le persiste. Deux voies, la meilleure d'abord :
+      1. VISION — lit les pages du PDF RENDUES EN IMAGE (voit étoiles/jauges/
+         graphiques/scanné) → structuré enrichi des niveaux visuels ;
+      2. TEXTE — harmonisation du texte extrait (repli).
+    Best-effort : None si aucune voie n'aboutit."""
     cached = get_structured(submission_id)
     if cached:
         return cached
-    # Colonne absente : inutile d'harmoniser, on ne pourrait pas stocker le résultat
+    # Colonne absente : inutile de générer, on ne pourrait pas stocker le résultat
     # (get_structured a déjà positionné le flag). Repli propre côté appelant.
     if _STRUCTURED_DISABLED:
         return None
-    if not cv_harmonizer.is_available():
-        return None
-    if not (cv_text and cv_text.strip()):
-        try:
-            row = supabase.table("submissions").select("cv_text").eq(
-                "id", submission_id).single().execute().data
-            cv_text = (row or {}).get("cv_text")
-        except Exception:
-            cv_text = None
-    if not (cv_text and len(cv_text.strip()) >= 50):
-        return None
+    # Texte + URL du CV + nom (pour masquer l'identité sur l'image) en une lecture.
     try:
-        cv = await cv_harmonizer.harmonize_cv(cv_text, lang if lang in ("fr", "en") else "fr")
-    except Exception as e:  # noqa: BLE001
-        _record_err("cv.structured.build",
-                    f"Structuration du CV en échec pour la soumission {submission_id}",
-                    exc=e, level="warning")
-        return None
+        row = supabase.table("submissions").select(
+            "cv_text, cv_url, cv_filename, consultants(name)").eq(
+            "id", submission_id).single().execute().data or {}
+    except Exception:
+        row = {}
+    cv_text = cv_text or row.get("cv_text")
+    name = (row.get("consultants") or {}).get("name")
+    lang = lang if lang in ("fr", "en") else "fr"
+
+    # 1) VISION (voit ce que le texte seul manque). Identité masquée avant envoi.
+    cv = await _try_vision(row.get("cv_url"), row.get("cv_filename"), name)
+
+    # 2) Repli TEXTE (harmonisation) si la vision n'a rien produit.
+    if not cv and cv_harmonizer.is_available() and cv_text and len(cv_text.strip()) >= 50:
+        try:
+            cv = await cv_harmonizer.harmonize_cv(cv_text, lang)
+        except Exception as e:  # noqa: BLE001
+            _record_err("cv.structured.build",
+                        f"Structuration texte du CV en échec pour la soumission {submission_id}",
+                        exc=e, level="warning")
+            cv = None
+
     if not cv:
         return None
     _persist(submission_id, cv)

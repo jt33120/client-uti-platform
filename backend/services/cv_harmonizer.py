@@ -23,7 +23,7 @@ _mistral: Optional[AsyncOpenAI] = (
 )
 HARMONIZE_MODEL = settings.draft_model
 MISTRAL_MODEL = settings.mistral_model
-MAX_CV_CHARS = 24000
+MAX_CV_CHARS = 40000  # CV très longs lus en entier (densité) — contexte Claude large
 
 
 def is_available() -> bool:

@@ -14,6 +14,7 @@ from config import settings
 from mip_rum_ai import record_ai_call
 from services import ai_ledger
 from services.error_log import record as _record_err
+from services.cv_harmonizer import _extract_json  # parse JSON tolérant (fences/prose)
 
 # timeout : sans lui, un provider qui « hang » bloque la requête indéfiniment
 # (le repli inter-providers ne se déclenche que sur exception, pas sur lenteur).
@@ -162,7 +163,9 @@ async def _call_extraction(c: AsyncOpenAI, model: str, cv_text: str) -> tuple[di
     # JSONDecodeError cryptique sur une chaîne vide.
     if not content:
         raise ValueError("réponse LLM vide (modèle indisponible ou format non supporté)")
-    data = json.loads(content)
+    data = _extract_json(content)  # tolère un JSON entouré de ```/prose (sinon JSONDecodeError)
+    if not data:
+        raise ValueError("JSON d'extraction illisible")
     features = {
         "skills": _as_list(data.get("skills")),
         "experience_years": _as_int(data.get("experience_years")),

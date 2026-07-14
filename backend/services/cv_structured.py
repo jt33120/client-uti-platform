@@ -10,6 +10,7 @@ backfillé à la demande. TOUT est résilient à l'absence de la colonne (migrat
 0002 non encore appliquée) : on retombe alors sur le CV brut, sans jamais casser.
 """
 import asyncio
+import re
 from typing import Optional
 
 from services.supabase_client import supabase
@@ -126,6 +127,29 @@ def _persist(submission_id: str, cv: dict) -> None:
                     level="warning")
 
 
+_WORD_RE = re.compile(r"[a-zàâäéèêëïîôöùûüç0-9]{4,}")
+
+
+def _tokens(text: str) -> set:
+    return set(_WORD_RE.findall((text or "").lower()))
+
+
+def _vision_grounded(cv: Optional[dict], cv_text: Optional[str]) -> bool:
+    """Anti-hallucination (surtout CV scannés) : vrai si le CV produit par la vision
+    est ANCRÉ dans le texte réellement extrait du CV (OCR/pdfplumber). Une vision qui
+    invente un profil sans rapport (mots absents du texte) est rejetée → repli texte.
+    Si le texte extrait est trop pauvre pour juger, on fait confiance à la vision
+    (c'est alors le seul lecteur fiable de l'image)."""
+    txt = _tokens(cv_text)
+    if len(txt) < 40:          # OCR quasi vide → on ne peut pas juger, on garde la vision
+        return True
+    cv_toks = _tokens(flatten_structured(cv))
+    if not cv_toks:
+        return False
+    overlap = len(cv_toks & txt) / len(cv_toks)
+    return overlap >= 0.30
+
+
 def _is_pdf(filename: Optional[str], cv_url: Optional[str]) -> bool:
     for s in (filename, cv_url):
         if s and s.lower().split("?", 1)[0].rstrip().endswith(".pdf"):
@@ -186,8 +210,15 @@ async def ensure_structured(
 
     # 1) VISION (voit ce que le texte seul manque). Identité masquée avant envoi.
     cv = await _try_vision(row.get("cv_url"), row.get("cv_filename"), name)
+    # Garde anti-hallucination : une sortie vision non ancrée dans le texte extrait
+    # (cas vu sur un scan → profil inventé) est rejetée au profit du repli texte.
+    if cv and not _vision_grounded(cv, cv_text):
+        _record_err("cv.structured.vision",
+                    "Sortie vision non ancrée dans le CV extrait (probable hallucination) — repli texte",
+                    level="warning")
+        cv = None
 
-    # 2) Repli TEXTE (harmonisation) si la vision n'a rien produit.
+    # 2) Repli TEXTE (harmonisation) si la vision n'a rien produit / a été rejetée.
     if not cv and cv_harmonizer.is_available() and cv_text and len(cv_text.strip()) >= 50:
         try:
             cv = await cv_harmonizer.harmonize_cv(cv_text, lang)

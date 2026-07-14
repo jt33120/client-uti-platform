@@ -133,18 +133,20 @@ def _is_pdf(filename: Optional[str], cv_url: Optional[str]) -> bool:
     return False
 
 
-async def _try_vision(cv_url: Optional[str], filename: Optional[str]) -> Optional[dict]:
+async def _try_vision(cv_url: Optional[str], filename: Optional[str],
+                      name: Optional[str] = None) -> Optional[dict]:
     """Analyse VISION du PDF : rend les pages en image → un modèle multimodal lit
     étoiles/jauges/graphiques/scanné. None si indisponible / non-PDF / échec / timeout.
     Le téléchargement et la rasterisation (bloquants) sont déportés hors de l'event
-    loop ; le tout est borné en concurrence et en durée."""
+    loop ; le tout est borné en concurrence et en durée. `name` sert à masquer
+    l'identité (photo + nom/contacts) sur l'image avant envoi au fournisseur."""
     if not cv_vision.is_available() or not cv_url or not _is_pdf(filename, cv_url):
         return None
     try:
         async with _VISION_SEM:
             data = await asyncio.to_thread(
                 storage.download, "cvs", storage._object_path("cvs", cv_url))
-            images = await asyncio.to_thread(cv_vision.render_pdf_images, data)
+            images = await asyncio.to_thread(cv_vision.render_pdf_images, data, name)
             if not images:
                 return None
             return await asyncio.wait_for(
@@ -171,17 +173,19 @@ async def ensure_structured(
     # (get_structured a déjà positionné le flag). Repli propre côté appelant.
     if _STRUCTURED_DISABLED:
         return None
-    # Texte + URL du CV en une lecture.
+    # Texte + URL du CV + nom (pour masquer l'identité sur l'image) en une lecture.
     try:
-        row = supabase.table("submissions").select("cv_text, cv_url, cv_filename").eq(
+        row = supabase.table("submissions").select(
+            "cv_text, cv_url, cv_filename, consultants(name)").eq(
             "id", submission_id).single().execute().data or {}
     except Exception:
         row = {}
     cv_text = cv_text or row.get("cv_text")
+    name = (row.get("consultants") or {}).get("name")
     lang = lang if lang in ("fr", "en") else "fr"
 
-    # 1) VISION (voit ce que le texte seul manque).
-    cv = await _try_vision(row.get("cv_url"), row.get("cv_filename"))
+    # 1) VISION (voit ce que le texte seul manque). Identité masquée avant envoi.
+    cv = await _try_vision(row.get("cv_url"), row.get("cv_filename"), name)
 
     # 2) Repli TEXTE (harmonisation) si la vision n'a rien produit.
     if not cv and cv_harmonizer.is_available() and cv_text and len(cv_text.strip()) >= 50:

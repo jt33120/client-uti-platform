@@ -15,6 +15,7 @@ que cv_harmonizer.
 """
 import base64
 import io
+import re
 from typing import Optional
 
 from openai import AsyncOpenAI
@@ -41,9 +42,60 @@ def is_available() -> bool:
     return _client is not None and settings.vision_enabled
 
 
-def render_pdf_images(file_bytes: bytes, max_pages: int = _MAX_PAGES) -> list[bytes]:
-    """Rasterise les pages d'un PDF en PNG (via PyMuPDF). [] si PyMuPDF absent ou
-    fichier illisible (→ l'appelant retombe sur le texte). Best-effort, ne lève pas."""
+# Rédaction de l'identité AVANT envoi de l'image au fournisseur : l'image (contrairement
+# au texte) ne peut pas être pseudonymisée en aval, donc on masque photo + nom + e-mail
+# + téléphone sur la page rendue. Best-effort et ciblé (on épargne les graphiques/étoiles).
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+# Téléphone FR / international assez STRICT (structure 5×2 chiffres) pour ne pas
+# masquer par erreur des nombres utiles (« 15 ans d'expérience »).
+_PHONE_RE = re.compile(r"(?:(?:\+|00)\d{1,3}[\s.\-]?)?0?[1-9](?:[\s.\-]?\d{2}){4}")
+
+
+def _redact_identity(page, name: Optional[str], first_page: bool) -> None:
+    """Masque (rectangles blancs) l'identité sur une page : nom + e-mails + téléphones
+    (couche texte) et, sur la 1re page, la PHOTO (image embarquée dans le haut de page).
+    Best-effort — ne lève jamais ; en cas d'échec la page est rendue telle quelle."""
+    try:
+        targets: set[str] = set()
+        if name and len(name.strip()) >= 3:
+            targets.add(name.strip())
+            for part in name.split():
+                if len(part) >= 3:
+                    targets.add(part)
+        txt = page.get_text() or ""
+        for m in _EMAIL_RE.findall(txt):
+            targets.add(m)
+        for m in _PHONE_RE.findall(txt):
+            if len(re.sub(r"\D", "", m)) >= 9:
+                targets.add(m.strip())
+
+        annots = 0
+        for t in targets:
+            for rect in (page.search_for(t) or [])[:8]:
+                page.add_redact_annot(rect, fill=(1, 1, 1))
+                annots += 1
+        if first_page:
+            ph, pw = page.rect.height or 1, page.rect.width or 1
+            for img in (page.get_images(full=True) or []):
+                try:
+                    for rect in (page.get_image_rects(img[0]) or []):
+                        # image assez grande ET dans le haut de page → probable photo.
+                        if rect.y0 < ph * 0.42 and (rect.width * rect.height) > pw * ph * 0.008:
+                            page.add_redact_annot(rect, fill=(1, 1, 1))
+                            annots += 1
+                except Exception:
+                    continue
+        if annots:
+            page.apply_redactions()
+    except Exception:
+        pass
+
+
+def render_pdf_images(file_bytes: bytes, name: Optional[str] = None,
+                      max_pages: int = _MAX_PAGES) -> list[bytes]:
+    """Rasterise les pages d'un PDF en PNG (via PyMuPDF), APRÈS rédaction de
+    l'identité (photo + nom/contacts). [] si PyMuPDF absent ou fichier illisible
+    (→ l'appelant retombe sur le texte). Best-effort, ne lève jamais."""
     try:
         import fitz  # PyMuPDF (pip pur, déjà utilisé par le repli OCR)
     except ImportError:
@@ -60,6 +112,7 @@ def render_pdf_images(file_bytes: bytes, max_pages: int = _MAX_PAGES) -> list[by
         for i in range(min(doc.page_count, max_pages)):
             try:
                 page = doc.load_page(i)
+                _redact_identity(page, name, first_page=(i == 0))
                 rect = page.rect
                 long_edge = max(rect.width, rect.height) or 1
                 # PAS de plancher à 1.0 : les grandes pages doivent être RÉDUITES

@@ -385,9 +385,9 @@ function AOTable({ items, isStaff, navigate, onEdit, onDelete, selected, onToggl
               <th className={th}>Client</th>
               <th className={clsx(th, 'hidden lg:table-cell')}>Réf.</th>
               <th className={th}>Mission</th>
+              <th className={th}>Échéance</th>
               <th className={clsx(th, 'hidden md:table-cell')}>Émis le</th>
               <th className={clsx(th, 'hidden xl:table-cell')}>Lieu</th>
-              <th className={th}>Échéance</th>
               <th className={th}>Statut</th>
               {isStaff && <th className="px-4 py-2.5" />}
             </tr>
@@ -442,12 +442,6 @@ function AOTable({ items, isStaff, navigate, onEdit, onDelete, selected, onToggl
                       )}
                     </div>
                   </td>
-                  <td className="px-4 py-2.5 hidden md:table-cell tabular whitespace-nowrap" style={{ color: 'var(--text-faint)' }}>
-                    {formatDate(ao.created_at) || '—'}
-                  </td>
-                  <td className="px-4 py-2.5 hidden xl:table-cell whitespace-nowrap" style={{ color: 'var(--text-muted)' }}>
-                    {ao.location || '—'}
-                  </td>
                   <td className="px-4 py-2.5 whitespace-nowrap">
                     {dl ? (
                       <span
@@ -461,6 +455,12 @@ function AOTable({ items, isStaff, navigate, onEdit, onDelete, selected, onToggl
                     ) : (
                       <span style={{ color: 'var(--text-faint)' }}>—</span>
                     )}
+                  </td>
+                  <td className="px-4 py-2.5 hidden md:table-cell tabular whitespace-nowrap" style={{ color: 'var(--text-faint)' }}>
+                    {formatDate(ao.created_at) || '—'}
+                  </td>
+                  <td className="px-4 py-2.5 hidden xl:table-cell whitespace-nowrap" style={{ color: 'var(--text-muted)' }}>
+                    {ao.location || '—'}
                   </td>
                   <td className="px-4 py-2.5 whitespace-nowrap">
                     <span className={clsx(

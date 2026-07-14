@@ -431,17 +431,19 @@ function extractQuotes(justif) {
 }
 
 function CvTransparencyView({ result, ao, onClose }) {
-  const [pages, setPages] = useState(null)     // PDF rendu (mode principal)
+  const [mode, setMode] = useState('analyse')  // 'analyse' (CV structuré) | 'pdf' (document original)
+  const [cv, setCv] = useState(null)           // CV structuré GRP-IT (source primaire)
   const [src, setSrc] = useState(null)         // repli : texte anonymisé lu par l'IA
-  const [cv, setCv] = useState(null)           // repli : CV harmonisé (reformulé)
-  const [loading, setLoading] = useState(true)
+  const [pages, setPages] = useState(null)     // PDF rendu (chargé à la demande)
+  const [loading, setLoading] = useState(true) // chargement de la vue « CV analysé »
+  const [pdfLoading, setPdfLoading] = useState(false)
   const [error, setError] = useState('')
+  const [pdfError, setPdfError] = useState('')
   const [pulse, setPulse] = useState(null)     // critère mis en évidence (flash)
   const leftRef = useRef(null)
   const rightRef = useRef(null)
   const pagesRef = useRef(null)                 // pour révoquer les object URLs
   const modRef = useRef(null)                   // module pdfHighlight (chargé à la demande)
-  // Libère les object URLs des pages (indépendant du module lazy).
   const revoke = (pgs) => (pgs || []).forEach(p => { if (p?.imgUrl) { try { URL.revokeObjectURL(p.imgUrl) } catch { /* noop */ } } })
 
   // Annotations = critères notés + justification + couleur + citations (« … »).
@@ -464,13 +466,40 @@ function CvTransparencyView({ result, ao, onClose }) {
       .map((a, i) => ({ ...a, idx: i, color: HL_PALETTE[i % HL_PALETTE.length], quotes: extractQuotes(a.justif) }))
   }, [result])
 
-  // Chargement : le VRAI PDF d'abord (octets servis par le backend → surlignage
-  // géométrique posé par-dessus). Repli sur le texte lu par l'IA, puis le CV
-  // harmonisé, si le PDF est indisponible (autre format, extraction impossible…).
+  // Chargement primaire : le CV STRUCTURÉ (format GRP-IT). C'est la source que
+  // l'IA a citée au scoring → le surlignage y est exact. Repli sur le texte brut
+  // anonymisé lu par l'IA si la structuration n'est pas (encore) disponible.
   useEffect(() => {
     let cancelled = false
-    if (pagesRef.current) { revoke(pagesRef.current); pagesRef.current = null }
-    setLoading(true); setError(''); setPages(null); setSrc(null); setCv(null)
+    setLoading(true); setError(''); setCv(null); setSrc(null)
+    const ids = { submission_id: result.submission_id, consultant_id: result.consultant_id }
+    ;(async () => {
+      try {
+        const r = await api.post('/matching/cv-structured', ids)
+        const got = r.data?.cv
+        if (got && (got.title || (got.experiences || []).length)) {
+          if (!cancelled) { setCv(got); setLoading(false) }
+          return
+        }
+        throw new Error('empty')
+      } catch { /* repli texte ci-dessous */ }
+      try {
+        const r = await api.post('/matching/cv-source', ids)
+        const t = (r.data?.text || '').trim()
+        if (!t) throw new Error('empty')
+        if (!cancelled) { setSrc(t); setLoading(false) }
+      } catch (e) {
+        if (!cancelled) { setError(e.response?.data?.detail || 'CV indisponible'); setLoading(false) }
+      }
+    })()
+    return () => { cancelled = true }
+  }, [result.submission_id, result.consultant_id])
+
+  // Le PDF original n'est chargé QUE si l'utilisateur bascule sur cet onglet.
+  useEffect(() => {
+    if (mode !== 'pdf' || pages || pdfLoading) return
+    let cancelled = false
+    setPdfLoading(true); setPdfError('')
     const ids = { submission_id: result.submission_id, consultant_id: result.consultant_id }
     ;(async () => {
       try {
@@ -480,25 +509,13 @@ function CvTransparencyView({ result, ao, onClose }) {
         if (cancelled) { revoke(rendered); return }
         if (!rendered.length) throw new Error('empty')
         pagesRef.current = rendered
-        setPages(rendered); setLoading(false)
-        return
-      } catch { /* repli texte ci-dessous */ }
-      try {
-        const r = await api.post('/matching/cv-source', ids)
-        const t = (r.data?.text || '').trim()
-        if (!t) throw new Error('empty')
-        if (!cancelled) { setSrc(t); setLoading(false) }
-        return
-      } catch { /* repli harmonisé ci-dessous */ }
-      try {
-        const r = await api.post('/cv/harmonize', { ...ids, lang: 'fr' })
-        if (!cancelled) { setCv(r.data.cv); setLoading(false) }
-      } catch (e) {
-        if (!cancelled) { setError(e.response?.data?.detail || 'CV indisponible'); setLoading(false) }
+        setPages(rendered); setPdfLoading(false)
+      } catch {
+        if (!cancelled) { setPdfError('PDF original indisponible pour cette soumission.'); setPdfLoading(false) }
       }
     })()
     return () => { cancelled = true }
-  }, [result.submission_id, result.consultant_id])
+  }, [mode, pages, pdfLoading, result.submission_id, result.consultant_id])
 
   useEffect(() => () => { if (pagesRef.current) revoke(pagesRef.current) }, [])
 
@@ -516,15 +533,16 @@ function CvTransparencyView({ result, ao, onClose }) {
     return m
   }, [marks])
 
-  // ── Mode texte (repli) : recherche des extraits dans le texte affiché.
+  // ── Mode « CV analysé » (structuré / texte) : recherche des extraits cités.
   const pieces = useMemo(() => (
     src ? src.split(/\n+/).map(s => s.replace(/[ \t]+/g, ' ').trim()).filter(Boolean) : null
   ), [src])
   const cvNorm = useMemo(() => {
-    if (pages) return ''
+    if (mode === 'pdf') return ''
     if (src) return _normTxt(src)
     if (!cv) return ''
     const parts = []
+    if (cv.title) parts.push(cv.title)
     ;(cv.synthese || []).forEach(s => parts.push(s))
     ;(cv.experiences || []).forEach(e => { if (e.context) parts.push(e.context); (e.missions || []).forEach(m => parts.push(m)); if (e.environment) parts.push(e.environment) })
     const c = cv.competences || {}
@@ -532,9 +550,9 @@ function CvTransparencyView({ result, ao, onClose }) {
     ;(cv.langues || []).forEach(x => parts.push(x))
     ;(cv.formation || []).forEach(x => parts.push(x))
     return _normTxt(parts.join('  '))
-  }, [pages, src, cv])
+  }, [mode, src, cv])
   const textFrags = useMemo(() => {
-    if (pages) return []
+    if (mode === 'pdf') return []
     const frags = []
     annos.forEach(a => a.quotes.forEach((q, qi) => {
       const words = q.replace(/\[[^\]]{1,24}\]/g, ' ').split(/\s+/).filter(Boolean)
@@ -547,20 +565,20 @@ function CvTransparencyView({ result, ao, onClose }) {
       if (chosen) frags.push({ frag: chosen, key: `${a.idx}-${qi}`, annoIdx: a.idx, color: a.color })
     }))
     return frags.sort((x, y) => y.frag.length - x.frag.length)
-  }, [pages, annos, cvNorm])
+  }, [mode, annos, cvNorm])
   const regex = textFrags.length ? new RegExp('(' + textFrags.map(f => _escRe(f.frag)).join('|') + ')', 'gi') : null
 
   // Critères effectivement retrouvés (surlignés) selon le mode actif.
   const matchedAnnos = useMemo(() => (
-    pages ? new Set(marks.map(m => m.annoIdx)) : new Set(textFrags.map(f => f.annoIdx))
-  ), [pages, marks, textFrags])
-  const markCount = (idx) => (pages ? marks.filter(m => m.annoIdx === idx).length : textFrags.filter(f => f.annoIdx === idx).length)
+    mode === 'pdf' ? new Set(marks.map(m => m.annoIdx)) : new Set(textFrags.map(f => f.annoIdx))
+  ), [mode, marks, textFrags])
+  const markCount = (idx) => (mode === 'pdf' ? marks.filter(m => m.annoIdx === idx).length : textFrags.filter(f => f.annoIdx === idx).length)
 
   const flash = (idx) => { setPulse(idx); setTimeout(() => setPulse(p => (p === idx ? null : p)), 1400) }
   const toAnno = (idx) => { flash(idx); rightRef.current?.querySelector(`#anno-${idx}`)?.scrollIntoView({ block: 'center', behavior: 'smooth' }) }
   const toMark = (idx) => { flash(idx); leftRef.current?.querySelector(`[data-anno="${idx}"]`)?.scrollIntoView({ block: 'center', behavior: 'smooth' }) }
 
-  // Rend un texte (mode repli) avec les extraits surlignés.
+  // Rend un texte (mode « CV analysé ») avec les extraits cités surlignés.
   const hl = (text) => {
     const t = (text || '').replace(/\s+/g, ' ').trim()
     if (!t) return null
@@ -590,11 +608,17 @@ function CvTransparencyView({ result, ao, onClose }) {
 
   const c = cv?.competences || {}
   const bilan = bilanPhrase(result.llm_global)
+  const canPdf = !!result.submission_id
+  // Vue prête = source affichée chargée (sinon « non localisé » clignoterait au chargement).
+  const viewReady = mode === 'pdf' ? !!pages : (!!cv || !!src)
+  const leftLabel = mode === 'pdf'
+    ? 'Document original — surligné par l’IA'
+    : (cv ? 'CV analysé — format Groupement-IT' : 'CV — texte lu par l’IA (anonymisé)')
 
   return (
     <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-stretch justify-center p-3 sm:p-4" onClick={onClose}>
       <div className="card p-0 w-full max-w-7xl max-h-[95vh] flex flex-col" onClick={e => e.stopPropagation()}>
-        {/* En-tête : identité + essentiel + légende couleurs */}
+        {/* En-tête : identité + essentiel + bascule vue + légende couleurs */}
         <div className="p-4 border-b shrink-0" style={{ borderColor: 'var(--border)' }}>
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
@@ -606,39 +630,52 @@ function CvTransparencyView({ result, ao, onClose }) {
             </div>
             <button onClick={onClose} className="btn-ghost !p-1.5 shrink-0" title="Fermer (Échap)"><X size={16} /></button>
           </div>
-          {annos.length > 0 && (
-            <div className="flex flex-wrap gap-x-3 gap-y-1 mt-3">
-              {annos.map(a => (
-                <button key={a.idx} onClick={() => (matchedAnnos.has(a.idx) ? toMark(a.idx) : toAnno(a.idx))}
-                  className="inline-flex items-center gap-1.5 text-[10.5px] font-medium"
-                  style={{ color: 'var(--text-muted)', opacity: matchedAnnos.has(a.idx) ? 1 : 0.45 }}
-                  title={matchedAnnos.has(a.idx) ? 'Surligné dans le CV' : 'Extrait non localisé dans le CV'}>
-                  <span className="inline-block w-3 h-3 rounded-sm" style={{ background: a.color.mark, boxShadow: `inset 0 -2px 0 ${a.color.line}` }} />
-                  {a.label}
-                </button>
-              ))}
-            </div>
-          )}
+
+          <div className="flex items-center justify-between gap-3 mt-3 flex-wrap">
+            {annos.length > 0 ? (
+              <div className="flex flex-wrap gap-x-3 gap-y-1">
+                {annos.map(a => (
+                  <button key={a.idx} onClick={() => (matchedAnnos.has(a.idx) ? toMark(a.idx) : toAnno(a.idx))}
+                    className="inline-flex items-center gap-1.5 text-[10.5px] font-medium"
+                    style={{ color: 'var(--text-muted)', opacity: matchedAnnos.has(a.idx) ? 1 : 0.45 }}
+                    title={matchedAnnos.has(a.idx) ? 'Surligné dans le CV' : 'Extrait non localisé dans le CV'}>
+                    <span className="inline-block w-3 h-3 rounded-sm" style={{ background: a.color.mark, boxShadow: `inset 0 -2px 0 ${a.color.line}` }} />
+                    {a.label}
+                  </button>
+                ))}
+              </div>
+            ) : <span />}
+            {canPdf && (
+              <div className="inline-flex rounded-lg p-0.5 shrink-0" style={{ background: 'var(--surface-2)', border: '1px solid var(--border)' }}>
+                {[['analyse', 'CV analysé', FileSearch], ['pdf', 'PDF original', FileText]].map(([m, label, Ic]) => (
+                  <button key={m} onClick={() => setMode(m)}
+                    className="inline-flex items-center gap-1.5 px-2.5 h-7 text-[11px] font-semibold rounded-md transition-colors"
+                    style={mode === m
+                      ? { background: 'var(--surface)', color: 'var(--text)', boxShadow: '0 1px 2px rgba(0,0,0,.12)' }
+                      : { color: 'var(--text-muted)', background: 'transparent' }}>
+                    <Ic size={12} /> {label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
 
-        {loading ? (
-          <div className="flex-1 flex items-center justify-center gap-2 text-sm" style={{ color: 'var(--text-muted)' }}>
-            <Loader2 size={16} className="animate-spin" /> Rendu du CV…
-          </div>
-        ) : error ? (
-          <div className="flex-1 flex items-center justify-center text-sm p-6 text-center" style={{ color: 'var(--text-muted)' }}>
-            {error}. Le CV soumis reste consultable via le bouton « CV » de la carte.
-          </div>
-        ) : (
-          <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[1.15fr_1fr] divide-y lg:divide-y-0 lg:divide-x" style={{ borderColor: 'var(--border)' }}>
-            {/* Gauche : le CV. En mode PDF, pages réelles + surlignages par zone. */}
-            <div ref={leftRef} className="overflow-y-auto p-3 sm:p-4" style={{ background: 'var(--surface-2)' }}>
-              <p className="text-[10px] font-semibold uppercase tracking-wider mb-3 flex items-center gap-1" style={{ color: 'var(--text-faint)' }}>
-                <FileText size={11} />
-                {pages ? 'CV soumis — surligné par l’IA' : (src ? 'CV — texte lu par l’IA (anonymisé)' : 'CV — format Groupement-IT (reformulé)')}
-              </p>
+        <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[1.15fr_1fr] divide-y lg:divide-y-0 lg:divide-x" style={{ borderColor: 'var(--border)' }}>
+          {/* Gauche : le CV (structuré par défaut, PDF original à la demande). */}
+          <div ref={leftRef} className="overflow-y-auto p-3 sm:p-4 lg:p-5" style={{ background: mode === 'pdf' ? 'var(--surface-2)' : 'var(--surface)' }}>
+            <p className="text-[10px] font-semibold uppercase tracking-wider mb-3 flex items-center gap-1" style={{ color: 'var(--text-faint)' }}>
+              <FileText size={11} /> {leftLabel}
+            </p>
 
-              {pages ? (
+            {mode === 'pdf' ? (
+              pdfLoading ? (
+                <div className="flex items-center justify-center gap-2 py-16 text-sm" style={{ color: 'var(--text-muted)' }}>
+                  <Loader2 size={16} className="animate-spin" /> Rendu du PDF…
+                </div>
+              ) : pdfError ? (
+                <div className="py-16 text-center text-sm px-6" style={{ color: 'var(--text-muted)' }}>{pdfError}</div>
+              ) : pages ? (
                 <div className="mx-auto space-y-4" style={{ maxWidth: 780 }}>
                   {pages.map((pg, pi) => (
                     <div key={pg.pageNum} className="relative rounded-md overflow-hidden shadow-sm" style={{ border: '1px solid var(--border)', background: '#fff' }}>
@@ -667,19 +704,29 @@ function CvTransparencyView({ result, ao, onClose }) {
                     </div>
                   ))}
                   <p className="text-[10px] text-center pt-1 pb-2" style={{ color: 'var(--text-faint)' }}>
-                    Surlignage posé par l’IA d’après ses justifications · cliquez un passage pour lire le commentaire.
+                    Document soumis, tel quel · surlignage posé par l’IA d’après ses justifications.
                   </p>
                 </div>
-              ) : src ? (
-                <div className="space-y-2 max-w-3xl">
-                  {pieces.map((p, i) => (
-                    <p key={i} className="text-[12.5px] leading-relaxed" style={{ color: 'var(--text)' }}>{hl(p)}</p>
-                  ))}
-                </div>
-              ) : (<>
-                {cv?.title && <p className="text-base font-bold uppercase" style={{ color: 'var(--text)' }}>{cv.title}</p>}
-                {cv?.synthese?.length > 0 && (<><SecH>Synthèse des compétences</SecH><Bullets items={cv.synthese} /></>)}
-                {cv?.experiences?.length > 0 && (
+              ) : null
+            ) : loading ? (
+              <div className="flex items-center justify-center gap-2 py-16 text-sm" style={{ color: 'var(--text-muted)' }}>
+                <Loader2 size={16} className="animate-spin" /> Chargement du CV analysé…
+              </div>
+            ) : error && !cv && !src ? (
+              <div className="py-16 text-center text-sm px-6" style={{ color: 'var(--text-muted)' }}>
+                {error}.{canPdf ? ' Essayez l’onglet « PDF original » ci-dessus.' : ''}
+              </div>
+            ) : src ? (
+              <div className="space-y-2 max-w-3xl">
+                {pieces.map((p, i) => (
+                  <p key={i} className="text-[12.5px] leading-relaxed" style={{ color: 'var(--text)' }}>{hl(p)}</p>
+                ))}
+              </div>
+            ) : cv ? (
+              <div className="max-w-3xl">
+                {cv.title && <p className="text-base font-bold uppercase" style={{ color: 'var(--text)' }}>{hl(cv.title)}</p>}
+                {cv.synthese?.length > 0 && (<><SecH>Synthèse des compétences</SecH><Bullets items={cv.synthese} /></>)}
+                {cv.experiences?.length > 0 && (
                   <>
                     <SecH>Expériences</SecH>
                     <div className="space-y-3 mt-1">
@@ -704,56 +751,58 @@ function CvTransparencyView({ result, ao, onClose }) {
                     {c.techniques?.length > 0 && (<><p className="text-[11px] font-semibold mt-1" style={{ color: 'var(--text)' }}>Techniques</p><Bullets items={c.techniques} /></>)}
                   </>
                 ) : null}
-                {cv?.langues?.length > 0 && (<><SecH>Langues</SecH><Bullets items={cv.langues} /></>)}
-                {cv?.formation?.length > 0 && (<><SecH>Formation</SecH><Bullets items={cv.formation} /></>)}
-              </>)}
-            </div>
-
-            {/* Droite : annotations de l'IA, reliées aux surlignages (comme un relecteur). */}
-            <div ref={rightRef} className="overflow-y-auto p-4 lg:p-5">
-              <p className="text-[10px] font-semibold uppercase tracking-wider mb-3 flex items-center gap-1" style={{ color: 'var(--text-faint)' }}>
-                <Sparkles size={11} className="text-violet-400" /> Annotations de l’IA
-              </p>
-              <div className="space-y-2.5">
-                {annos.map(a => {
-                  const on = pulse === a.idx
-                  const has = matchedAnnos.has(a.idx)
-                  const n = markCount(a.idx)
-                  return (
-                    <div key={a.idx} id={`anno-${a.idx}`} onClick={() => has && toMark(a.idx)}
-                      className="rounded-lg p-3 transition-shadow"
-                      style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderLeft: `3px solid ${a.color.line}`,
-                        cursor: has ? 'pointer' : 'default', boxShadow: on ? `0 0 0 2px ${a.color.line}` : 'none' }}>
-                      <div className="flex items-center justify-between gap-3">
-                        <span className="inline-flex items-center gap-1.5 text-[12px] font-semibold" style={{ color: 'var(--text)' }}>
-                          <span className="inline-block w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: a.color.line }} />
-                          {a.label}
-                        </span>
-                        <div className="h-1.5 rounded-full overflow-hidden shrink-0" style={{ background: 'var(--surface-2)', width: 72 }} title="Force relative du critère">
-                          <div className="h-full rounded-full" style={{ width: `${a.pct}%`, background: a.color.line }} />
-                        </div>
-                      </div>
-                      <p className="text-[12px] leading-relaxed mt-1.5" style={{ color: 'var(--text-muted)' }}>{a.justif}</p>
-                      {has ? (
-                        <button onClick={(e) => { e.stopPropagation(); toMark(a.idx) }}
-                          className="mt-2 inline-flex items-center gap-1 text-[10.5px] font-semibold" style={{ color: a.color.line }}>
-                          <Highlighter size={11} /> Voir dans le CV{n > 1 ? ` · ${n} passages` : ''}
-                        </button>
-                      ) : (
-                        <p className="mt-1.5 text-[10px] italic" style={{ color: 'var(--text-faint)' }}>Passage non localisé dans le CV.</p>
-                      )}
-                    </div>
-                  )
-                })}
+                {cv.langues?.length > 0 && (<><SecH>Langues</SecH><Bullets items={cv.langues} /></>)}
+                {cv.formation?.length > 0 && (<><SecH>Formation</SecH><Bullets items={cv.formation} /></>)}
               </div>
-              {matchedAnnos.size === 0 && annos.length > 0 && (
-                <p className="text-[11px] mt-3 italic" style={{ color: 'var(--text-faint)' }}>
-                  Surlignage indisponible : les extraits cités n’ont pas été retrouvés tels quels dans le CV. Les commentaires ci-dessus restent valables.
-                </p>
-              )}
-            </div>
+            ) : (
+              <div className="py-16 text-center text-sm px-6" style={{ color: 'var(--text-muted)' }}>CV indisponible.</div>
+            )}
           </div>
-        )}
+
+          {/* Droite : annotations de l'IA, reliées aux surlignages (comme un relecteur). */}
+          <div ref={rightRef} className="overflow-y-auto p-4 lg:p-5" style={{ background: 'var(--surface-2)' }}>
+            <p className="text-[10px] font-semibold uppercase tracking-wider mb-3 flex items-center gap-1" style={{ color: 'var(--text-faint)' }}>
+              <Sparkles size={11} className="text-violet-400" /> Annotations de l’IA
+            </p>
+            <div className="space-y-2.5">
+              {annos.map(a => {
+                const on = pulse === a.idx
+                const has = matchedAnnos.has(a.idx)
+                const n = markCount(a.idx)
+                return (
+                  <div key={a.idx} id={`anno-${a.idx}`} onClick={() => has && toMark(a.idx)}
+                    className="rounded-lg p-3 transition-shadow"
+                    style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderLeft: `3px solid ${a.color.line}`,
+                      cursor: has ? 'pointer' : 'default', boxShadow: on ? `0 0 0 2px ${a.color.line}` : 'none' }}>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="inline-flex items-center gap-1.5 text-[12px] font-semibold" style={{ color: 'var(--text)' }}>
+                        <span className="inline-block w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: a.color.line }} />
+                        {a.label}
+                      </span>
+                      <div className="h-1.5 rounded-full overflow-hidden shrink-0" style={{ background: 'var(--surface-2)', width: 72 }} title="Force relative du critère">
+                        <div className="h-full rounded-full" style={{ width: `${a.pct}%`, background: a.color.line }} />
+                      </div>
+                    </div>
+                    <p className="text-[12px] leading-relaxed mt-1.5" style={{ color: 'var(--text-muted)' }}>{a.justif}</p>
+                    {has ? (
+                      <button onClick={(e) => { e.stopPropagation(); toMark(a.idx) }}
+                        className="mt-2 inline-flex items-center gap-1 text-[10.5px] font-semibold" style={{ color: a.color.line }}>
+                        <Highlighter size={11} /> Voir dans le CV{n > 1 ? ` · ${n} passages` : ''}
+                      </button>
+                    ) : viewReady ? (
+                      <p className="mt-1.5 text-[10px] italic" style={{ color: 'var(--text-faint)' }}>Passage non localisé dans cette vue.</p>
+                    ) : null}
+                  </div>
+                )
+              })}
+            </div>
+            {matchedAnnos.size === 0 && annos.length > 0 && viewReady && (
+              <p className="text-[11px] mt-3 italic" style={{ color: 'var(--text-faint)' }}>
+                Surlignage indisponible dans cette vue : les extraits cités n’ont pas été retrouvés tels quels. Les commentaires ci-dessus restent valables.
+              </p>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   )

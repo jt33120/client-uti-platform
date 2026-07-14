@@ -5,7 +5,7 @@ Admin supervision console (admin only):
   * overview  — high-level KPIs (accounts by role, activity over 30 days)
 """
 from datetime import datetime, timedelta, timezone
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from pydantic import BaseModel, EmailStr
 from typing import Literal, Optional
 import httpx
@@ -876,3 +876,28 @@ async def decision_insights(days: int = 90, user: dict = Depends(require_admin))
         "weekly": [weekly[k] for k in sorted(weekly.keys()) if k != "?"],
         "recent_overrides": recent_overrides,
     }
+
+
+@router.post("/backfill-structured")
+async def backfill_structured(background_tasks: BackgroundTasks, limit: int = 50,
+                              user: dict = Depends(require_admin)):
+    """Backfill du CV structuré (format GRP-IT) pour les soumissions existantes qui
+    n'en ont pas encore. Sans lui, un ancien CV n'est structuré qu'à la 1re ouverture
+    de sa vue « CV analysé ». Traitement en tâche de fond (best-effort) ; renvoie le
+    nombre mis en file. Nécessite la migration 0002 (sinon rien n'est persisté)."""
+    from services.cv_structured import build_structured_bg
+    try:
+        rows = supabase.table("submissions").select(
+            "id, cv_structured, cv_text").limit(1000).execute().data or []
+        todo = [r["id"] for r in rows if r.get("cv_text") and not r.get("cv_structured")]
+    except Exception:
+        # Colonne absente (migration non appliquée) : on ne peut pas savoir lesquels
+        # manquent — on le signale plutôt que de tout reconstruire en vain.
+        raise HTTPException(
+            status_code=409,
+            detail="Colonne submissions.cv_structured absente — appliquer d'abord migrations/0002_cv_structured.sql.",
+        )
+    todo = todo[:max(1, min(limit, 200))]
+    for sid in todo:
+        background_tasks.add_task(build_structured_bg, sid)
+    return {"queued": len(todo)}

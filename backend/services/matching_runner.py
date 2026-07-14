@@ -49,9 +49,15 @@ async def _gather_bounded(coros):
 
 async def _features_for(item: dict) -> tuple[dict, float, str]:
     """Extraction pseudonymisée des features d'un candidat (best-effort).
-    Retourne aussi le TEXTE pseudonymisé du CV, réutilisé par le 2e avis IA pour
-    citer des éléments concrets dans sa justification (sans PII)."""
-    clean = strip_pii(item.get("cv_text"), item.get("name"))
+
+    On lit en PRIORITÉ le CV STRUCTURÉ (vision/harmonisé, déjà anonymisé, propre,
+    lu en entier et enrichi des niveaux visuels) quand il existe : ainsi le score
+    déterministe ET le 2e avis IA voient la MÊME source riche — un CV scanné ou
+    graphique n'est plus pénalisé côté déterministe faute de texte brut lisible.
+    Repli sur le CV brut extrait. Retourne aussi ce texte, réutilisé par le 2e avis
+    IA pour citer des éléments concrets (sans PII → surlignage exact)."""
+    base_text = flatten_structured(item.get("cv_structured")) or item.get("cv_text")
+    clean = strip_pii(base_text, item.get("name"))
     features, cost = await extract_features(clean)
     return features, cost, clean
 
@@ -245,12 +251,12 @@ async def _score_all(
     # Extrait cité par l'IA : le CV structuré aplati (déjà anonymisé) quand il
     # existe → chaque « … » cité se retrouve tel quel dans un champ affiché de la
     # vue « CV analysé » (surlignage exact). Repli sur le CV brut pseudonymisé.
-    # strip_pii en défense : le CV structuré est censé être anonymisé (garantie
-    # « soft » du harmoniseur) ; on repasse quand même le nom au filtre PII avant
-    # de l'envoyer au fournisseur de scoring. Repli sur le CV brut pseudonymisé.
+    # `clean_cv` est déjà le CV structuré aplati et pseudonymisé (cf. _features_for) :
+    # le 2e avis IA cite donc depuis la même source que celle affichée → surlignage
+    # exact, et il voit le CV EN ENTIER (fenêtre dé-tronquée dans llm_scoring).
     llm_outs = await _gather_bounded([
         llm_score(features, it, ao, weights,
-                  cv_excerpt=(strip_pii(flatten_structured(it.get("cv_structured")), it.get("name")) or clean_cv),
+                  cv_excerpt=clean_cv,
                   human_feedback=feedback.get(it.get("consultant_id")))
         for (it, features, _s, _c, clean_cv) in base
     ])

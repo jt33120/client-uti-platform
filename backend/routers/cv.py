@@ -40,6 +40,14 @@ async def harmonize(body: HarmonizeRequest, user: dict = Depends(require_staff))
     """Régénère un CV au format standard Groupement-IT (JSON structuré, FR ou EN)."""
     if body.lang not in ("fr", "en"):
         raise HTTPException(status_code=422, detail="lang doit être 'fr' ou 'en'.")
+    # Cohérence : un CV structuré déjà stocké (potentiellement enrichi par la vision —
+    # niveaux d'étoiles, etc.) est la source de vérité en FR. On le renvoie tel quel
+    # plutôt que d'en régénérer un « texte seul » divergent de la vue « CV analysé ».
+    if body.submission_id and body.lang == "fr":
+        from services.cv_structured import get_structured
+        got = get_structured(body.submission_id)
+        if got:
+            return {"cv": got, "lang": "fr"}
     if not cv_harmonizer.is_available():
         raise HTTPException(status_code=503, detail="Service IA indisponible (clé LLM manquante).")
 

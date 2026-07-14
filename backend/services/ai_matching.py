@@ -17,7 +17,12 @@ from services.error_log import record as _record_err
 
 # timeout : sans lui, un provider qui « hang » bloque la requête indéfiniment
 # (le repli inter-providers ne se déclenche que sur exception, pas sur lenteur).
-_LLM_TIMEOUT = 45  # secondes par appel — l'extraction Haiku prend < 15 s en pratique
+_LLM_TIMEOUT = 60  # secondes par appel (marge pour les CV longs lus en entier)
+
+# Fenêtre de lecture du CV : dimensionnée pour un CV dense (4-6 pages ≈ 15-20k car.)
+# lu EN ENTIER, plus de coupe à ~2 pages. Le contexte des modèles Claude l'absorbe
+# largement. (Densité — correctif « on ne rate plus les dernières expériences ».)
+_CV_INPUT_CHARS = 40000
 
 client = AsyncOpenAI(
     api_key=settings.openrouter_key,
@@ -133,11 +138,11 @@ async def _call_extraction(c: AsyncOpenAI, model: str, cv_text: str) -> tuple[di
             model=model,
             messages=[
                 {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
-                {"role": "user", "content": cv_text[:6000]},
+                {"role": "user", "content": cv_text[:_CV_INPUT_CHARS]},
             ],
             response_format={"type": "json_object"},
             temperature=0,
-            max_tokens=1500,
+            max_tokens=2000,
             extra_body=(ai_ledger.OR_USAGE if _prov == "openrouter" else {}),
         )
         _u = response.usage

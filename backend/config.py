@@ -41,6 +41,17 @@ class Settings(BaseSettings):
     summary_model: str = "anthropic/claude-haiku-4.5"      # résumé d'AO 1 phrase
     scoring_model: str = "anthropic/claude-haiku-4.5"      # 2e avis IA sur le score (hybride)
     draft_model: str = "anthropic/claude-sonnet-4.5"       # génération de fiche AO
+    # Analyse VISION du CV : lit les pages RENDUES EN IMAGE → voit ce que le texte
+    # seul manque (jauges/étoiles de compétences, graphiques, CV scannés, mises en
+    # page multi-colonnes). Modèle multimodal (Claude via OpenRouter). Repli propre
+    # sur l'extraction texte si absent/indisponible.
+    vision_model: str = "anthropic/claude-sonnet-4.5"      # cv_vision (analyse visuelle du CV)
+    # Interrupteur de l'analyse VISION. Activée par défaut (le produit la demande),
+    # mais débrayable par déploiement : la vision envoie les PAGES DU CV EN IMAGE
+    # (donc photo + identité visibles) au fournisseur LLM — un flux de données
+    # personnelles nouveau vs le texte. À couper (VISION_ENABLED=false) si la DPA /
+    # le consentement ne le couvrent pas encore. À off → repli extraction texte.
+    vision_enabled: bool = True
 
     # Mistral — fallback LLM when OpenRouter is unavailable
     mistral_key: Optional[str] = None

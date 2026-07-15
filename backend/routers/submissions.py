@@ -45,6 +45,11 @@ def _check_ao_access(ao_id: str, user: dict) -> dict:
     if is_staff(user):
         return ao
 
+    # Un brouillon est invisible des partenaires, même via l'URL directe (parité
+    # avec get_ao) : 404 plutôt que de révéler l'existence de l'AO.
+    if ao.get("is_draft"):
+        raise HTTPException(status_code=404, detail="AO introuvable")
+
     access = supabase.table("partner_clients").select("tier").eq(
         "partner_id", user["sub"]
     ).eq("client_id", ao["client_id"]).in_("tier", ["list_1", "list_2"]).execute()
@@ -86,11 +91,13 @@ async def create_submission(
       (un CV est requis dans ce cas).
     """
     ao_row = _check_ao_access(ao_id, user)
-    # Un AO archivé est clos : on refuse toute nouvelle réponse (l'historique
-    # « Mes réponses » peut l'ouvrir, mais plus y soumettre). .get() tolère
-    # l'absence de la colonne (migration 0003 non appliquée -> None -> autorisé).
+    # Un AO archivé est clos, un brouillon n'est pas encore publié : on refuse la
+    # soumission dans les deux cas. .get() tolère l'absence des colonnes (migration
+    # 0003/0005 non appliquée -> None -> autorisé).
     if ao_row.get("archived"):
         raise HTTPException(status_code=409, detail="Cet appel d'offres est archivé : les réponses sont closes.")
+    if ao_row.get("is_draft"):
+        raise HTTPException(status_code=409, detail="Cet appel d'offres est en brouillon : il n'est pas encore ouvert aux réponses.")
 
     # RGPD — explicit consent is mandatory before any CV (personal data) is
     # uploaded, parsed, stored and sent to the AI matching model.

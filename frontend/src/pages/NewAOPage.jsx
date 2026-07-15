@@ -145,8 +145,8 @@ export default function NewAOPage() {
 
   const set = (k) => (e) => setForm(p => ({ ...p, [k]: e.target.value }))
 
-  const handleSubmit = async (e) => {
-    e.preventDefault()
+  const handleSubmit = async (e, asDraft = false) => {
+    e?.preventDefault()
     setError('')
     // Explicit, visible validation (no reliance on the native browser tooltip,
     // which is English-only and invisible if the field is off-screen).
@@ -170,6 +170,7 @@ export default function NewAOPage() {
       if (!payload.work_mode) delete payload.work_mode
       if (!payload.langue_requise?.trim()) delete payload.langue_requise
       if (scoringTouched) payload.scoring_overrides = { stars }
+      if (asDraft) payload.is_draft = true      // brouillon : ni visible partenaires, ni matché
       const { data } = await api.post('/aos', payload)
       // Persiste les pièces jointes d'origine pour les retrouver à l'édition.
       if (aiFiles.length) {
@@ -181,7 +182,7 @@ export default function NewAOPage() {
       }
       // Envoi immédiat aux partenaires de la liste 1 si demandé (best-effort :
       // un échec d'envoi ne doit pas bloquer la création de l'AO).
-      if (notifyNow) {
+      if (!asDraft && notifyNow) {
         try { await api.post(`/aos/${data.id}/notify`) } catch { /* non bloquant */ }
       }
       navigate(`/aos/${data.id}`)
@@ -548,7 +549,13 @@ export default function NewAOPage() {
               <button type="submit" disabled={loading} className="btn-primary w-full justify-center py-3">
                 {loading
                   ? <><Loader2 size={15} className="animate-spin" />Création...</>
-                  : <><FileText size={15} />Créer l'AO</>}
+                  : <><FileText size={15} />Créer et publier</>}
+              </button>
+              <button type="button" onClick={(e) => handleSubmit(e, true)} disabled={loading}
+                className="w-full justify-center py-2.5 inline-flex items-center gap-1.5 rounded-lg text-sm font-medium border transition-colors hover:bg-white/5"
+                style={{ borderColor: 'var(--border)', color: 'var(--text-muted)' }}
+                title="Enregistre sans publier : invisible des partenaires et non matché tant que non publié">
+                Enregistrer comme brouillon
               </button>
               <button type="button" onClick={() => navigate(-1)} className="btn-ghost w-full justify-center py-2.5">
                 Annuler

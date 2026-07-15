@@ -174,13 +174,19 @@ const fmtLang = (l) => l?.niveau ? `${l.langue} (${l.niveau})` : l?.langue
 
 // Radar — score hybride par critère (une seule série, normalisée en %).
 // Le score global n'est PAS répété au centre : il est affiché dans l'anneau
-// (ScoreRing) en tête de carte.
-function ScoreRadar({ breakdown, hybridBreakdown, weights }) {
+// (ScoreRing) en tête de carte. `avgPct` (optionnel) trace la MOYENNE du vivier
+// en fil fin pointillé : on lit d'un coup d'œil où le profil sur/sous-performe.
+function ScoreRadar({ breakdown, hybridBreakdown, weights, avgPct }) {
+  const hasAvg = avgPct && Object.keys(avgPct).length > 0
   const data = activeCats(weights).map(c => {
     const max = (weights && weights[c.wKey]) || c.dflt || 1
     // Priorité : hybrid > det (si pas encore de résultat hybride stocké)
     const val = hybridBreakdown?.[c.det] ?? breakdown?.[c.det] ?? 0
-    return { axis: c.label, score: Math.round((val / max) * 100) }
+    const row = { axis: c.label, score: Math.round((val / max) * 100) }
+    // N'ancre le fil « moyenne » que sur les axes réellement moyennables :
+    // un axe absent laisse un trou (honnête) plutôt qu'un faux 0 vers le centre.
+    if (hasAvg && avgPct[c.det] != null) row.avg = Math.round(avgPct[c.det])
+    return row
   })
   return (
     <div className="relative">
@@ -188,9 +194,93 @@ function ScoreRadar({ breakdown, hybridBreakdown, weights }) {
         <RadarChart data={data} outerRadius="72%">
           <PolarGrid stroke="rgba(120,120,140,0.20)" />
           <PolarAngleAxis dataKey="axis" tick={{ fill: 'var(--text-muted)', fontSize: 11 }} />
+          {hasAvg && (
+            <Radar dataKey="avg" stroke="var(--text-faint)" strokeWidth={1}
+                   strokeDasharray="4 3" fill="none" isAnimationActive={false} />
+          )}
           <Radar dataKey="score" stroke="#6366f1" fill="#6366f1" fillOpacity={0.30} />
         </RadarChart>
       </ResponsiveContainer>
+      {hasAvg && (
+        <div className="flex items-center justify-center gap-4 -mt-1.5 text-[10px]" style={{ color: 'var(--text-faint)' }}>
+          <span className="inline-flex items-center gap-1.5"><span className="inline-block w-3 h-[2px] rounded" style={{ background: '#6366f1' }} /> Ce profil</span>
+          <span className="inline-flex items-center gap-1.5"><span className="inline-block w-3 border-t border-dashed" style={{ borderColor: 'var(--text-faint)' }} /> Moyenne du vivier</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Moyenne du vivier par critère (% du barème), sur les profils fournis. Sert au
+// fil « moyenne » des radars individuels ET au radar superposé de synthèse.
+function poolCriterionAverages(results) {
+  if (!results?.length) return {}
+  const weights = results.find(r => r.weights)?.weights || null
+  const cats = activeCats(weights)
+  const acc = {}, cnt = {}
+  results.forEach(r => {
+    const hb = r.hybrid_breakdown || r.breakdown || {}
+    cats.forEach(c => {
+      const max = (weights && weights[c.wKey]) || c.dflt || 1
+      const val = hb[c.det]
+      if (val == null) return
+      acc[c.det] = (acc[c.det] || 0) + (val / max) * 100
+      cnt[c.det] = (cnt[c.det] || 0) + 1
+    })
+  })
+  const out = {}
+  cats.forEach(c => { if (cnt[c.det]) out[c.det] = Math.round(acc[c.det] / cnt[c.det]) })
+  return out
+}
+
+// Palette du radar superposé : une teinte stable par rang (max ~9 profils).
+const POOL_COLORS = ['#6366f1', '#10b981', '#f59e0b', '#ec4899', '#06b6d4', '#a855f7', '#ef4444', '#84cc16', '#f97316']
+const POOL_RADAR_MAX = 6  // au-delà, illisible : on superpose les 6 premiers
+
+// Radar SUPERPOSÉ du vivier : une série (fil coloré) par profil, pour comparer
+// la « forme » des candidats d'un coup d'œil, AVANT le détail carte par carte.
+function PoolRadar({ results }) {
+  const weights = results.find(r => r.weights)?.weights || null
+  const cats = activeCats(weights)
+  const series = results.slice(0, POOL_RADAR_MAX)
+  const data = cats.map(c => {
+    const max = (weights && weights[c.wKey]) || c.dflt || 1
+    const row = { axis: c.short || c.label }
+    series.forEach((r, i) => {
+      const hb = r.hybrid_breakdown || r.breakdown || {}
+      row[`p${i}`] = Math.round(((hb[c.det] ?? 0) / max) * 100)
+    })
+    return row
+  })
+  return (
+    <div>
+      <ResponsiveContainer width="100%" height={260}>
+        <RadarChart data={data} outerRadius="70%">
+          <PolarGrid stroke="rgba(120,120,140,0.20)" />
+          <PolarAngleAxis dataKey="axis" tick={{ fill: 'var(--text-muted)', fontSize: 10.5 }} />
+          {series.map((r, i) => (
+            <Radar key={r.consultant_id || i} dataKey={`p${i}`}
+                   stroke={POOL_COLORS[i % POOL_COLORS.length]}
+                   fill={POOL_COLORS[i % POOL_COLORS.length]} fillOpacity={0.05}
+                   strokeWidth={1.75} isAnimationActive={false} />
+          ))}
+        </RadarChart>
+      </ResponsiveContainer>
+      <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1.5 mt-1">
+        {series.map((r, i) => {
+          const sc = r.score_hybride ?? r.score_total
+          return (
+            <span key={r.consultant_id || i} className="inline-flex items-center gap-1.5 text-[10.5px]" style={{ color: 'var(--text-muted)' }}>
+              <span className="inline-block w-3 h-[2px] rounded" style={{ background: POOL_COLORS[i % POOL_COLORS.length] }} />
+              <span className="font-medium" style={{ color: 'var(--text)' }}>{r.consultant_name || `Profil ${i + 1}`}</span>
+              {sc != null && <span className="tabular" style={{ color: 'var(--text-faint)' }}>{Math.round(sc)}</span>}
+            </span>
+          )
+        })}
+        {results.length > POOL_RADAR_MAX && (
+          <span className="text-[10.5px]" style={{ color: 'var(--text-faint)' }}>+{results.length - POOL_RADAR_MAX} autres</span>
+        )}
+      </div>
     </div>
   )
 }
@@ -386,6 +476,179 @@ function ScoreAnalytics({ all, isAdmin }) {
   )
 }
 
+// ── Synthèse du vivier : radar superposé + lecture d'ensemble par l'IA ──────
+// Ce que le détail carte-par-carte ne dit pas : qualité globale du vivier,
+// resserrement, profils qui sortent du lot, angles morts, reco. Chargée une fois
+// puis mise en cache (session) par signature des scores ; « Actualiser » force un
+// recalcul serveur. Dégradation maîtrisée : le backend retombe sur une synthèse
+// déterministe si l'IA est indisponible (jamais d'erreur bloquante).
+const POOL_QUALITY = {
+  fort:    { label: 'Vivier fort',    cls: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/25' },
+  correct: { label: 'Vivier correct', cls: 'text-blue-300 bg-blue-500/10 border-blue-500/25' },
+  faible:  { label: 'Vivier faible',  cls: 'text-amber-400 bg-amber-500/10 border-amber-500/25' },
+}
+
+function poolSignature(results) {
+  return (results || [])
+    .map(r => `${r.consultant_id}:${Math.round(r.score_hybride ?? r.score_total ?? 0)}`)
+    .sort().join('|')
+}
+
+function PoolSynthesis({ aoId, results }) {
+  const enough = (results?.length || 0) >= 2
+  const sig = useMemo(() => poolSignature(results), [results])
+  const cacheKey = `poolsynth:${aoId}`
+  const [data, setData] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  const load = async (refresh = false) => {
+    setLoading(true); setError('')
+    try {
+      const { data: d } = await api.get(`/matching/${aoId}/synthesis`, { params: refresh ? { refresh: true } : {} })
+      if (d?.available === false) { setData(null); setError(''); return }
+      setData(d)
+      try { sessionStorage.setItem(cacheKey, JSON.stringify({ sig, d })) } catch { /* quota */ }
+    } catch (e) {
+      setError(e.response?.data?.detail || 'Synthèse du vivier momentanément indisponible.')
+    } finally { setLoading(false) }
+  }
+
+  useEffect(() => {
+    if (!enough) return
+    // Cache session : pas d'appel LLM à chaque remount tant que les scores tiennent.
+    try {
+      const raw = sessionStorage.getItem(cacheKey)
+      if (raw) {
+        const c = JSON.parse(raw)
+        if (c.sig === sig && c.d) { setData(c.d); return }
+      }
+    } catch { /* ignore */ }
+    load(false)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [aoId, sig, enough])
+
+  if (!enough) return null
+
+  // Les « rangs » de la synthèse suivent le rang IA (matchings.rank) — on mappe
+  // vers le nom quel que soit le reclassement humain de l'affichage.
+  const byRank = [...results].sort((a, b) => (a.rank || 0) - (b.rank || 0))
+  const nameForRank = (rk) => {
+    const r = byRank[rk - 1]
+    return r ? (r.consultant_name || `Profil ${rk}`) : `Profil ${rk}`
+  }
+  const critLabel = Object.fromEntries(SCORE_CATS.map(c => [c.det, c.label]))
+  const q = POOL_QUALITY[data?.pool_quality] || POOL_QUALITY.correct
+  const insights = Object.entries(data?.criterion_insights || {}).filter(([, v]) => v)
+  // La synthèse cite les profils par RANG IA (#1 = meilleur score). Si l'opérateur
+  // a reclassé manuellement les cartes, l'ordre affiché diffère du rang IA :
+  // on le précise pour lever toute ambiguïté sur « le profil #1 ».
+  const humanReordered = results.some((r, i) => byRank[i]?.consultant_id !== r.consultant_id)
+
+  return (
+    <div className="card p-4">
+      <div className="flex items-center justify-between gap-2 mb-4 flex-wrap">
+        <p className="text-xs font-semibold uppercase tracking-wide flex items-center gap-1.5" style={{ color: 'var(--text-muted)' }}>
+          <Sparkles size={13} className="text-[var(--accent-text)]" /> Synthèse du vivier · {results.length} profils
+        </p>
+        <div className="flex items-center gap-2">
+          {data && <span className={clsx('text-[10.5px] font-semibold px-2 py-0.5 rounded-full border', q.cls)}>{q.label}</span>}
+          <button onClick={() => load(true)} disabled={loading}
+                  className="btn-ghost text-[11px] px-2 py-1 gap-1" title="Recalculer la synthèse du vivier">
+            {loading ? <Loader2 size={12} className="animate-spin" /> : <RotateCcw size={12} />} Actualiser
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 items-start">
+        {/* Radar superposé : la « forme » de chaque candidat, comparée d'un coup d'œil */}
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-wide mb-1" style={{ color: 'var(--text-faint)' }}>Formes comparées</p>
+          <PoolRadar results={results} />
+        </div>
+
+        {/* Lecture d'ensemble IA */}
+        <div className="space-y-3">
+          {loading && !data ? (
+            <div className="flex items-center gap-2 text-xs text-slate-500 py-6">
+              <Loader2 size={14} className="animate-spin" /> Analyse du vivier en cours…
+            </div>
+          ) : error ? (
+            <p className="text-xs text-amber-500">{error}</p>
+          ) : data ? (
+            <>
+              <p className="text-sm leading-relaxed" style={{ color: 'var(--text)' }}>{data.pool_verdict}</p>
+              {data.tightness && (
+                <p className="text-[12.5px] leading-relaxed flex items-start gap-1.5" style={{ color: 'var(--text-muted)' }}>
+                  <Target size={13} className="shrink-0 mt-0.5 text-[var(--accent-text)]" /> {data.tightness}
+                </p>
+              )}
+              {data.standouts?.length > 0 && (
+                <div>
+                  <p className="text-[10.5px] font-semibold uppercase tracking-wide text-emerald-400 flex items-center gap-1 mb-1.5"><Award size={11} /> Sortent du lot</p>
+                  <ul className="space-y-1.5">
+                    {data.standouts.map((s, i) => (
+                      <li key={i} className="text-[11.5px] leading-relaxed flex gap-2" style={{ color: 'var(--text-muted)' }}>
+                        <span className="text-emerald-400 mt-[5px] shrink-0 leading-none">▪</span>
+                        <span><span className="font-semibold" style={{ color: 'var(--text)' }}>{nameForRank(s.rank)} — </span>{s.point}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {data.gaps?.length > 0 && (
+                <div>
+                  <p className="text-[10.5px] font-semibold uppercase tracking-wide text-amber-400 flex items-center gap-1 mb-1.5"><AlertTriangle size={11} /> Angles morts du vivier</p>
+                  <ul className="space-y-1.5">
+                    {data.gaps.map((g, i) => (
+                      <li key={i} className="text-[11.5px] leading-relaxed flex gap-2" style={{ color: 'var(--text-muted)' }}>
+                        <span className="text-amber-400 mt-[5px] shrink-0 leading-none">▪</span><span>{g}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </>
+          ) : null}
+        </div>
+      </div>
+
+      {/* Lecture transverse par critère (qui mène, dispersion) */}
+      {insights.length > 0 && (
+        <div className="mt-4 pt-4 border-t border-white/5">
+          <p className="text-[11px] font-semibold uppercase tracking-wide mb-2" style={{ color: 'var(--text-faint)' }}>Par critère, sur l'ensemble du vivier</p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2">
+            {insights.map(([k, v]) => (
+              <p key={k} className="text-[11.5px] leading-relaxed" style={{ color: 'var(--text-muted)' }}>
+                <span className="font-semibold" style={{ color: 'var(--text)' }}>{critLabel[k] || k} — </span>{v}
+              </p>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Recommandation d'action */}
+      {data?.recommendation && (
+        <div className="mt-4 rounded-lg px-3 py-2.5 flex items-start gap-2 text-[12.5px]"
+             style={{ background: 'var(--accent-soft)', color: 'var(--accent-text)' }}>
+          <TrendingUp size={14} className="shrink-0 mt-0.5" />
+          <span><span className="font-semibold">Reco : </span>{data.recommendation}</span>
+        </div>
+      )}
+      {data && humanReordered && (
+        <p className="text-[10px] mt-2" style={{ color: 'var(--text-faint)' }}>
+          Les profils cités par rang (#1, #2…) suivent le score IA, pas votre reclassement manuel des cartes.
+        </p>
+      )}
+      {data?.source === 'deterministic' && (
+        <p className="text-[10px] mt-2" style={{ color: 'var(--text-faint)' }}>
+          Synthèse calculée à partir des scores (avis IA momentanément indisponible).
+        </p>
+      )}
+    </div>
+  )
+}
+
 // Phrase-bilan : la 1ʳᵉ phrase de l'avis IA (verdict « qui contacter et pourquoi »),
 // bornée. Le détail est porté par les puces forts / vigilance juste en dessous.
 function bilanPhrase(text) {
@@ -393,6 +656,16 @@ function bilanPhrase(text) {
   const m = String(text).match(/^[\s\S]*?[.!?](?=\s|$)/)
   const s = (m ? m[0] : String(text)).trim()
   return s.length > 240 ? `${s.slice(0, 237).trimEnd()}…` : s
+}
+
+// Phrase de repli quand l'IA n'a pas justifié un critère (ex. avis IA
+// indisponible, ou critère purement déterministe). Interprète la note plutôt
+// que de laisser une barre muette — la vraie valeur reste la justification IA.
+function critFallback(pct) {
+  if (pct >= 75) return 'Critère solidement couvert par le profil.'
+  if (pct >= 50) return 'Couverture réelle mais partielle, avec réserves.'
+  if (pct >= 30) return 'Peu d’éléments probants sur ce critère.'
+  return 'Critère non couvert par le CV.'
 }
 
 // Puces « à retenir » (haut du barème) / « vigilance » (bas), dérivées des
@@ -870,7 +1143,7 @@ function CvTransparencyView({ result, ao, onClose }) {
   )
 }
 
-function MatchCard({ result, rank, aoId, isAdmin, ao, onContact, expanded: expandedProp, onToggleExpand, decision }) {
+function MatchCard({ result, rank, aoId, isAdmin, ao, onContact, expanded: expandedProp, onToggleExpand, decision, avgPct }) {
   const [contactStatus, setContactStatus] = useState(result.contact_status || 'none')
   useEffect(() => { setContactStatus(result.contact_status || 'none') }, [result.contact_status])
   const [showCv, setShowCv] = useState(false)  // vue « Transparence » (languette droite)
@@ -1076,7 +1349,7 @@ function MatchCard({ result, rank, aoId, isAdmin, ao, onContact, expanded: expan
             {/* Radar : forme du profil — grille vs IA */}
             <div>
               <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1">Profil du candidat</p>
-              <ScoreRadar breakdown={bd} hybridBreakdown={hbd} weights={weights} />
+              <ScoreRadar breakdown={bd} hybridBreakdown={hbd} weights={weights} avgPct={avgPct} />
             </div>
             {/* Bilan IA : phrase-verdict + puces « à retenir » / « vigilance ». */}
             <div data-tour="match-ia">
@@ -1127,20 +1400,32 @@ function MatchCard({ result, rank, aoId, isAdmin, ao, onContact, expanded: expan
             </div>
           </div>
 
-          {/* Détail par critère : barres seules, 2 colonnes. Le « pourquoi »
-              (justifications citées du CV) vit dans le bilan À retenir / Vigilance. */}
+          {/* Détail par critère : barre (magnitude) + phrase du « pourquoi »
+              (justification IA ancrée dans le CV) — pour que ce bloc apporte plus
+              que le radar, et non une simple redite de sa forme. */}
           <div className="space-y-3" data-tour="match-criteria">
             <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Détail par critère</p>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3">
-              {cats.map(c => (
-                <div key={c.key}>
-                  <div className="text-xs text-slate-400 mb-1">{c.label}</div>
-                  <div className="h-1.5 bg-white/5 rounded-full overflow-hidden">
-                    <div className="h-full bg-brand-500 rounded-full transition-all duration-700"
-                         style={{ width: `${Math.min((c.hybridVal / c.max) * 100, 100)}%` }} />
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3.5">
+              {cats.map(c => {
+                const pct = Math.min(Math.round((c.hybridVal / c.max) * 100), 100)
+                const phrase = c.justif || critFallback(pct)
+                return (
+                  <div key={c.key}>
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-xs text-slate-400">{c.label}</span>
+                      <span className="text-[11px] tabular font-semibold" style={{ color: scoreHex(pct) }}>{pct}%</span>
+                    </div>
+                    <div className="h-1.5 bg-white/5 rounded-full overflow-hidden">
+                      <div className="h-full rounded-full transition-all duration-700"
+                           style={{ width: `${pct}%`, background: scoreHex(pct) }} />
+                    </div>
+                    {phrase && (
+                      <p className={clsx('text-[11px] leading-snug mt-1.5', !c.justif && 'italic')}
+                         style={{ color: 'var(--text-muted)' }}>{phrase}</p>
+                    )}
                   </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
 
             {/* Langues détectées au CV + contrôle de la langue imposée par l'AO */}
@@ -1223,6 +1508,14 @@ function MatchCarousel({ results: incoming, aoId, isAdmin, ao, decisions }) {
   const result = results[idx]
   const prev = () => setIdx(i => Math.max(0, i - 1))
   const next = () => setIdx(i => Math.min(results.length - 1, i + 1))
+
+  // Moyenne du vivier par critère (fil de référence sur chaque radar individuel).
+  // Staff seulement : le partenaire ne voit que SES soumissions, une « moyenne du
+  // vivier » y serait trompeuse. Sans objet à 1 seul profil.
+  const avgPct = useMemo(
+    () => (isAdmin && results.length > 1 ? poolCriterionAverages(results) : null),
+    [results, isAdmin]
+  )
 
   // Persiste le classement humain (prime sur l'IA). Best-effort.
   const persistOrder = async (reordered) => {
@@ -1337,7 +1630,7 @@ function MatchCarousel({ results: incoming, aoId, isAdmin, ao, decisions }) {
       <div key={`${result?.consultant_id || idx}-${idx}`} className="animate-fade-in mt-3">
         <MatchCard result={result} rank={idx + 1} aoId={aoId} isAdmin={isAdmin} ao={ao}
           onContact={onContact} expanded={expanded} onToggleExpand={() => setExpanded(e => !e)}
-          decision={decisions?.[result?.consultant_id]} />
+          decision={decisions?.[result?.consultant_id]} avgPct={avgPct} />
       </div>
     </div>
   )
@@ -3226,6 +3519,12 @@ export default function AODetailPage() {
                   </div>
                 )}
               </div>
+
+              {/* Synthèse d'ensemble AVANT le détail par candidat : radar superposé
+                  + lecture IA transverse (qualité du vivier, resserrement, angles morts). */}
+              {matchResults && matchResults.length > 1 && (
+                <PoolSynthesis aoId={id} results={matchResults} />
+              )}
 
               {matchResults && matchResults.length > 0 ? (
                 <MatchCarousel results={matchResults} aoId={id} isAdmin ao={ao} decisions={decisions} />

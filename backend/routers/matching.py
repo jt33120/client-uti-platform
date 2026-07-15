@@ -270,6 +270,67 @@ async def get_matching_results(ao_id: str, user: dict = Depends(get_current_user
         raise
 
 
+# ── Synthèse transverse du vivier (staff) ────────────────────────────────
+# Un LLM lit TOUS les profils scorés et produit la lecture d'ensemble que le
+# radar par candidat ne contient pas (qualité du vivier, resserrement, angles
+# morts, reco). Coûteux (appel LLM) → cache mémoire par SIGNATURE des scores :
+# tant que le classement/les scores ne bougent pas, on ne rappelle pas le modèle.
+# Le cache est vidé implicitement au redémarrage (acceptable : recalcul à la demande).
+_SYNTHESIS_CACHE: dict[str, dict] = {}
+_SYNTHESIS_CACHE_MAX = 200
+
+
+def _synthesis_signature(results: list[dict]) -> str:
+    """Empreinte stable du vivier scoré : (consultant, score arrondi) triés.
+    Change dès qu'un score bouge (relance) → invalide le cache."""
+    pairs = sorted(
+        (str(r.get("consultant_id")), int(round((r.get("score_hybride") if r.get("score_hybride") is not None else r.get("score_total")) or 0)))
+        for r in results
+    )
+    return "|".join(f"{c}:{s}" for c, s in pairs)
+
+
+@router.get("/{ao_id}/synthesis")
+async def get_pool_synthesis(ao_id: str, refresh: bool = False, user: dict = Depends(require_staff)):
+    """
+    Synthèse d'ensemble du vivier d'un AO (staff uniquement). Retourne
+    `{available: false}` s'il y a moins de 2 profils scorés (rien à comparer).
+    Résultat mis en cache par signature de scores ; `?refresh=true` force le recalcul.
+    """
+    from services.matching_synthesis import synthesize_pool
+
+    rows = (
+        supabase.table("matchings")
+        .select("consultant_id, rank, score_total, score_hybride, breakdown, hybrid_breakdown, llm_global, weights")
+        .eq("ao_id", ao_id)
+        .order("rank")
+        .execute()
+        .data
+        or []
+    )
+    if len(rows) < 2:
+        return {"ao_id": ao_id, "available": False, "reason": "Au moins 2 profils scorés sont nécessaires pour comparer le vivier."}
+
+    sig = _synthesis_signature(rows)
+    cached = _SYNTHESIS_CACHE.get(ao_id)
+    if cached and cached.get("sig") == sig and not refresh:
+        return {"ao_id": ao_id, "available": True, "cached": True, **cached["data"]}
+
+    ao = (supabase.table("appels_offres").select("*").eq("id", ao_id).limit(1).execute().data or [None])[0]
+    if not ao:
+        raise HTTPException(status_code=404, detail="AO introuvable")
+
+    # Poids : ceux stockés sur le meilleur match (identiques pour toute la run).
+    weights = next((r.get("weights") for r in rows if r.get("weights")), {}) or {}
+    data = await synthesize_pool(ao, rows, weights)
+
+    # Éviction FIFO grossière pour borner la mémoire.
+    if ao_id not in _SYNTHESIS_CACHE and len(_SYNTHESIS_CACHE) >= _SYNTHESIS_CACHE_MAX:
+        _SYNTHESIS_CACHE.pop(next(iter(_SYNTHESIS_CACHE)), None)
+    _SYNTHESIS_CACHE[ao_id] = {"sig": sig, "data": data}
+    return {"ao_id": ao_id, "available": True, "cached": False, **data}
+
+
 class RankRequest(BaseModel):
     order: list[str]  # consultant_ids dans l'ordre voulu par l'opérateur
 

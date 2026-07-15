@@ -55,6 +55,42 @@ function QuickAction({ to, onClick, icon: Icon, title, desc }) {
   return <button onClick={onClick} className="text-left w-full">{inner}</button>
 }
 
+// Résumé « avancement des AO » (staff) — les AO actifs comptés par étape du
+// pipeline. Auto-portant ; masqué s'il n'y a aucun AO actif.
+function AoPipelineSummary() {
+  const [data, setData] = useState(null)
+  useEffect(() => {
+    let c = false
+    api.get('/aos/pipeline').then(r => { if (!c) setData(r.data) }).catch(() => { if (!c) setData(false) })
+    return () => { c = true }
+  }, [])
+  if (!data || !data.stages) return null
+  // On ne montre que les étapes ACTIVES : Gagné/Perdu sont cumulatifs (historique)
+  // et gonfleraient un « snapshot » d'avancement — ils vivent dans la Supervision.
+  const active = data.stages.filter(s => s.key !== 'gagne' && s.key !== 'perdu')
+  const counts = {}
+  active.forEach(s => { counts[s.key] = 0 })
+  ;(data.aos || []).forEach(a => { if (counts[a.stage] !== undefined) counts[a.stage] += 1 })
+  const activeTotal = active.reduce((n, s) => n + (counts[s.key] || 0), 0)
+  if (!activeTotal) return null
+  return (
+    <div className="pt-7" style={{ borderTop: '1px solid var(--border)' }}>
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-[11px] uppercase tracking-[0.08em] font-semibold" style={{ color: 'var(--text-faint)' }}>AO en cours</h2>
+        <Link to="/aos" className="text-[12px] font-medium" style={{ color: 'var(--accent-text)' }}>Voir le pipeline →</Link>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-y-4">
+        {active.map(s => (
+          <Link key={s.key} to="/aos" className="block hover:opacity-80 transition-opacity">
+            <div className="text-[22px] font-semibold tabular leading-tight" style={{ color: 'var(--text)' }}>{counts[s.key] || 0}</div>
+            <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-faint)' }}>{s.label}</div>
+          </Link>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export default function DashboardPage() {
   const { user, isAdmin, isCommerce, isStaff } = useAuth()
   const [inviteOpen, setInviteOpen] = useState(false)
@@ -172,6 +208,8 @@ export default function DashboardPage() {
               sub={loading ? null : 'consultant potentiel trouvé'} to="/aos?matched=1" />
           : <Kpi icon={FileText} label="CVs soumis" value={loading ? <span className="uti-skel" /> : submissions} />}
       </div>
+
+      {isStaff && <AoPipelineSummary />}
 
       {/* Analyse — frameless charts on the page surface, split by whitespace.
           The brand tone encodes magnitude, so colour informs, never decorates. */}

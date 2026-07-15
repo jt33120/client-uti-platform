@@ -888,7 +888,7 @@ async def ao_outcomes(days: int = 180, user: dict = Depends(require_admin)):
     since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     empty = {"available": False, "period_days": days, "total": 0,
              "by_outcome": {"pourvu": 0, "non_pourvu": 0, "sans_suite": 0},
-             "pourvu_rate": 0, "by_partner": [], "weekly": []}
+             "pourvu_rate": 0, "by_partner": [], "weekly": [], "to_close": []}
     try:
         rows = supabase.table("appels_offres").select(
             "id, ao_outcome, winning_partner_id, outcome_at"
@@ -930,6 +930,23 @@ async def ao_outcomes(days: int = 180, user: dict = Depends(require_admin)):
         [{"id": pid, "name": names.get(pid) or "—", "wins": n} for pid, n in by_partner.items()],
         key=lambda x: x["wins"], reverse=True)[:10]
 
+    # « À clôturer » : AO archivés (échéance passée) SANS bilan posé. Sans ça, ils
+    # n'alimentent ni le pipeline ni ces stats -> on les remonte pour inciter à
+    # les clôturer. Best-effort (colonnes 0003/0004 requises).
+    to_close = []
+    try:
+        rows2 = supabase.table("appels_offres").select(
+            "id, title, reference, archived_at, clients(name)"
+        ).eq("archived", True).is_("ao_outcome", "null").order(
+            "archived_at", desc=True).limit(30).execute().data or []
+        to_close = [{
+            "id": r["id"], "title": r.get("title"), "reference": r.get("reference"),
+            "archived_at": r.get("archived_at"),
+            "client_name": (r.get("clients") or {}).get("name") if isinstance(r.get("clients"), dict) else None,
+        } for r in rows2]
+    except Exception:
+        to_close = []
+
     return {
         "available": True,
         "period_days": days,
@@ -938,6 +955,7 @@ async def ao_outcomes(days: int = 180, user: dict = Depends(require_admin)):
         "pourvu_rate": round(by_outcome["pourvu"] / total * 100) if total else 0,
         "by_partner": partners,
         "weekly": [weekly[k] for k in sorted(weekly.keys()) if k != "?"],
+        "to_close": to_close,
     }
 
 

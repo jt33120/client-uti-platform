@@ -7,7 +7,7 @@ import {
   FileText, Plus, Euro, MapPin, Clock, ArrowRight, Search,
   Building2, Users, Calendar, CalendarClock,
   Pencil, X, Loader2, ChevronDown, ChevronLeft, ChevronRight, Check, Trash2, ArrowDownUp, Sparkles,
-  SlidersHorizontal, Archive, ArchiveRestore,
+  SlidersHorizontal, Archive, ArchiveRestore, Award,
 } from 'lucide-react'
 import { TierBadge } from '../components/badges'
 import { EmptyState } from '../components/EmptyState'
@@ -912,6 +912,11 @@ function PipelineBoard({ navigate }) {
                           {a.submission_count > 0 && <span className="text-[10px] text-brand-300 inline-flex items-center gap-0.5"><Users size={9} />{a.submission_count}</span>}
                           {a.relance_count > 0 && <span className="text-[9px] text-slate-500">· {a.relance_count} relance{a.relance_count > 1 ? 's' : ''}</span>}
                         </div>
+                        {a.winner_name && (
+                          <div className="mt-1 inline-flex items-center gap-1 text-[10px] text-emerald-400 truncate max-w-full">
+                            <Award size={9} className="shrink-0" /> {a.winner_name}
+                          </div>
+                        )}
                       </div>
                     )
                   })}

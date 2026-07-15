@@ -75,6 +75,28 @@ async def _process_due_list2(now: datetime) -> None:
         print(f"[SCHED] AO {ao['id']} — liste 2 envoyée à {n} partenaire(s)")
 
 
+async def _process_auto_archive(now: datetime) -> None:
+    """Archive les AO dont l'échéance est passée — une seule fois par AO.
+
+    Ne cible que ``archived = false AND archived_at IS NULL`` : un AO désarchivé
+    à la main garde son ``archived_at`` (voir migration 0003), donc il n'est
+    JAMAIS ré-archivé automatiquement. Bascule aussi ``status='closed'``
+    (échéance dépassée = clôturé). Un seul UPDATE filtré (efficace via l'index
+    partiel). Best-effort : résilient à l'absence des colonnes (migration non
+    encore appliquée) — l'échec n'interrompt pas le reste du tick."""
+    today = now.date().isoformat()  # deadline est un DATE : « avant aujourd'hui » = échu
+    try:
+        updated = supabase.table("appels_offres").update(
+            {"archived": True, "archived_at": now.isoformat(), "status": "closed"}
+        ).lt("deadline", today).eq("archived", False).is_("archived_at", "null").execute().data
+        if updated:
+            print(f"[SCHED] auto-archivage : {len(updated)} AO échu(s) archivé(s)")
+    except Exception as e:  # noqa: BLE001
+        _record_err("scheduler",
+                    "Auto-archivage des AO échus en échec (migration 0003 appliquée ?)",
+                    exc=e, level="warning")
+
+
 async def _process_relances(now: datetime, cfg: dict) -> None:
     """Relance automatique des AO ouverts selon la fréquence / le max configurés."""
     if not cfg.get("relance_auto_enabled"):
@@ -125,6 +147,14 @@ async def _tick() -> None:
     except Exception as e:  # noqa: BLE001
         print(f"[SCHED] surveillance budget IA en erreur (ignorée): {e}")
         _record_err("scheduler", "Surveillance du budget IA en erreur", exc=e)
+
+    # Auto-archivage des AO échus — indépendant du toggle notifications (ce n'est
+    # pas un envoi) et isolé pour ne pas bloquer les campagnes en cas d'erreur.
+    try:
+        await _process_auto_archive(now)
+    except Exception as e:  # noqa: BLE001
+        print(f"[SCHED] auto-archivage en erreur (ignoré): {e}")
+        _record_err("scheduler", "Auto-archivage en erreur", exc=e)
 
     cfg = get_notification_settings()
     if not cfg.get("enabled"):

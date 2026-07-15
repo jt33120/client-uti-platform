@@ -85,7 +85,12 @@ async def create_submission(
     - Pass consultant fields (name, skills, ...) to create + submit in one shot
       (un CV est requis dans ce cas).
     """
-    _check_ao_access(ao_id, user)
+    ao_row = _check_ao_access(ao_id, user)
+    # Un AO archivé est clos : on refuse toute nouvelle réponse (l'historique
+    # « Mes réponses » peut l'ouvrir, mais plus y soumettre). .get() tolère
+    # l'absence de la colonne (migration 0003 non appliquée -> None -> autorisé).
+    if ao_row.get("archived"):
+        raise HTTPException(status_code=409, detail="Cet appel d'offres est archivé : les réponses sont closes.")
 
     # RGPD — explicit consent is mandatory before any CV (personal data) is
     # uploaded, parsed, stored and sent to the AI matching model.

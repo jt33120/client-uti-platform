@@ -139,6 +139,25 @@ def _accessible_client_ids(user: dict) -> Optional[list[str]]:
     return [row["client_id"] for row in (access.data or [])]
 
 
+def _looks_like_missing_archive(err: Exception) -> bool:
+    """Colonne `archived` absente (migration 0003 non appliquée) — sert à donner
+    un message d'erreur clair sur les actions explicites archive/désarchive."""
+    s = str(err).lower()
+    return "archived" in s and any(
+        k in s for k in ("column", "42703", "does not exist", "schema cache", "pgrst204")
+    )
+
+
+def _responded_ao_ids(uid: str) -> list[str]:
+    """ao_id distincts auxquels ce partenaire a soumis au moins un CV (historique)."""
+    try:
+        rows = supabase.table("submissions").select("ao_id").eq(
+            "submitted_by", uid).execute().data or []
+    except Exception:  # noqa: BLE001
+        return []
+    return list({r["ao_id"] for r in rows if r.get("ao_id")})
+
+
 @router.get("/types")
 async def get_ao_types():
     return AO_TYPES
@@ -253,48 +272,73 @@ async def create_ao(body: AOCreate, background_tasks: BackgroundTasks, user: dic
 
 
 @router.get("")
-async def list_aos(user: dict = Depends(get_current_user)):
+async def list_aos(view: str = "active", user: dict = Depends(get_current_user)):
     """
-    Returns AOs with client info + submission count.
-    Partners see only AOs from clients they have list_1/list_2 access to.
-    Response is annotated with partner tier (`tier`) when applicable so the
-    frontend can group by tier.
+    Liste des AO par onglet (`view`), avec client + nombre de CV.
+      * active   : AO actifs (non archivés). Partenaire = ses clients habilités.
+      * mine      : partenaire -> AO auxquels il a répondu (historique, archivés
+                    inclus) ; commercial/admin -> AO qu'il a créés (actifs).
+      * archived  : équipe UTI -> AO archivés (commercial : les siens ; admin :
+                    tous). Partenaire -> jamais (liste vide).
+    Annoté du tier partenaire quand applicable (regroupement par tier côté front).
     """
-    try:
-        ids = _accessible_client_ids(user)
-        query = supabase.table("appels_offres").select(
-            "*, clients(id, name, sector, logo_url), submissions(count)"
-        ).order("created_at", desc=True)
+    role = user["role"]
+    uid = user["sub"]
+    view = view if view in ("active", "mine", "archived") else "active"
 
-        if ids is not None:
+    # Les partenaires ne voient jamais les archivés (ni onglet, ni via l'URL).
+    if view == "archived" and role == "ao":
+        return []
+
+    q = supabase.table("appels_offres").select(
+        "*, clients(id, name, sector, logo_url), submissions(count)"
+    ).order("created_at", desc=True)
+
+    # NB: on filtre `archived` DIRECTEMENT (fail-closed). Pas de repli qui
+    # couperait le filtre en cas d'erreur — PostgREST ne sait pas distinguer
+    # « colonne absente » d'un « cache périmé » transitoire, et un tel repli
+    # exposerait les archivés aux partenaires. Si la migration 0003 n'est pas
+    # appliquée, l'endpoint renvoie 500 (le temps de l'appliquer), jamais une
+    # liste dé-filtrée. C'est la même convention que les autres colonnes du repo.
+    if view == "archived":
+        q = q.eq("archived", True)
+        if role == "commerce":
+            q = q.eq("created_by", uid)          # commercial : ses propres archivés
+        # admin : tous les archivés
+    elif view == "mine":
+        if role == "ao":
+            ids = _responded_ao_ids(uid)          # historique : archivés inclus
             if not ids:
                 return []
-            query = query.in_("client_id", ids)
+            q = q.in_("id", ids)
+        else:
+            q = q.eq("created_by", uid).eq("archived", False)  # commercial / admin : mes AO actifs
+    else:  # active
+        q = q.eq("archived", False)
+        accessible = _accessible_client_ids(user)
+        if accessible is not None:
+            if not accessible:
+                return []
+            q = q.in_("client_id", accessible)
 
-        aos = query.execute().data
+    aos = q.execute().data
 
-        # Flatten the submissions count into `submission_count`
+    # Flatten the submissions count into `submission_count`
+    for ao in aos:
+        subs = ao.get("submissions")
+        ao["submission_count"] = subs[0].get("count", 0) if isinstance(subs, list) and subs else 0
+        ao.pop("submissions", None)
+
+    # Attach the partner's tier per client
+    if role == "ao":
+        access = supabase.table("partner_clients").select("client_id, tier").eq(
+            "partner_id", uid
+        ).execute().data or []
+        tiers = {row["client_id"]: row["tier"] for row in access}
         for ao in aos:
-            subs = ao.get("submissions")
-            if isinstance(subs, list) and subs:
-                ao["submission_count"] = subs[0].get("count", 0)
-            else:
-                ao["submission_count"] = 0
-            ao.pop("submissions", None)
+            ao["tier"] = tiers.get(ao["client_id"])
 
-        # Attach the partner's tier per client
-        if user["role"] == "ao":
-            access = supabase.table("partner_clients").select("client_id, tier").eq(
-                "partner_id", user["sub"]
-            ).execute().data or []
-            tiers = {row["client_id"]: row["tier"] for row in access}
-            for ao in aos:
-                ao["tier"] = tiers.get(ao["client_id"])
-
-        return aos
-    except Exception:
-        # Détail loggé côté serveur ; réponse 500 générique (handler global).
-        raise
+    return aos
 
 
 @router.get("/{ao_id}")
@@ -633,6 +677,45 @@ async def bulk_delete_aos(body: BulkDeleteRequest, user: dict = Depends(require_
     except Exception:
         # Détail loggé côté serveur ; réponse 500 générique (handler global).
         raise
+
+
+@router.post("/{ao_id}/archive")
+async def archive_ao(ao_id: str, user: dict = Depends(require_staff)):
+    """Archive un AO à la main (équipe UTI). Il sort des vues partenaires.
+
+    Passe aussi `status='closed'` (comme l'auto-archivage) : sans ça, un AO
+    archivé mais resté « ouvert » continuerait de recevoir list 2 / relances
+    automatiques (le planificateur ne filtre que sur status='open')."""
+    try:
+        row = supabase.table("appels_offres").update(
+            {"archived": True, "archived_at": datetime.now(timezone.utc).isoformat(), "status": "closed"}
+        ).eq("id", ao_id).execute().data
+    except Exception as e:  # noqa: BLE001
+        if _looks_like_missing_archive(e):
+            raise HTTPException(status_code=501,
+                                detail="Archivage indisponible : appliquez migrations/0003_ao_archive.sql.")
+        raise
+    if not row:
+        raise HTTPException(status_code=404, detail="AO introuvable")
+    return {"ok": True, "archived": True}
+
+
+@router.post("/{ao_id}/unarchive")
+async def unarchive_ao(ao_id: str, user: dict = Depends(require_staff)):
+    """Désarchive un AO. On NE remet PAS archived_at à null : ce marqueur empêche
+    l'auto-archivage de le reprendre au prochain tick (voir migration 0003)."""
+    try:
+        row = supabase.table("appels_offres").update(
+            {"archived": False}
+        ).eq("id", ao_id).execute().data
+    except Exception as e:  # noqa: BLE001
+        if _looks_like_missing_archive(e):
+            raise HTTPException(status_code=501,
+                                detail="Désarchivage indisponible : appliquez migrations/0003_ao_archive.sql.")
+        raise
+    if not row:
+        raise HTTPException(status_code=404, detail="AO introuvable")
+    return {"ok": True, "archived": False}
 
 
 @router.delete("/{ao_id}")

@@ -1800,6 +1800,99 @@ const scoreTone = (v) => v >= 75
     ? { background: 'var(--accent-soft)', color: 'var(--accent-text)', borderColor: 'var(--border)' }
     : { background: 'rgba(245,158,11,0.14)', color: '#f59e0b', borderColor: 'rgba(245,158,11,0.4)' }
 
+// Bilan de clôture — pose l'issue de l'AO (pourvu / non pourvu / sans suite +
+// partenaire gagnant). Source de vérité pour le pipeline et la supervision.
+function OutcomeBilan({ ao, submissions, suggestedWinnerId, onSaved }) {
+  const [outcome, setOutcome] = useState(ao.ao_outcome || '')
+  const [winner, setWinner] = useState(ao.winning_partner_id || suggestedWinnerId || '')
+  const [note, setNote] = useState(ao.outcome_note || '')
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+  // Synchronise les champs quand l'AO change. NE touche PAS `saved` : sinon le
+  // refetch déclenché après l'enregistrement effacerait aussitôt la confirmation.
+  // Le gagnant est pré-rempli (bilan existant, sinon suggestion) mais reste
+  // modifiable — le serveur ne devine plus rien à l'enregistrement.
+  useEffect(() => {
+    setOutcome(ao.ao_outcome || ''); setWinner(ao.winning_partner_id || suggestedWinnerId || ''); setNote(ao.outcome_note || '')
+  }, [ao.id, ao.ao_outcome, ao.winning_partner_id, ao.outcome_note, suggestedWinnerId])
+
+  // Partenaires ayant répondu (candidats au « gagnant »), dédupliqués.
+  const partners = useMemo(() => {
+    const m = new Map()
+    ;(submissions || []).forEach(s => { const p = s.submitter; if (p?.id) m.set(p.id, p.name || p.email || 'Partenaire') })
+    return Array.from(m, ([id, name]) => ({ id, name }))
+  }, [submissions])
+
+  const OUTS = [
+    { k: 'pourvu', l: 'Pourvu', c: '#10b981' },
+    { k: 'non_pourvu', l: 'Non pourvu', c: '#ef4444' },
+    { k: 'sans_suite', l: 'Sans suite', c: '#94a3b8' },
+  ]
+
+  const save = async () => {
+    setSaving(true)
+    try {
+      await api.patch(`/aos/${ao.id}/outcome`, {
+        ao_outcome: outcome || null,
+        winning_partner_id: outcome === 'pourvu' ? (winner || null) : null,
+        outcome_note: note || null,
+      })
+      if (onSaved) await onSaved()
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2500)
+    } catch (e) {
+      alert(e.response?.data?.detail || 'Enregistrement impossible')
+    } finally { setSaving(false) }
+  }
+
+  return (
+    <div className="card p-4 mt-5">
+      <div className="flex items-center gap-2 mb-1">
+        <CheckCircle size={14} className="text-brand-400" />
+        <h3 className="text-sm font-semibold text-white">Bilan de clôture</h3>
+      </div>
+      <p className="text-xs text-slate-500 mb-3">
+        L'issue de l'AO — alimente la vue pipeline et la supervision.
+        {ao.outcome_at && <span> Dernier bilan : {new Date(ao.outcome_at).toLocaleDateString('fr-FR')}.</span>}
+      </p>
+      <div className="flex flex-wrap gap-1.5 mb-3">
+        {OUTS.map(o => (
+          <button key={o.k} type="button" onClick={() => setOutcome(outcome === o.k ? '' : o.k)}
+            className="px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors"
+            style={outcome === o.k
+              ? { background: o.c + '22', color: o.c, borderColor: o.c }
+              : { background: 'var(--surface-2)', color: 'var(--text-muted)', borderColor: 'var(--border)' }}>
+            {o.l}
+          </button>
+        ))}
+      </div>
+      {outcome === 'pourvu' && (
+        <div className="mb-3">
+          <label className="label">Partenaire gagnant</label>
+          <div className="relative">
+            <select className="input appearance-none pr-9" value={winner} onChange={e => setWinner(e.target.value)}>
+              <option value="" className="bg-navy-900">— (pourvu hors plateforme / à préciser)</option>
+              {partners.map(p => <option key={p.id} value={p.id} className="bg-navy-900">{p.name}</option>)}
+            </select>
+            <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
+          </div>
+        </div>
+      )}
+      <div className="mb-3">
+        <label className="label">Note (optionnel)</label>
+        <textarea className="input min-h-[56px] resize-y" value={note} onChange={e => setNote(e.target.value)}
+          placeholder="Contexte de la clôture…" />
+      </div>
+      <div className="flex items-center gap-2">
+        <button onClick={save} disabled={saving} className="btn-primary text-xs px-4 flex items-center gap-1.5">
+          {saving ? <Loader2 size={13} className="animate-spin" /> : 'Enregistrer le bilan'}
+        </button>
+        {saved && <span className="text-xs text-emerald-400 flex items-center gap-1"><CheckCircle size={12} /> Enregistré</span>}
+      </div>
+    </div>
+  )
+}
+
 function ValidationTab({ aoId, submissions, clientId, scores }) {
   const confirm = useConfirm()
   const [states, setStates] = useState({})
@@ -3000,6 +3093,13 @@ export default function AODetailPage() {
               if (r.consultant_id != null) m[r.consultant_id] = r.score_hybride ?? r.score_total
               return m
             }, {})} />
+          <OutcomeBilan ao={ao} submissions={submissions} onSaved={fetchAo}
+            suggestedWinnerId={(() => {
+              const won = (matchResults || []).find(r => r.deal_status === 'gagnee')
+              if (!won) return ''
+              const sub = (submissions || []).find(s => String(s.consultants?.id ?? s.consultant_id) === String(won.consultant_id))
+              return sub?.submitter?.id || ''
+            })()} />
         </div>
       )}
 

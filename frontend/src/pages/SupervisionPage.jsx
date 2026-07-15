@@ -950,6 +950,53 @@ const DECISION_WINDOWS = [{ k: 30, l: '30 j' }, { k: 90, l: '90 j' }, { k: 365, 
 
 // N2 — Écarts IA↔Humain : là où les opérateurs corrigent la reco IA. Analytique
 // pur (aucun changement de modèle) : matière à calibrer la grille et les prompts.
+// Bilan des AO clôturés (issue posée) — alimenté par /admin/ao-outcomes.
+// Auto-portant ; ne s'affiche que s'il y a des AO clôturés (migration 0004 posée).
+function AoOutcomeStats() {
+  const [d, setD] = useState(null)
+  useEffect(() => {
+    let c = false
+    api.get('/admin/ao-outcomes', { params: { days: 180 } })
+      .then(r => { if (!c) setD(r.data) })
+      .catch(() => { if (!c) setD(false) })
+    return () => { c = true }
+  }, [])
+  if (!d || !d.available || !d.total) return null
+  const bo = d.by_outcome || {}
+  const Pill = ({ label, value, color }) => (
+    <div className="card p-3">
+      <div className="text-[11px]" style={{ color: 'var(--text-faint)' }}>{label}</div>
+      <div className="text-2xl font-bold tabular leading-tight mt-0.5" style={{ color: color || 'var(--text)' }}>{value}</div>
+    </div>
+  )
+  return (
+    <div className="mb-6">
+      <p className="text-xs font-semibold uppercase tracking-wide flex items-center gap-1.5 mb-2" style={{ color: 'var(--text-muted)' }}>
+        <TrendingUp size={13} className="text-[var(--accent-text)]" /> Bilan des AO clôturés · {d.period_days} j
+      </p>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <Pill label="Taux de pourvu" value={`${d.pourvu_rate}%`} color="var(--accent-text)" />
+        <Pill label="Pourvus" value={bo.pourvu || 0} color="#10b981" />
+        <Pill label="Non pourvus" value={bo.non_pourvu || 0} color="#ef4444" />
+        <Pill label="Sans suite" value={bo.sans_suite || 0} color="#94a3b8" />
+      </div>
+      {(d.by_partner || []).length > 0 && (
+        <div className="card p-3 mt-2">
+          <div className="text-[11px] mb-2" style={{ color: 'var(--text-faint)' }}>Partenaires gagnants</div>
+          <div className="space-y-1.5">
+            {d.by_partner.slice(0, 6).map(p => (
+              <div key={p.id} className="flex items-center justify-between gap-2 text-xs">
+                <span className="truncate" style={{ color: 'var(--text-muted)' }}>{p.name}</span>
+                <span className="tabular font-semibold" style={{ color: 'var(--text)' }}>{p.wins} gagné{p.wins > 1 ? 's' : ''}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function DecisionsTab() {
   const [days, setDays] = useState(90)
   const [data, setData] = useState(null)
@@ -999,6 +1046,8 @@ function DecisionsTab() {
           ))}
         </div>
       </div>
+
+      <AoOutcomeStats />
 
       {loading ? (
         <div className="py-20 flex justify-center"><UTILoader /></div>

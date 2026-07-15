@@ -233,6 +233,17 @@ function AOCard({ ao, isStaff, onEdit, onDelete, onArchive, onPublish, archivedV
       style={selected ? { borderColor: 'var(--accent)', boxShadow: '0 0 0 1px var(--accent)' } : undefined}
       onClick={() => navigate(`/aos/${ao.id}`)}
     >
+      {/* Post-it « CV trouvé » (staff) : le matching a repéré au moins un CV
+          au-dessus du seuil « à considérer » (≥ 50, notre plancher de scoring). */}
+      {isStaff && (ao.potential_count ?? 0) > 0 && (
+        <div
+          className="absolute -top-2.5 -right-2 z-20 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold text-white shadow-lg rotate-3"
+          style={{ background: '#10b981', boxShadow: '0 4px 10px -2px rgba(16,185,129,0.5)' }}
+          title={`Matching : ${ao.potential_count} CV au-dessus du seuil « à considérer » (score ≥ 50)`}
+        >
+          <Sparkles size={10} /> CV trouvé
+        </div>
+      )}
       {isStaff && (
         <button
           onClick={e => { e.stopPropagation(); onToggleSelect(ao.id) }}
@@ -319,19 +330,6 @@ function AOCard({ ao, isStaff, onEdit, onDelete, onArchive, onPublish, archivedV
         )
       })()}
 
-      <div className="flex flex-wrap gap-1.5 mb-3">
-        {ao.skills_required?.split(',').slice(0, 3).map((s, i) => (
-          <span key={i} className="badge bg-brand-600/10 text-brand-300 border border-brand-500/15 text-[10px]">
-            {s.trim()}
-          </span>
-        ))}
-        {ao.skills_required?.split(',').length > 3 && (
-          <span className="badge bg-white/5 text-slate-500 text-[10px]">
-            +{ao.skills_required.split(',').length - 3}
-          </span>
-        )}
-      </div>
-
       <div className="flex items-center gap-3 text-xs text-slate-500 pt-2 border-t border-white/5">
         {ao.budget_max && (
           <span className="flex items-center gap-1">
@@ -353,21 +351,15 @@ function AOCard({ ao, isStaff, onEdit, onDelete, onArchive, onPublish, archivedV
         )}
         {isStaff ? (
           <>
-            {/* Signal ABSOLU : « des CV pourraient correspondre » (score ≥ seuil
-                à considérer), en plus du nombre brut de CV reçus. */}
-            {(ao.potential_count ?? 0) > 0 ? (
-              <span className="flex items-center gap-1 ml-auto text-emerald-300"
-                    title={`${ao.potential_count} CV au-dessus du seuil « à considérer » sur ${ao.submission_count ?? 0} reçu(s)`}>
-                <Sparkles size={10} />
-                {ao.potential_count} potentiel{ao.potential_count > 1 ? 's' : ''}
-              </span>
-            ) : (
-              <span className="flex items-center gap-1 ml-auto text-slate-500"
-                    title="Nombre de CV reçus (aucun au-dessus du seuil « à considérer »)">
-                <Users size={10} />
-                {ao.submission_count ?? 0} CV{(ao.submission_count ?? 0) > 1 ? 's' : ''}
-              </span>
-            )}
+            {/* Simple présence de CV déposés (le signal de matching « CV trouvé »
+                est porté par le post-it en coin). */}
+            <span className="flex items-center gap-1 ml-auto text-slate-500"
+                  title={`${ao.submission_count ?? 0} CV déposé(s)`}>
+              <Users size={10} />
+              {(ao.submission_count ?? 0) > 0
+                ? `CV déposé${(ao.submission_count ?? 0) > 1 ? 's' : ''}`
+                : 'Aucun CV'}
+            </span>
             {draftView && (
               <button
                 onClick={e => { e.stopPropagation(); onPublish(ao) }}

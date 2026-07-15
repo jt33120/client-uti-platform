@@ -54,6 +54,18 @@ function ConsultantRow({ consultant, onOpen, onMap, onContact, onDelete, onDeduc
           )}
           <span className="text-sm font-semibold truncate" style={{ color: 'var(--text)' }}>{c.name}</span>
           <EmploymentBadge type={c.employment_type} />
+          {/* Statut de disponibilité (info clé) — libellé + date d'échéance. */}
+          {c.availability_status ? (
+            <span className={clsx('badge text-[10px] inline-flex items-center gap-1 shrink-0', availabilityTone(c.availability_status))}>
+              <Clock size={9} /> {availabilityLabel(c.availability_status, c.available_from)}
+            </span>
+          ) : (
+            <span className="badge text-[10px] inline-flex items-center gap-1 shrink-0"
+                  style={{ color: 'var(--text-faint)', border: '1px dashed var(--border)' }}
+                  title="Statut de disponibilité non renseigné">
+              <Clock size={9} /> Statut ?
+            </span>
+          )}
           {/* Compétences en puces, juste à côté du badge */}
           {skills.slice(0, 4).map((s, i) => (
             <span key={i} className="badge text-[10px]"
@@ -85,21 +97,11 @@ function ConsultantRow({ consultant, onOpen, onMap, onContact, onDelete, onDeduc
         )}
       </div>
 
-      {/* Ville + dispo (md+) */}
-      <div className="hidden md:flex flex-col items-end shrink-0 min-w-[110px]">
+      {/* Ville (md+) — le statut de dispo est désormais près du nom. */}
+      <div className="hidden md:flex flex-col items-end shrink-0 min-w-[90px]">
         {c.city && (
           <span className="text-xs flex items-center gap-1" style={{ color: 'var(--text-muted)' }}>
             <MapPin size={11} /> {c.city}
-          </span>
-        )}
-        {c.availability_status ? (
-          <span className={clsx('text-[10px] mt-1 px-1.5 py-0.5 rounded-full border inline-flex items-center gap-1', availabilityTone(c.availability_status))}
-                title={c.availability || undefined}>
-            <Clock size={9} /> {availabilityLabel(c.availability_status, c.available_from)}
-          </span>
-        ) : c.availability && (
-          <span className="text-[11px] flex items-center gap-1 mt-0.5" style={{ color: 'var(--text-faint)' }}>
-            <Clock size={10} /> {c.availability}
           </span>
         )}
       </div>

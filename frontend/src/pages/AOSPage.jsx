@@ -319,8 +319,6 @@ function AOCard({ ao, isStaff, onEdit, onDelete, onArchive, onPublish, archivedV
         )
       })()}
 
-      <p className="text-xs text-slate-500 mb-3 line-clamp-2">{ao.description}</p>
-
       <div className="flex flex-wrap gap-1.5 mb-3">
         {ao.skills_required?.split(',').slice(0, 3).map((s, i) => (
           <span key={i} className="badge bg-brand-600/10 text-brand-300 border border-brand-500/15 text-[10px]">
@@ -355,10 +353,21 @@ function AOCard({ ao, isStaff, onEdit, onDelete, onArchive, onPublish, archivedV
         )}
         {isStaff ? (
           <>
-            <span className="flex items-center gap-1 ml-auto text-brand-300">
-              <Users size={10} />
-              {ao.submission_count ?? 0} CV{(ao.submission_count ?? 0) > 1 ? 's' : ''}
-            </span>
+            {/* Signal ABSOLU : « des CV pourraient correspondre » (score ≥ seuil
+                à considérer), en plus du nombre brut de CV reçus. */}
+            {(ao.potential_count ?? 0) > 0 ? (
+              <span className="flex items-center gap-1 ml-auto text-emerald-300"
+                    title={`${ao.potential_count} CV au-dessus du seuil « à considérer » sur ${ao.submission_count ?? 0} reçu(s)`}>
+                <Sparkles size={10} />
+                {ao.potential_count} potentiel{ao.potential_count > 1 ? 's' : ''}
+              </span>
+            ) : (
+              <span className="flex items-center gap-1 ml-auto text-slate-500"
+                    title="Nombre de CV reçus (aucun au-dessus du seuil « à considérer »)">
+                <Users size={10} />
+                {ao.submission_count ?? 0} CV{(ao.submission_count ?? 0) > 1 ? 's' : ''}
+              </span>
+            )}
             {draftView && (
               <button
                 onClick={e => { e.stopPropagation(); onPublish(ao) }}
@@ -1282,6 +1291,12 @@ export default function AOSPage() {
               {bulkDeleting ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} strokeWidth={1.75} />}
               Supprimer ({selected.size})
             </button>
+          )}
+          {isStaff && (
+            <Link to="/carte?only=aos" className="btn-ghost" title="Voir les appels d'offres sur la carte">
+              <MapPin size={15} />
+              Carte
+            </Link>
           )}
           {isStaff && (
             <Link to="/aos/new" className="btn-primary">

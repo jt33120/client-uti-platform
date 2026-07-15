@@ -6,7 +6,7 @@ import { findSimilarClients } from '../lib/similarity'
 
 export default function NewClientPage() {
   const navigate = useNavigate()
-  const [form, setForm] = useState({ name: '', sector: '', description: '', contact_name: '', contact_email: '', parent_client_id: '', perimetre: '' })
+  const [form, setForm] = useState({ name: '', sector: '', description: '', contact_name: '', contact_email: '', parent_client_id: '', perimetre: '', city: '' })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [existingClients, setExistingClients] = useState([])
@@ -141,6 +141,13 @@ export default function NewClientPage() {
                     value={form.perimetre} onChange={set('perimetre')} />
                   <p className="text-[11px] text-slate-500 mt-1">Type de référencement / prestation.</p>
                 </div>
+              </div>
+
+              <div>
+                <label className="label">Ville / siège</label>
+                <input type="text" className="input" placeholder="ex: Paris, Lyon, Nantes…"
+                  value={form.city} onChange={set('city')} />
+                <p className="text-[11px] text-slate-500 mt-1">Géocodée pour positionner le client sur la carte.</p>
               </div>
 
               <div>

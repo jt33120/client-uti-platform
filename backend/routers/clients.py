@@ -2,9 +2,32 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional
 from services.supabase_client import supabase
+from services.geocoding import geocode
 from routers.auth import get_current_user, require_admin, require_staff, is_staff
 
 router = APIRouter(prefix="/clients", tags=["clients"])
+
+# Colonnes optionnelles (géolocalisation du client) : retente sans elles si la
+# migration n'est pas appliquée, plutôt que d'échouer.
+_CLIENT_GEO_COLS = ("city", "latitude", "longitude")
+
+
+def _insert_client(record: dict):
+    try:
+        return supabase.table("clients").insert(record).execute()
+    except Exception:
+        slim = {k: v for k, v in record.items() if k not in _CLIENT_GEO_COLS}
+        return supabase.table("clients").insert(slim).execute()
+
+
+def _update_client(record: dict, client_id: str):
+    try:
+        return supabase.table("clients").update(record).eq("id", client_id).execute()
+    except Exception:
+        slim = {k: v for k, v in record.items() if k not in _CLIENT_GEO_COLS}
+        if not slim:  # ne restait que des colonnes géo non migrées → no-op
+            return supabase.table("clients").select("*").eq("id", client_id).execute()
+        return supabase.table("clients").update(slim).eq("id", client_id).execute()
 
 
 class ClientCreate(BaseModel):
@@ -16,6 +39,7 @@ class ClientCreate(BaseModel):
     contact_email: Optional[str] = None
     parent_client_id: Optional[str] = None
     perimetre: Optional[str] = None
+    city: Optional[str] = None  # ville/siège (géocodé pour la carte)
 
 
 class ClientUpdate(BaseModel):
@@ -27,6 +51,7 @@ class ClientUpdate(BaseModel):
     contact_email: Optional[str] = None
     parent_client_id: Optional[str] = None
     perimetre: Optional[str] = None
+    city: Optional[str] = None
 
 
 @router.post("")
@@ -42,7 +67,8 @@ async def create_client(body: ClientCreate, user: dict = Depends(require_admin))
                 status_code=400,
                 detail=f"Un client nommé « {existing.data[0]['name']} » existe déjà"
             )
-        response = supabase.table("clients").insert({
+        city = (body.city or "").strip() or None
+        record = {
             "name": normalized_name,
             "description": body.description,
             "sector": body.sector,
@@ -51,8 +77,15 @@ async def create_client(body: ClientCreate, user: dict = Depends(require_admin))
             "contact_email": body.contact_email,
             "parent_client_id": body.parent_client_id,
             "perimetre": (body.perimetre or "").strip() or None,
+            "city": city,
             "created_by": user["sub"],
-        }).execute()
+        }
+        if city:
+            geo = await geocode(city)
+            if geo:
+                record["latitude"] = geo["latitude"]
+                record["longitude"] = geo["longitude"]
+        response = _insert_client(record)
         return response.data[0]
     except HTTPException:
         raise
@@ -147,6 +180,13 @@ async def update_client(client_id: str, body: ClientUpdate, user: dict = Depends
         update_data = body.model_dump(exclude_none=True)
         if "perimetre" in update_data:
             update_data["perimetre"] = (update_data["perimetre"] or "").strip() or None
+        # Ville modifiée → re-géocode (best-effort). Ville vidée → coordonnées nulles.
+        if "city" in update_data:
+            city = (update_data["city"] or "").strip() or None
+            update_data["city"] = city
+            geo = await geocode(city) if city else None
+            update_data["latitude"] = geo["latitude"] if geo else None
+            update_data["longitude"] = geo["longitude"] if geo else None
         if "name" in update_data:
             update_data["name"] = update_data["name"].strip()
             # Case-insensitive duplicate check, excluding this client
@@ -158,7 +198,7 @@ async def update_client(client_id: str, body: ClientUpdate, user: dict = Depends
                     status_code=400,
                     detail=f"Un client nommé « {existing.data[0]['name']} » existe déjà"
                 )
-        response = supabase.table("clients").update(update_data).eq("id", client_id).execute()
+        response = _update_client(update_data, client_id)
         return response.data[0]
     except HTTPException:
         raise

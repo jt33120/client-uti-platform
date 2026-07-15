@@ -405,6 +405,29 @@ async def list_aos(view: str = "active", user: dict = Depends(get_current_user))
         ao["submission_count"] = subs[0].get("count", 0) if isinstance(subs, list) and subs else 0
         ao.pop("submissions", None)
 
+    # `potential_count` : nombre de CV dont le score dépasse le seuil « à considérer »
+    # (signal ABSOLU « il existe des CV qui pourraient correspondre », par-delà le
+    # simple nombre de CV reçus). Une seule requête pour toute la page.
+    POTENTIAL_THRESHOLD = 50
+    try:
+        ao_ids = [a["id"] for a in aos if a.get("id")]
+        potential: dict = {}
+        if ao_ids:
+            rows = supabase.table("matchings").select(
+                "ao_id, score_total, score_hybride"
+            ).in_("ao_id", ao_ids).execute().data or []
+            for r in rows:
+                sc = r.get("score_hybride")
+                if sc is None:
+                    sc = r.get("score_total")
+                if (sc or 0) >= POTENTIAL_THRESHOLD:
+                    potential[r["ao_id"]] = potential.get(r["ao_id"], 0) + 1
+        for a in aos:
+            a["potential_count"] = potential.get(a["id"], 0)
+    except Exception:
+        for a in aos:
+            a.setdefault("potential_count", 0)
+
     # Attach the partner's tier per client
     if role == "ao":
         access = supabase.table("partner_clients").select("client_id, tier").eq(

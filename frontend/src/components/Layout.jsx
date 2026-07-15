@@ -13,6 +13,7 @@ import SettingsModal from './SettingsModal'
 import ContactModal from './ContactModal'
 import AssistantWidget from './AssistantWidget'
 import OnboardingTour from './OnboardingTour'
+import NotificationBell from './NotificationBell'
 import Footer from './Footer'
 
 const TOUR_KEY = 'uti_tour_v1' // bump suffix to re-show the tour to everyone
@@ -386,6 +387,7 @@ export default function Layout() {
             <span className="text-[13px] font-semibold tracking-tightest text-[var(--text)] truncate">Groupement-IT</span>
           </div>
           <div className="flex items-center gap-1 ml-auto">
+          {isStaff && <NotificationBell />}
           <button
             onClick={() => openContact('bug')}
             className="h-8 w-8 rounded-md flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-2)] transition-colors"

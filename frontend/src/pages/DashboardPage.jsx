@@ -4,7 +4,7 @@ import { useAuth } from '../contexts/AuthContext'
 import api from '../lib/api'
 import {
   Users, FileText, Plus, ArrowRight, Building2, UserPlus, Sparkles,
-  Briefcase, Layers, Zap, Award, BarChart3,
+  Briefcase, Layers, Zap, Award, BarChart3, CalendarClock, AlertTriangle,
 } from 'lucide-react'
 import InviteModal from '../components/InviteModal'
 import UTILoader, { ChartLoader } from '../components/UTILoader'
@@ -171,6 +171,19 @@ export default function DashboardPage() {
   const recentAOs = aos.slice(0, 5)
   const hairline = { borderTop: '1px solid var(--border)' }
 
+  // AO urgents : ouverts, non archivés/brouillons, échéance dans ≤ 3 jours.
+  // Calculé sur les AO déjà chargés (aucun appel supplémentaire).
+  const urgentAos = useMemo(() => {
+    const today = new Date(); today.setHours(0, 0, 0, 0)
+    const horizon = new Date(today); horizon.setDate(horizon.getDate() + 3)
+    return (aos || [])
+      .filter(a => a.status === 'open' && !a.archived && !a.is_draft && a.deadline)
+      .map(a => { const dl = new Date(a.deadline); dl.setHours(0, 0, 0, 0); return { ...a, _dl: dl } })
+      .filter(a => !Number.isNaN(a._dl.getTime()) && a._dl >= today && a._dl <= horizon)
+      .sort((a, b) => a._dl - b._dl)
+      .map(a => ({ ...a, _days: Math.round((a._dl - today) / 86400000) }))
+  }, [aos])
+
   return (
     <div>
       {/* Hero — greeting only. The IA figure lives in its own KPI below,
@@ -183,6 +196,48 @@ export default function DashboardPage() {
           {isStaff ? "Pilotez vos appels d'offres et le scoring IA en un coup d'œil." : 'Soumettez des consultants et suivez les appels d\'offres.'}
         </p>
       </div>
+
+      {/* Alerte AO urgents (échéance ≤ 3 j) — la première chose qu'on voit. */}
+      {!loading && urgentAos.length > 0 && (
+        <div className="mb-8 rounded-xl overflow-hidden"
+             style={{ border: '1px solid rgba(245,158,11,0.35)', background: 'rgba(245,158,11,0.06)' }}>
+          <div className="flex items-center gap-2 px-4 py-2.5" style={{ borderBottom: '1px solid rgba(245,158,11,0.20)' }}>
+            <AlertTriangle size={15} className="text-amber-400 shrink-0" />
+            <span className="text-[13px] font-semibold" style={{ color: 'var(--text)' }}>
+              {urgentAos.length} appel{urgentAos.length > 1 ? 's' : ''} d'offres à échéance imminente
+            </span>
+            <span className="text-[11px]" style={{ color: 'var(--text-faint)' }}>· dans 3 jours ou moins</span>
+          </div>
+          <ul className="divide-y" style={{ borderColor: 'var(--border)' }}>
+            {urgentAos.slice(0, 5).map(a => {
+              const d0 = a._days <= 0
+              const label = d0 ? "aujourd'hui" : a._days === 1 ? 'demain' : `dans ${a._days} j`
+              return (
+                <li key={a.id}>
+                  <Link to={`/aos/${a.id}`}
+                    className="flex items-center gap-3 px-4 py-2.5 hover:bg-[var(--surface-2)] transition-colors">
+                    <CalendarClock size={14} className={d0 ? 'text-red-400 shrink-0' : 'text-amber-400 shrink-0'} />
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-[13px] font-medium truncate" style={{ color: 'var(--text)' }}>{a.title}</span>
+                      {a.clients?.name && <span className="block text-[11px] truncate" style={{ color: 'var(--text-muted)' }}>{a.clients.name}</span>}
+                    </span>
+                    <span className="text-[11px] font-semibold shrink-0 px-2 py-0.5 rounded-full"
+                          style={d0 ? { background: 'rgba(239,68,68,0.12)', color: '#ef4444' } : { background: 'rgba(245,158,11,0.12)', color: '#f59e0b' }}>
+                      {label}
+                    </span>
+                    <ArrowRight size={13} className="text-slate-600 shrink-0" />
+                  </Link>
+                </li>
+              )
+            })}
+          </ul>
+          {urgentAos.length > 5 && (
+            <Link to="/aos" className="block px-4 py-2 text-[11px] font-medium hover:bg-[var(--surface-2)]" style={{ color: 'var(--accent-text)' }}>
+              +{urgentAos.length - 5} autre{urgentAos.length - 5 > 1 ? 's' : ''} → voir tous les AO
+            </Link>
+          )}
+        </div>
+      )}
 
       {loadError && (
         <div className="mb-6 px-4 py-3 rounded-lg text-[13px] flex items-center justify-between gap-3"

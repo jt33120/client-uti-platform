@@ -123,6 +123,7 @@ class AOCreate(BaseModel):
     work_mode: Optional[str] = None  # onsite | hybrid | remote
     langue_requise: Optional[str] = None  # langue exigée par le client (ex. "Anglais courant")
     scoring_overrides: Optional[AOScoringOverrides] = None  # priorités de matching propres à l'AO
+    is_draft: bool = False  # brouillon : invisible partenaires + non matché jusqu'à publication
 
 
 class AOUpdate(BaseModel):
@@ -179,6 +180,14 @@ def _looks_like_missing_outcome(err: Exception) -> bool:
     """Colonnes d'issue (migration 0004) absentes — message d'erreur clair."""
     s = str(err).lower()
     return any(k in s for k in ("ao_outcome", "winning_partner_id", "outcome_at")) and any(
+        k in s for k in ("column", "42703", "does not exist", "schema cache", "pgrst204")
+    )
+
+
+def _looks_like_missing_draft(err: Exception) -> bool:
+    """Colonne is_draft (migration 0005) absente."""
+    s = str(err).lower()
+    return "is_draft" in s and any(
         k in s for k in ("column", "42703", "does not exist", "schema cache", "pgrst204")
     )
 
@@ -305,6 +314,7 @@ async def create_ao(body: AOCreate, background_tasks: BackgroundTasks, user: dic
             "work_mode": body.work_mode,
             "langue_requise": body.langue_requise,
             "status": "open",
+            "is_draft": bool(body.is_draft),
             "created_by": user["sub"],
         }
         overrides = _overrides_for_storage(body.scoring_overrides)
@@ -313,13 +323,15 @@ async def create_ao(body: AOCreate, background_tasks: BackgroundTasks, user: dic
                 {**record, "scoring_overrides": overrides}
             ).execute()
         except Exception:
-            # Colonnes récentes (scoring_overrides / work_mode / reference / langue_requise) pas migrées.
-            slim = {k: v for k, v in record.items() if k not in ("work_mode", "reference", "langue_requise")}
+            # Colonnes récentes (scoring_overrides / work_mode / reference / langue_requise
+            # / is_draft) pas migrées : on retire les optionnelles et on réessaie.
+            slim = {k: v for k, v in record.items() if k not in ("work_mode", "reference", "langue_requise", "is_draft")}
             response = supabase.table("appels_offres").insert(slim).execute()
         ao = response.data[0]
-        # Kick off vivier recommendations right away — staff get suggested
-        # consultants before any partner submits a CV.
-        background_tasks.add_task(run_vivier_matching, ao["id"], user["sub"])
+        # Matching (recommandations vivier) SEULEMENT pour un AO publié — un
+        # brouillon n'est pas matché tant qu'il n'est pas publié.
+        if not body.is_draft:
+            background_tasks.add_task(run_vivier_matching, ao["id"], user["sub"])
         # Résumé IA en 1 phrase (accroche de la fiche AO), généré en fond.
         background_tasks.add_task(_generate_and_store_summary, ao["id"])
         # Géocodage de la localisation pour la carte (sauf full remote).
@@ -343,37 +355,42 @@ async def list_aos(view: str = "active", user: dict = Depends(get_current_user))
     """
     role = user["role"]
     uid = user["sub"]
-    view = view if view in ("active", "mine", "archived") else "active"
+    view = view if view in ("active", "mine", "archived", "draft") else "active"
 
-    # Les partenaires ne voient jamais les archivés (ni onglet, ni via l'URL).
-    if view == "archived" and role == "ao":
+    # Les partenaires ne voient jamais les archivés NI les brouillons.
+    if view in ("archived", "draft") and role == "ao":
         return []
 
     q = supabase.table("appels_offres").select(
         "*, clients(id, name, sector, logo_url), submissions(count)"
     ).order("created_at", desc=True)
 
-    # NB: on filtre `archived` DIRECTEMENT (fail-closed). Pas de repli qui
-    # couperait le filtre en cas d'erreur — PostgREST ne sait pas distinguer
+    # NB: on filtre `archived` / `is_draft` DIRECTEMENT (fail-closed). Pas de repli
+    # qui couperait le filtre en cas d'erreur — PostgREST ne sait pas distinguer
     # « colonne absente » d'un « cache périmé » transitoire, et un tel repli
-    # exposerait les archivés aux partenaires. Si la migration 0003 n'est pas
-    # appliquée, l'endpoint renvoie 500 (le temps de l'appliquer), jamais une
-    # liste dé-filtrée. C'est la même convention que les autres colonnes du repo.
-    if view == "archived":
-        q = q.eq("archived", True)
+    # exposerait archivés/brouillons aux partenaires. Si les migrations 0003/0005
+    # ne sont pas appliquées, l'endpoint renvoie 500 (le temps de les appliquer),
+    # jamais une liste dé-filtrée. Même convention que les autres colonnes du repo.
+    if view == "draft":
+        q = q.eq("is_draft", True)
+        if role == "commerce":
+            q = q.eq("created_by", uid)          # commercial : ses propres brouillons
+        # admin : tous les brouillons
+    elif view == "archived":
+        q = q.eq("is_draft", False).eq("archived", True)
         if role == "commerce":
             q = q.eq("created_by", uid)          # commercial : ses propres archivés
         # admin : tous les archivés
     elif view == "mine":
         if role == "ao":
-            ids = _responded_ao_ids(uid)          # historique : archivés inclus
+            ids = _responded_ao_ids(uid)          # historique (un partenaire ne peut pas répondre à un brouillon)
             if not ids:
                 return []
             q = q.in_("id", ids)
         else:
-            q = q.eq("created_by", uid).eq("archived", False)  # commercial / admin : mes AO actifs
+            q = q.eq("created_by", uid).eq("is_draft", False).eq("archived", False)  # commercial / admin : mes AO actifs
     else:  # active
-        q = q.eq("archived", False)
+        q = q.eq("is_draft", False).eq("archived", False)
         accessible = _accessible_client_ids(user)
         if accessible is not None:
             if not accessible:
@@ -410,15 +427,15 @@ async def ao_pipeline(user: dict = Depends(require_staff)):
     _cols_slim = ("id, title, reference, client_id, clients(id, name, logo_url), deadline, "
                   "notified_at, relance_count, ao_type, status, created_at, submissions(count)")
     try:
-        # Actifs + tout AO CLÔTURÉ (bilan posé), même archivé : sinon les colonnes
-        # terminales Gagné/Perdu resteraient vides, l'issue étant souvent posée
-        # APRÈS l'auto-archivage à l'échéance.
-        aos = supabase.table("appels_offres").select(_cols_full).or_(
+        # Publiés uniquement (is_draft=false), et : actifs + tout AO CLÔTURÉ (bilan
+        # posé) même archivé — sinon les colonnes terminales Gagné/Perdu resteraient
+        # vides, l'issue étant souvent posée APRÈS l'auto-archivage à l'échéance.
+        aos = supabase.table("appels_offres").select(_cols_full).eq("is_draft", False).or_(
             "archived.eq.false,ao_outcome.not.is.null").order("created_at", desc=True).execute().data or []
     except Exception as e:  # noqa: BLE001
-        # Migration 0004 non appliquée (colonne ao_outcome absente) : dégradation
-        # propre -> AO actifs seuls, issue traitée comme None. Jamais de 500.
-        if _looks_like_missing_outcome(e):
+        # Migration 0004/0005 non appliquée : dégradation propre -> AO actifs seuls
+        # (issue/brouillon traités comme absents). Jamais de 500.
+        if _looks_like_missing_outcome(e) or _looks_like_missing_draft(e):
             aos = supabase.table("appels_offres").select(_cols_slim).eq(
                 "archived", False).order("created_at", desc=True).execute().data or []
         else:
@@ -521,6 +538,10 @@ async def get_ao(ao_id: str, user: dict = Depends(get_current_user)):
             "*, clients(id, name, sector, description, logo_url), submissions(count)"
         ).eq("id", ao_id).single().execute()
         ao = response.data
+
+        # Un brouillon est invisible des partenaires, même via l'URL directe.
+        if user["role"] == "ao" and ao.get("is_draft"):
+            raise HTTPException(status_code=404, detail="AO introuvable")
 
         # Access check for partners
         if user["role"] == "ao":
@@ -889,6 +910,26 @@ async def unarchive_ao(ao_id: str, user: dict = Depends(require_staff)):
     if not row:
         raise HTTPException(status_code=404, detail="AO introuvable")
     return {"ok": True, "archived": False}
+
+
+@router.post("/{ao_id}/publish")
+async def publish_ao(ao_id: str, background_tasks: BackgroundTasks, user: dict = Depends(require_staff)):
+    """Publie un brouillon (is_draft -> false) : il devient visible des partenaires
+    habilités et déclenche le matching. Sens unique (pas de dé-publication)."""
+    try:
+        row = supabase.table("appels_offres").update({"is_draft": False}).eq(
+            "id", ao_id).eq("is_draft", True).execute().data
+    except Exception as e:  # noqa: BLE001
+        if _looks_like_missing_draft(e):
+            raise HTTPException(status_code=501,
+                                detail="Publication indisponible : appliquez migrations/0005_ao_draft.sql.")
+        raise
+    if not row:
+        # Aucun brouillon avec cet id (déjà publié, ou introuvable).
+        raise HTTPException(status_code=404, detail="Brouillon introuvable (déjà publié ?)")
+    # Publier = lancer le matching (recommandations vivier), comme à la création.
+    background_tasks.add_task(run_vivier_matching, ao_id, user["sub"])
+    return {"ok": True, "is_draft": False}
 
 
 @router.delete("/{ao_id}")

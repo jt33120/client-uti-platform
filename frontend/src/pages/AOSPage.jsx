@@ -7,7 +7,7 @@ import {
   FileText, Plus, Euro, MapPin, Clock, ArrowRight, Search,
   Building2, Users, Calendar, CalendarClock,
   Pencil, X, Loader2, ChevronDown, ChevronLeft, ChevronRight, Check, Trash2, ArrowDownUp, Sparkles,
-  SlidersHorizontal, Archive, ArchiveRestore, Award,
+  SlidersHorizontal, Archive, ArchiveRestore, Award, Send,
 } from 'lucide-react'
 import { TierBadge } from '../components/badges'
 import { EmptyState } from '../components/EmptyState'
@@ -225,7 +225,7 @@ function AOEditModal({ ao, onClose, onSaved }) {
 }
 
 // ── AO card ───────────────────────────────────────────────────────────────────
-function AOCard({ ao, isStaff, onEdit, onDelete, onArchive, archivedView, navigate, selected, onToggleSelect }) {
+function AOCard({ ao, isStaff, onEdit, onDelete, onArchive, onPublish, archivedView, draftView, navigate, selected, onToggleSelect }) {
   const isOpen = ao.status === 'open'
   return (
     <div
@@ -295,6 +295,9 @@ function AOCard({ ao, isStaff, onEdit, onDelete, onArchive, archivedView, naviga
               <Archive size={9} /> Archivé
             </span>
           )}
+          {draftView && (
+            <span className="badge bg-slate-500/10 text-slate-300 border border-slate-500/20 text-[10px]">Brouillon</span>
+          )}
           <TierBadge tier={ao.tier} />
         </div>
       </div>
@@ -356,14 +359,25 @@ function AOCard({ ao, isStaff, onEdit, onDelete, onArchive, archivedView, naviga
               <Users size={10} />
               {ao.submission_count ?? 0} CV{(ao.submission_count ?? 0) > 1 ? 's' : ''}
             </span>
-            <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+            {draftView && (
               <button
-                onClick={e => { e.stopPropagation(); onArchive(ao, !archivedView) }}
-                className="btn-ghost p-1.5"
-                title={archivedView ? 'Désarchiver' : 'Archiver'}
+                onClick={e => { e.stopPropagation(); onPublish(ao) }}
+                className="inline-flex items-center gap-1 px-2 h-6 rounded-md text-[11px] font-semibold text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/10 transition-colors"
+                title="Publier — rendre visible aux partenaires + lancer le matching"
               >
-                {archivedView ? <ArchiveRestore size={12} /> : <Archive size={12} />}
+                <Send size={11} /> Publier
               </button>
+            )}
+            <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+              {!draftView && (
+                <button
+                  onClick={e => { e.stopPropagation(); onArchive(ao, !archivedView) }}
+                  className="btn-ghost p-1.5"
+                  title={archivedView ? 'Désarchiver' : 'Archiver'}
+                >
+                  {archivedView ? <ArchiveRestore size={12} /> : <Archive size={12} />}
+                </button>
+              )}
               <button
                 onClick={e => { e.stopPropagation(); onEdit(ao) }}
                 className="btn-ghost p-1.5"
@@ -391,7 +405,7 @@ function AOCard({ ao, isStaff, onEdit, onDelete, onArchive, archivedView, naviga
 // ── AO table (vue dense — lisibilité quand beaucoup d'AO) ─────────────────────
 // Une ligne par AO : client · réf · mission · émis le · lieu · échéance · statut.
 // Pensé pour scanner rapidement 50+ AO là où les cartes deviennent trop longues.
-function AOTable({ items, isStaff, navigate, onEdit, onDelete, onArchive, archivedView, selected, onToggleSelect, allSelected, onToggleAll }) {
+function AOTable({ items, isStaff, navigate, onEdit, onDelete, onArchive, onPublish, archivedView, draftView, selected, onToggleSelect, allSelected, onToggleAll }) {
   const th = 'font-medium px-4 py-2.5'
   return (
     <div className="card overflow-hidden">
@@ -497,14 +511,18 @@ function AOTable({ items, isStaff, navigate, onEdit, onDelete, onArchive, archiv
                     {ao.location || '—'}
                   </td>
                   <td className="px-4 py-2.5 whitespace-nowrap">
-                    <span className={clsx(
-                      'badge',
-                      isOpen
-                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                        : 'bg-slate-500/10 text-slate-500 border border-slate-600/20'
-                    )}>
-                      {isOpen ? 'Ouvert' : 'Fermé'}
-                    </span>
+                    {draftView ? (
+                      <span className="badge bg-slate-500/10 text-slate-300 border border-slate-500/20">Brouillon</span>
+                    ) : (
+                      <span className={clsx(
+                        'badge',
+                        isOpen
+                          ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                          : 'bg-slate-500/10 text-slate-500 border border-slate-600/20'
+                      )}>
+                        {isOpen ? 'Ouvert' : 'Fermé'}
+                      </span>
+                    )}
                   </td>
                   {isStaff && (
                     <td className="px-4 py-2.5 text-right whitespace-nowrap" onClick={e => e.stopPropagation()}>
@@ -512,9 +530,16 @@ function AOTable({ items, isStaff, navigate, onEdit, onDelete, onArchive, archiv
                         <Users size={11} />
                         {ao.submission_count ?? 0}
                       </span>
-                      <button onClick={() => onArchive(ao, !archivedView)} className="btn-ghost p-1.5" title={archivedView ? 'Désarchiver' : 'Archiver'}>
-                        {archivedView ? <ArchiveRestore size={12} /> : <Archive size={12} />}
-                      </button>
+                      {draftView && (
+                        <button onClick={() => onPublish(ao)} className="btn-ghost p-1.5 text-emerald-300" title="Publier">
+                          <Send size={12} />
+                        </button>
+                      )}
+                      {!draftView && (
+                        <button onClick={() => onArchive(ao, !archivedView)} className="btn-ghost p-1.5" title={archivedView ? 'Désarchiver' : 'Archiver'}>
+                          {archivedView ? <ArchiveRestore size={12} /> : <Archive size={12} />}
+                        </button>
+                      )}
                       <button onClick={() => onEdit(ao)} className="btn-ghost p-1.5" title="Modifier">
                         <Pencil size={12} />
                       </button>
@@ -967,11 +992,12 @@ export default function AOSPage() {
   // archivés (partenaire : jamais).
   const [tab, setTab] = useState('active')
   const roleTabs = isAdmin
-    ? [{ k: 'active', l: 'Tous' }, { k: 'archived', l: 'Archivés' }]
+    ? [{ k: 'active', l: 'Tous' }, { k: 'draft', l: 'Brouillons' }, { k: 'archived', l: 'Archivés' }]
     : isCommerce
-      ? [{ k: 'active', l: 'Tous' }, { k: 'mine', l: 'Mes AOs' }, { k: 'archived', l: 'Mes archivés' }]
+      ? [{ k: 'active', l: 'Tous' }, { k: 'mine', l: 'Mes AOs' }, { k: 'draft', l: 'Brouillons' }, { k: 'archived', l: 'Mes archivés' }]
       : [{ k: 'active', l: 'Accessibles' }, { k: 'mine', l: 'Mes réponses' }]
   const archivedView = tab === 'archived'
+  const draftView = tab === 'draft'
   const partnerMine = tab === 'mine' && !isStaff   // « Mes réponses » enrichi (partenaire)
   const [matchedIds, setMatchedIds] = useState(null) // Set des ao_id ayant un profil potentiel
   const [aos, setAos] = useState([])
@@ -1010,6 +1036,18 @@ export default function AOSPage() {
       setSelected(p => { const n = new Set(p); n.delete(ao.id); return n })
     } catch (e) {
       alert(e.response?.data?.detail || "Action impossible")
+    }
+  }
+
+  // Publier un brouillon (équipe UTI) : il quitte l'onglet Brouillons et devient
+  // visible des partenaires habilités (+ matching déclenché côté serveur).
+  const handlePublish = async (ao) => {
+    try {
+      await api.post(`/aos/${ao.id}/publish`)
+      setAos(p => p.filter(a => a.id !== ao.id))
+      setSelected(p => { const n = new Set(p); n.delete(ao.id); return n })
+    } catch (e) {
+      alert(e.response?.data?.detail || "Publication impossible")
     }
   }
 
@@ -1480,7 +1518,9 @@ export default function AOSPage() {
             ? "Aucun AO n'a encore trouvé de consultant potentiel."
             : (search || activeCount > 0)
               ? 'Aucun résultat'
-              : archivedView
+              : draftView
+                ? 'Aucun brouillon'
+                : archivedView
                 ? 'Aucun AO archivé'
                 : tab === 'mine'
                   ? (isStaff ? "Vous n'avez encore créé aucun AO" : "Vous n'avez encore répondu à aucun AO")
@@ -1514,7 +1554,9 @@ export default function AOSPage() {
           onEdit={setEditAo}
           onDelete={handleDeleteAo}
           onArchive={handleArchive}
+          onPublish={handlePublish}
           archivedView={archivedView}
+          draftView={draftView}
           selected={selected}
           onToggleSelect={toggleSelect}
           allSelected={allSelected}
@@ -1537,7 +1579,9 @@ export default function AOSPage() {
                     onEdit={setEditAo}
                     onDelete={handleDeleteAo}
                     onArchive={handleArchive}
+                    onPublish={handlePublish}
                     archivedView={archivedView}
+                    draftView={draftView}
                     selected={selected.has(ao.id)}
                     onToggleSelect={toggleSelect}
                   />
@@ -1554,7 +1598,9 @@ export default function AOSPage() {
               onEdit={setEditAo}
               onDelete={handleDeleteAo}
               onArchive={handleArchive}
+              onPublish={handlePublish}
               archivedView={archivedView}
+              draftView={draftView}
               selected={selected.has(ao.id)}
               onToggleSelect={toggleSelect}
             />

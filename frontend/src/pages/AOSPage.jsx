@@ -7,7 +7,7 @@ import {
   FileText, Plus, Euro, MapPin, Clock, ArrowRight, Search,
   Building2, Users, Calendar, CalendarClock,
   Pencil, X, Loader2, ChevronDown, ChevronLeft, ChevronRight, Check, Trash2, ArrowDownUp, Sparkles,
-  SlidersHorizontal,
+  SlidersHorizontal, Archive, ArchiveRestore,
 } from 'lucide-react'
 import { TierBadge } from '../components/badges'
 import { EmptyState } from '../components/EmptyState'
@@ -225,7 +225,7 @@ function AOEditModal({ ao, onClose, onSaved }) {
 }
 
 // ── AO card ───────────────────────────────────────────────────────────────────
-function AOCard({ ao, isStaff, onEdit, onDelete, navigate, selected, onToggleSelect }) {
+function AOCard({ ao, isStaff, onEdit, onDelete, onArchive, archivedView, navigate, selected, onToggleSelect }) {
   const isOpen = ao.status === 'open'
   return (
     <div
@@ -288,6 +288,11 @@ function AOCard({ ao, isStaff, onEdit, onDelete, navigate, selected, onToggleSel
           {ao.ao_type && (
             <span className="badge bg-violet-500/10 text-violet-300 border border-violet-500/20 text-[10px]">
               {ao.ao_type}
+            </span>
+          )}
+          {archivedView && (
+            <span className="badge bg-amber-500/10 text-amber-400 border border-amber-500/20 text-[10px] inline-flex items-center gap-1">
+              <Archive size={9} /> Archivé
             </span>
           )}
           <TierBadge tier={ao.tier} />
@@ -353,6 +358,13 @@ function AOCard({ ao, isStaff, onEdit, onDelete, navigate, selected, onToggleSel
             </span>
             <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
               <button
+                onClick={e => { e.stopPropagation(); onArchive(ao, !archivedView) }}
+                className="btn-ghost p-1.5"
+                title={archivedView ? 'Désarchiver' : 'Archiver'}
+              >
+                {archivedView ? <ArchiveRestore size={12} /> : <Archive size={12} />}
+              </button>
+              <button
                 onClick={e => { e.stopPropagation(); onEdit(ao) }}
                 className="btn-ghost p-1.5"
                 title="Modifier"
@@ -379,7 +391,7 @@ function AOCard({ ao, isStaff, onEdit, onDelete, navigate, selected, onToggleSel
 // ── AO table (vue dense — lisibilité quand beaucoup d'AO) ─────────────────────
 // Une ligne par AO : client · réf · mission · émis le · lieu · échéance · statut.
 // Pensé pour scanner rapidement 50+ AO là où les cartes deviennent trop longues.
-function AOTable({ items, isStaff, navigate, onEdit, onDelete, selected, onToggleSelect, allSelected, onToggleAll }) {
+function AOTable({ items, isStaff, navigate, onEdit, onDelete, onArchive, archivedView, selected, onToggleSelect, allSelected, onToggleAll }) {
   const th = 'font-medium px-4 py-2.5'
   return (
     <div className="card overflow-hidden">
@@ -500,6 +512,9 @@ function AOTable({ items, isStaff, navigate, onEdit, onDelete, selected, onToggl
                         <Users size={11} />
                         {ao.submission_count ?? 0}
                       </span>
+                      <button onClick={() => onArchive(ao, !archivedView)} className="btn-ghost p-1.5" title={archivedView ? 'Désarchiver' : 'Archiver'}>
+                        {archivedView ? <ArchiveRestore size={12} /> : <Archive size={12} />}
+                      </button>
                       <button onClick={() => onEdit(ao)} className="btn-ghost p-1.5" title="Modifier">
                         <Pencil size={12} />
                       </button>
@@ -689,11 +704,21 @@ const FChip = ({ active, onClick, children }) => (
 )
 
 export default function AOSPage() {
-  const { isStaff } = useAuth()
+  const { isStaff, isAdmin, isCommerce } = useAuth()
   const confirm = useConfirm()
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const matchedOnly = searchParams.get('matched') === '1'
+  // Sous-onglets par rôle (liste par périmètre). 'active' = actifs ; 'mine' =
+  // partenaire -> AO répondus (historique) / staff -> mes AO ; 'archived' =
+  // archivés (partenaire : jamais).
+  const [tab, setTab] = useState('active')
+  const roleTabs = isAdmin
+    ? [{ k: 'active', l: 'Tous' }, { k: 'archived', l: 'Archivés' }]
+    : isCommerce
+      ? [{ k: 'active', l: 'Tous' }, { k: 'mine', l: 'Mes AOs' }, { k: 'archived', l: 'Mes archivés' }]
+      : [{ k: 'active', l: 'Accessibles' }, { k: 'mine', l: 'Mes réponses' }]
+  const archivedView = tab === 'archived'
   const [matchedIds, setMatchedIds] = useState(null) // Set des ao_id ayant un profil potentiel
   const [aos, setAos] = useState([])
   const [loading, setLoading] = useState(true)
@@ -719,9 +744,20 @@ export default function AOSPage() {
   const [bulkDeleting, setBulkDeleting] = useState(false)
 
   const fetchAos = () =>
-    api.get('/aos')
+    api.get('/aos', { params: { view: tab } })
       .then(r => setAos(r.data))
       .catch(e => setError(e.response?.data?.detail || e.message || 'Erreur de chargement'))
+
+  // Archive / désarchive (équipe UTI) : l'AO disparaît de la vue courante.
+  const handleArchive = async (ao, toArchived) => {
+    try {
+      await api.post(`/aos/${ao.id}/${toArchived ? 'archive' : 'unarchive'}`)
+      setAos(p => p.filter(a => a.id !== ao.id))
+      setSelected(p => { const n = new Set(p); n.delete(ao.id); return n })
+    } catch (e) {
+      alert(e.response?.data?.detail || "Action impossible")
+    }
+  }
 
   const handleDeleteAo = async (ao) => {
     if (!(await confirm({
@@ -770,12 +806,20 @@ export default function AOSPage() {
     }
   }
 
+  // (Re)chargement à chaque changement d'onglet. Garde « dernière requête gagne »
+  // (ignore) : un basculement rapide d'onglet ne doit pas laisser une réponse en
+  // retard écraser la vue courante. La bannière d'erreur est aussi remise à zéro.
   useEffect(() => {
-    api.get('/aos')
-      .then(r => setAos(r.data))
-      .catch(e => setError(e.response?.data?.detail || e.message || 'Erreur de chargement'))
-      .finally(() => setLoading(false))
-  }, [])
+    let ignore = false
+    setLoading(true)
+    setError('')
+    setSelected(new Set())
+    api.get('/aos', { params: { view: tab } })
+      .then(r => { if (!ignore) setAos(r.data) })
+      .catch(e => { if (!ignore) setError(e.response?.data?.detail || e.message || 'Erreur de chargement') })
+      .finally(() => { if (!ignore) setLoading(false) })
+    return () => { ignore = true }
+  }, [tab])
 
   // Filtre « AOs avec profil potentiel » (venant du tableau de bord) :
   // on récupère la liste des ao_id ayant au moins un consultant potentiel.
@@ -833,6 +877,14 @@ export default function AOSPage() {
   const clearFilters = () => {
     setFilter('all'); setFClients(new Set()); setFTypes(new Set())
     setFDeadline(null); setFTjmMin(''); setFTjmMax(''); setFCandidates(null)
+  }
+
+  // Changement d'onglet : on repart d'une vue propre. Les options de filtre
+  // (clients/types) sont désormais dérivées de l'onglet courant — garder des
+  // filtres d'un autre onglet afficherait une puce « fantôme » et viderait la liste.
+  const changeTab = (k) => {
+    if (k === tab) return
+    setTab(k); setSearch(''); clearFilters(); setFiltersOpen(false)
   }
 
   // Fermeture du panneau au clic extérieur.
@@ -942,6 +994,27 @@ export default function AOSPage() {
           )}
         </div>
       </div>
+
+      {/* Sous-onglets par périmètre (masqués sur la vue « profils potentiels »). */}
+      {!matchedOnly && roleTabs.length > 1 && (
+        <div role="tablist" className="flex gap-1 mb-4 border-b overflow-x-auto" style={{ borderColor: 'var(--border)' }}>
+          {roleTabs.map(t => (
+            <button
+              key={t.k}
+              role="tab"
+              aria-selected={tab === t.k}
+              onClick={() => changeTab(t.k)}
+              className="px-3 py-2 text-sm font-medium whitespace-nowrap transition-colors -mb-px"
+              style={{
+                color: tab === t.k ? 'var(--text)' : 'var(--text-muted)',
+                borderBottom: `2px solid ${tab === t.k ? 'var(--accent)' : 'transparent'}`,
+              }}
+            >
+              {t.l}
+            </button>
+          ))}
+        </div>
+      )}
 
       {matchedOnly && (
         <div className="flex items-center justify-between gap-3 mb-4 px-4 py-2.5 rounded-lg text-sm"
@@ -1134,10 +1207,14 @@ export default function AOSPage() {
             ? "Aucun AO n'a encore trouvé de consultant potentiel."
             : (search || activeCount > 0)
               ? 'Aucun résultat'
-              : 'Aucun appel d\'offres accessible pour le moment'}
+              : archivedView
+                ? 'Aucun AO archivé'
+                : tab === 'mine'
+                  ? (isStaff ? "Vous n'avez encore créé aucun AO" : "Vous n'avez encore répondu à aucun AO")
+                  : 'Aucun appel d\'offres accessible pour le moment'}
           action={<>
-            {/* Ne proposer « créer » que sur un vrai état vide (ni recherche ni filtre). */}
-            {isStaff && !search && activeCount === 0 && !matchedOnly && (
+            {/* « Créer » seulement sur l'onglet actif, vraiment vide (ni recherche ni filtre). */}
+            {isStaff && tab === 'active' && !search && activeCount === 0 && !matchedOnly && (
               <Link to="/aos/new" className="btn-primary mt-4 mx-auto">
                 <Plus size={14} /> Créer le premier AO
               </Link>
@@ -1163,6 +1240,8 @@ export default function AOSPage() {
           navigate={navigate}
           onEdit={setEditAo}
           onDelete={handleDeleteAo}
+          onArchive={handleArchive}
+          archivedView={archivedView}
           selected={selected}
           onToggleSelect={toggleSelect}
           allSelected={allSelected}
@@ -1184,6 +1263,8 @@ export default function AOSPage() {
                     navigate={navigate}
                     onEdit={setEditAo}
                     onDelete={handleDeleteAo}
+                    onArchive={handleArchive}
+                    archivedView={archivedView}
                     selected={selected.has(ao.id)}
                     onToggleSelect={toggleSelect}
                   />
@@ -1199,6 +1280,8 @@ export default function AOSPage() {
               navigate={navigate}
               onEdit={setEditAo}
               onDelete={handleDeleteAo}
+              onArchive={handleArchive}
+              archivedView={archivedView}
               selected={selected.has(ao.id)}
               onToggleSelect={toggleSelect}
             />

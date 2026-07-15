@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import api from '../lib/api'
 import { useAuth } from '../contexts/AuthContext'
 import { useConfirm } from '../contexts/ConfirmContext'
-import { Building2, Plus, Pencil, Trash2, Search, Briefcase, UserCircle2, Mail, ArrowRight, AlertTriangle, ChevronRight, Layers } from 'lucide-react'
+import { Building2, Plus, Pencil, Trash2, Search, Briefcase, UserCircle2, Mail, ArrowRight, AlertTriangle, ChevronRight, Layers, MapPin } from 'lucide-react'
 import clsx from 'clsx'
 import { findSimilarClients } from '../lib/similarity'
 import { TierBadge } from '../components/badges'
@@ -138,6 +138,7 @@ function ClientModal({ client, onClose, onSaved, existingClients = [] }) {
     contact_email: client?.contact_email || '',
     perimetre: client?.perimetre || '',
     parent_client_id: client?.parent_client_id || '',
+    city: client?.city || '',
   })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -228,10 +229,17 @@ function ClientModal({ client, onClose, onSaved, existingClients = [] }) {
                 onChange={e => setForm(p => ({ ...p, perimetre: e.target.value }))} />
             </div>
           </div>
-          <div>
-            <label className="label">Secteur</label>
-            <input className="input" placeholder="Banque, Énergie, Retail..." value={form.sector}
-              onChange={e => setForm(p => ({ ...p, sector: e.target.value }))} />
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="label">Secteur</label>
+              <input className="input" placeholder="Banque, Énergie, Retail..." value={form.sector}
+                onChange={e => setForm(p => ({ ...p, sector: e.target.value }))} />
+            </div>
+            <div>
+              <label className="label flex items-center gap-1"><MapPin size={11} /> Ville / siège</label>
+              <input className="input" placeholder="Paris, Lyon…" value={form.city}
+                onChange={e => setForm(p => ({ ...p, city: e.target.value }))} />
+            </div>
           </div>
           <div>
             <label className="label">Description</label>
@@ -343,6 +351,9 @@ export default function ClientsPage() {
         </div>
         {isAdmin && (
           <div className="flex gap-2">
+            <Link to="/carte?only=clients" className="btn-ghost" title="Voir les clients sur la carte">
+              <MapPin size={15} /> Carte
+            </Link>
             <Link to="/partners-access" className="btn-ghost">Accès partenaires</Link>
             <Link to="/clients/new" className="btn-primary">
               <Plus size={15} /> Nouveau client

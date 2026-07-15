@@ -1284,6 +1284,12 @@ export default function AOSPage() {
             </button>
           )}
           {isStaff && (
+            <Link to="/carte?only=aos" className="btn-ghost" title="Voir les appels d'offres sur la carte">
+              <MapPin size={15} />
+              Carte
+            </Link>
+          )}
+          {isStaff && (
             <Link to="/aos/new" className="btn-primary">
               <Plus size={15} />
               Nouvel AO

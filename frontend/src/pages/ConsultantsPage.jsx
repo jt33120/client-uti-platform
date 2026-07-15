@@ -303,12 +303,19 @@ export default function ConsultantsPage() {
             </p>
           )}
         </div>
-        {!isStaff && (
-          <Link to="/consultants/new" className="btn-primary">
-            <Plus size={15} />
-            Ajouter
-          </Link>
-        )}
+        <div className="flex items-center gap-2">
+          {isStaff && (
+            <Link to="/carte?only=consultants" className="btn-ghost" title="Voir le vivier sur la carte">
+              <MapPin size={15} /> Carte
+            </Link>
+          )}
+          {!isStaff && (
+            <Link to="/consultants/new" className="btn-primary">
+              <Plus size={15} />
+              Ajouter
+            </Link>
+          )}
+        </div>
       </div>
 
       {/* Barre d'outils : recherche + recherche avancée + tri */}

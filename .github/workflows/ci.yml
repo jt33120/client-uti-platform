@@ -38,7 +38,10 @@ jobs:
         # construction). Les tests sont de la logique pure (aucune I/O réelle).
         env:
           SUPABASE_URL: https://placeholder.supabase.co
-          SUPABASE_SERVICE_KEY: placeholder-service-key
+          # supabase-py valide le FORMAT de la clé (JWT à 3 segments) à la
+          # construction du client : une chaîne quelconque lève « Invalid API key ».
+          # Faux JWT syntaxiquement valide (aucun appel réseau) — suffit à l'import.
+          SUPABASE_SERVICE_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIn0.c2lnbmF0dXJlLXBsYWNlaG9sZGVy
         run: pytest -q
 
   frontend:

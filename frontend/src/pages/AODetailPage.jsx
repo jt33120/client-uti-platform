@@ -1239,6 +1239,17 @@ function MatchCard({ result, rank, aoId, isAdmin, ao, onContact, expanded: expan
           <div className="flex items-center gap-2 flex-wrap">
             <h3 className="text-sm font-semibold text-white">{result.consultant_name}</h3>
             <RecoTag reco={reco} />
+            {/* Conflit de présentation : la même personne est proposée par un AUTRE
+                partenaire (même AO ou autre AO du même client). Alerte staff only. */}
+            {isAdmin && result.presentation_conflict?.conflict && (
+              <span
+                className="badge border text-[10px] inline-flex items-center gap-1 bg-amber-500/10 text-amber-300 border-amber-500/40"
+                title={`Aussi proposé par : ${(result.presentation_conflict.with_partners || []).join(', ')}${
+                  result.presentation_conflict.scope === 'same_client' ? ' (autre AO du même client)' : ''
+                }`}>
+                <AlertTriangle size={9} /> Conflit de présentation
+              </span>
+            )}
             {/* Consulter le CV — remonté près du nom, avec les autres actions. */}
             {result.cv_url && (
               <a href={result.cv_url} target="_blank" rel="noopener noreferrer"

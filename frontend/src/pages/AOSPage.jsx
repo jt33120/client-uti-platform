@@ -683,6 +683,127 @@ function AOCalendar({ items, navigate }) {
   )
 }
 
+// ── Issue d'un candidat (« Mes réponses ») — libellé + teinte ─────────────────
+const OUTCOME_META = {
+  gagne:    { l: 'Gagné',            bg: 'rgba(16,185,129,0.14)',  c: '#34d399' },
+  perdu:    { l: 'Perdu',            bg: 'rgba(239,68,68,0.14)',   c: '#f87171' },
+  presente: { l: 'Présenté client',  bg: 'rgba(99,102,241,0.14)',  c: '#a5b4fc' },
+  retenu:   { l: 'Retenu',           bg: 'rgba(16,185,129,0.10)',  c: '#34d399' },
+  ecarte:   { l: 'Écarté',           bg: 'rgba(148,163,184,0.14)', c: '#94a3b8' },
+  contacte: { l: 'Contacté',         bg: 'rgba(245,158,11,0.14)',  c: '#f59e0b' },
+  soumis:   { l: 'Soumis',           bg: 'rgba(148,163,184,0.10)', c: '#94a3b8' },
+}
+
+// « Mes réponses » enrichi (partenaire) : un bloc par AO répondu, avec l'issue
+// de chaque candidat proposé (score + label). Auto-portant (fetch dédié).
+function MyResponses({ navigate }) {
+  const [aos, setAos] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  useEffect(() => {
+    let ignore = false
+    setLoading(true); setError('')
+    api.get('/submissions/mine/outcomes')
+      .then(r => { if (!ignore) setAos(r.data?.aos || []) })
+      .catch(e => { if (!ignore) setError(e.response?.data?.detail || 'Erreur de chargement') })
+      .finally(() => { if (!ignore) setLoading(false) })
+    return () => { ignore = true }
+  }, [])
+  if (loading) return <div className="text-center py-16 text-slate-500 text-sm">Chargement…</div>
+  if (error) return <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-4 py-3">{error}</div>
+  if (!aos || aos.length === 0) return <EmptyState icon={FileText} message="Vous n'avez encore répondu à aucun AO." />
+  return (
+    <div className="space-y-3">
+      {aos.map(ao => (
+        <div key={ao.ao_id} onClick={() => navigate(`/aos/${ao.ao_id}`)}
+          className="card p-4 cursor-pointer hover:border-white/10 transition-colors">
+          <div className="flex items-start justify-between gap-2 mb-2.5">
+            <div className="min-w-0">
+              <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-0.5 flex items-center gap-1.5 flex-wrap">
+                {ao.client_name && <span className="inline-flex items-center gap-1"><Building2 size={9} /> {ao.client_name}</span>}
+                {ao.ao_reference && <span className="text-slate-400 normal-case">· réf. {ao.ao_reference}</span>}
+                {ao.ao_archived && <span className="badge bg-amber-500/10 text-amber-400 border border-amber-500/20 text-[9px]">Archivé</span>}
+              </div>
+              <h3 className="text-sm font-semibold text-white line-clamp-1">{ao.ao_title}</h3>
+            </div>
+            <ArrowRight size={13} className="text-slate-700 shrink-0 mt-1" />
+          </div>
+          <div className="space-y-1.5">
+            {(ao.candidates || []).map((c, i) => {
+              const m = OUTCOME_META[c.outcome] || OUTCOME_META.soumis
+              return (
+                <div key={i} className="flex items-center gap-2 text-xs">
+                  <Users size={12} className="text-slate-500 shrink-0" />
+                  <span className="text-slate-300 truncate flex-1">{c.consultant_name || 'Consultant'}</span>
+                  {typeof c.score === 'number' && <span className="text-slate-500 tabular shrink-0">{Math.round(c.score)}/100</span>}
+                  <span className="badge text-[10px] shrink-0" style={{ background: m.bg, color: m.c, border: 'none' }}>{m.l}</span>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// Vue Pipeline (équipe UTI) : kanban des AO actifs par étape d'avancement.
+function PipelineBoard({ navigate }) {
+  const [data, setData] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  useEffect(() => {
+    let ignore = false
+    setLoading(true); setError('')
+    api.get('/aos/pipeline')
+      .then(r => { if (!ignore) setData(r.data) })
+      .catch(e => { if (!ignore) setError(e.response?.data?.detail || 'Erreur de chargement') })
+      .finally(() => { if (!ignore) setLoading(false) })
+    return () => { ignore = true }
+  }, [])
+  if (loading) return <div className="text-center py-16 text-slate-500 text-sm">Chargement…</div>
+  if (error) return <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-4 py-3">{error}</div>
+  const stages = data?.stages || []
+  const byStage = {}
+  stages.forEach(s => { byStage[s.key] = [] })
+  ;(data?.aos || []).forEach(a => { (byStage[a.stage] || (byStage[a.stage] = [])).push(a) })
+  return (
+    <div className="overflow-x-auto pb-2">
+      <div className="flex gap-3 min-w-max">
+        {stages.map(s => {
+          const items = byStage[s.key] || []
+          return (
+            <div key={s.key} className="w-64 shrink-0">
+              <div className="flex items-center justify-between mb-2 px-1">
+                <span className="text-xs font-semibold text-white">{s.label}</span>
+                <span className="text-[11px] text-slate-500 tabular">{items.length}</span>
+              </div>
+              <div className="space-y-2 rounded-lg p-1.5 min-h-[60px]" style={{ background: 'var(--surface-2)' }}>
+                {items.map(a => {
+                  const dl = deadlineMeta(a.deadline)
+                  return (
+                    <div key={a.id} onClick={() => navigate(`/aos/${a.id}`)}
+                      className="card p-2.5 cursor-pointer hover:border-white/10 transition-colors">
+                      <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-0.5 truncate">{a.clients?.name || '—'}</div>
+                      <div className="text-[12.5px] font-medium text-white line-clamp-2 mb-1.5 leading-snug">{a.title}</div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {dl && <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-semibold" style={DEADLINE_TONE[dl.tone]}><CalendarClock size={9} />{dl.rel}</span>}
+                        {a.submission_count > 0 && <span className="text-[10px] text-brand-300 inline-flex items-center gap-0.5"><Users size={9} />{a.submission_count}</span>}
+                        {a.relance_count > 0 && <span className="text-[9px] text-slate-500">· {a.relance_count} relance{a.relance_count > 1 ? 's' : ''}</span>}
+                      </div>
+                    </div>
+                  )
+                })}
+                {items.length === 0 && <div className="text-[11px] text-slate-600 text-center py-3">—</div>}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 // ── Panneau de filtres : section + puce sélectionnable ────────────────────────
 const FSection = ({ label, children }) => (
   <div className="mb-3">
@@ -719,6 +840,7 @@ export default function AOSPage() {
       ? [{ k: 'active', l: 'Tous' }, { k: 'mine', l: 'Mes AOs' }, { k: 'archived', l: 'Mes archivés' }]
       : [{ k: 'active', l: 'Accessibles' }, { k: 'mine', l: 'Mes réponses' }]
   const archivedView = tab === 'archived'
+  const partnerMine = tab === 'mine' && !isStaff   // « Mes réponses » enrichi (partenaire)
   const [matchedIds, setMatchedIds] = useState(null) // Set des ao_id ayant un profil potentiel
   const [aos, setAos] = useState([])
   const [loading, setLoading] = useState(true)
@@ -810,16 +932,19 @@ export default function AOSPage() {
   // (ignore) : un basculement rapide d'onglet ne doit pas laisser une réponse en
   // retard écraser la vue courante. La bannière d'erreur est aussi remise à zéro.
   useEffect(() => {
+    setError(''); setSelected(new Set())
+    // « Mes réponses » (partenaire) est une vue auto-portante (MyResponses fait
+    // son propre fetch) : inutile de charger /aos?view=mine, et surtout de ne pas
+    // laisser une erreur de CE fetch afficher une bannière au-dessus.
+    if (tab === 'mine' && !isStaff) { setLoading(false); return }
     let ignore = false
     setLoading(true)
-    setError('')
-    setSelected(new Set())
     api.get('/aos', { params: { view: tab } })
       .then(r => { if (!ignore) setAos(r.data) })
       .catch(e => { if (!ignore) setError(e.response?.data?.detail || e.message || 'Erreur de chargement') })
       .finally(() => { if (!ignore) setLoading(false) })
     return () => { ignore = true }
-  }, [tab])
+  }, [tab, isStaff])
 
   // Filtre « AOs avec profil potentiel » (venant du tableau de bord) :
   // on récupère la liste des ao_id ayant au moins un consultant potentiel.
@@ -962,6 +1087,8 @@ export default function AOSPage() {
   if (fTjmMin || fTjmMax) activeChips.push({ key: 'tjm', label: `TJM ${fTjmMin || '0'}–${fTjmMax || '∞'} €/j`, clear: () => { setFTjmMin(''); setFTjmMax('') } })
   if (fCandidates) activeChips.push({ key: 'cand', label: fCandidates === 'yes' ? 'Avec CV' : 'Sans CV', clear: () => setFCandidates(null) })
 
+  const pipelineView = isStaff && view === 'pipeline'   // kanban (auto-portant)
+
   return (
     <div>
       <div className="page-header">
@@ -995,8 +1122,9 @@ export default function AOSPage() {
         </div>
       </div>
 
-      {/* Sous-onglets par périmètre (masqués sur la vue « profils potentiels »). */}
-      {!matchedOnly && roleTabs.length > 1 && (
+      {/* Sous-onglets par périmètre (masqués sur la vue « profils potentiels » et
+          en mode Pipeline, qui est une vue transverse de tous les AO actifs). */}
+      {!matchedOnly && !pipelineView && roleTabs.length > 1 && (
         <div role="tablist" className="flex gap-1 mb-4 border-b overflow-x-auto" style={{ borderColor: 'var(--border)' }}>
           {roleTabs.map(t => (
             <button
@@ -1031,7 +1159,9 @@ export default function AOSPage() {
         </div>
       )}
 
+      {!partnerMine && (
       <div className="flex gap-3 mb-5 flex-wrap">
+        {!pipelineView && (
         <div className="relative flex-1 min-w-[240px]">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
           <input
@@ -1041,7 +1171,9 @@ export default function AOSPage() {
             onChange={e => setSearch(e.target.value)}
           />
         </div>
+        )}
         {/* Filtres avancés — un seul bouton regroupe statut, client, type, échéance, TJM et CV reçus. */}
+        {!pipelineView && (
         <div className="relative" ref={filtersRef}>
           <button
             ref={triggerRef}
@@ -1135,6 +1267,7 @@ export default function AOSPage() {
             </div>
           )}
         </div>
+        )}
 
         <div className="flex gap-1 bg-white/5 rounded-lg p-1">
           {[
@@ -1142,6 +1275,7 @@ export default function AOSPage() {
             { k: 'cards', l: 'Cartes' },
             { k: 'table', l: 'Tableau' },
             { k: 'calendar', l: 'Calendrier' },
+            ...(isStaff ? [{ k: 'pipeline', l: 'Pipeline' }] : []),
           ].map(o => (
             <button
               key={o.k}
@@ -1155,6 +1289,7 @@ export default function AOSPage() {
             </button>
           ))}
         </div>
+        {!pipelineView && (
         <div className="flex items-center gap-1 bg-white/5 rounded-lg p-1" title="Trier les appels d'offres">
           <ArrowDownUp size={12} className="text-slate-500 ml-1.5 shrink-0" />
           {[
@@ -1173,10 +1308,12 @@ export default function AOSPage() {
             </button>
           ))}
         </div>
+        )}
       </div>
+      )}
 
       {/* Puces des filtres actifs — retrait individuel ou en un clic. */}
-      {activeChips.length > 0 && (
+      {!partnerMine && !pipelineView && activeChips.length > 0 && (
         <div className="flex items-center flex-wrap gap-1.5 -mt-2 mb-4">
           {activeChips.map(c => (
             <span key={c.key} className="inline-flex items-center gap-1 pl-2 pr-1 py-0.5 rounded-md text-[11px] font-medium"
@@ -1192,13 +1329,17 @@ export default function AOSPage() {
         </div>
       )}
 
-      {error && (
+      {!partnerMine && !pipelineView && error && (
         <div className="mb-4 text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-4 py-3">
           {error}
         </div>
       )}
 
-      {loading ? (
+      {partnerMine ? (
+        <MyResponses navigate={navigate} />
+      ) : pipelineView ? (
+        <PipelineBoard navigate={navigate} />
+      ) : loading ? (
         <div className="text-center py-16 text-slate-500 text-sm">Chargement...</div>
       ) : sorted.length === 0 ? (
         <EmptyState

@@ -16,6 +16,23 @@ router = APIRouter(prefix="/aos", tags=["appels_offres"])
 
 AO_SOURCES_BUCKET = "ao-sources"  # pièces jointes d'origine d'un AO (privé)
 
+# Issue de clôture d'un AO (bilan) — vocabulaire partagé écriture (bilan) / lecture
+# (pipeline, supervision). winning_partner_id porte QUI a gagné (NULL = pourvu hors
+# plateforme ou non pourvu).
+AO_OUTCOMES = ("pourvu", "non_pourvu", "sans_suite")
+
+# Étapes du pipeline (avancement des AO), dans l'ordre d'affichage. Dérivées :
+# backlog (créé, pas diffusé) -> diffusion -> réponses reçues -> présenté client
+# -> gagné / perdu (issue ao_outcome, repli agrégation deal_status).
+PIPELINE_STAGES = [
+    {"key": "backlog", "label": "Créé / non diffusé"},
+    {"key": "diffusion", "label": "Diffusion"},
+    {"key": "reponses_recues", "label": "Réponses reçues"},
+    {"key": "presente_client", "label": "Présenté client"},
+    {"key": "gagne", "label": "Gagné"},
+    {"key": "perdu", "label": "Perdu / Sans suite"},
+]
+
 
 def _sources_with_urls(items: Optional[list]) -> list:
     """Ajoute une URL signée (temporaire) à chaque pièce jointe stockée."""
@@ -156,6 +173,48 @@ def _responded_ao_ids(uid: str) -> list[str]:
     except Exception:  # noqa: BLE001
         return []
     return list({r["ao_id"] for r in rows if r.get("ao_id")})
+
+
+def _looks_like_missing_outcome(err: Exception) -> bool:
+    """Colonnes d'issue (migration 0004) absentes — message d'erreur clair."""
+    s = str(err).lower()
+    return any(k in s for k in ("ao_outcome", "winning_partner_id", "outcome_at")) and any(
+        k in s for k in ("column", "42703", "does not exist", "schema cache", "pgrst204")
+    )
+
+
+def _winner_submitters(ao_id: str) -> set:
+    """profiles.id des partenaires ayant répondu à cet AO (= submitted_by valides)."""
+    try:
+        rows = supabase.table("submissions").select("submitted_by").eq("ao_id", ao_id).execute().data or []
+    except Exception:  # noqa: BLE001
+        return set()
+    return {r["submitted_by"] for r in rows if r.get("submitted_by")}
+
+
+def _derive_stage(ao: dict, sub_count: int, st: dict) -> str:
+    """Étape pipeline d'un AO. L'issue explicite (ao_outcome) prime ; repli sur
+    l'agrégation des deal_status candidats tant qu'aucun bilan n'est posé.
+
+    Le repli « perdu » exige que TOUS les candidats soumis soient décidés et
+    perdants (len(deals) >= sub_count) — sinon un seul « perdue » parmi des
+    candidats encore en lice basculerait à tort l'AO en terminal."""
+    outcome = ao.get("ao_outcome")
+    deals = st.get("deals", [])
+    if outcome == "pourvu" or (outcome is None and any(d == "gagnee" for d in deals)):
+        return "gagne"
+    if outcome in ("non_pourvu", "sans_suite") or (
+        outcome is None and deals and all(d == "perdue" for d in deals)
+        and sub_count > 0 and len(deals) >= sub_count
+    ):
+        return "perdu"
+    if st.get("has_sent"):
+        return "presente_client"
+    if sub_count > 0:
+        return "reponses_recues"
+    if ao.get("notified_at"):
+        return "diffusion"
+    return "backlog"
 
 
 @router.get("/types")
@@ -339,6 +398,108 @@ async def list_aos(view: str = "active", user: dict = Depends(get_current_user))
             ao["tier"] = tiers.get(ao["client_id"])
 
     return aos
+
+
+@router.get("/pipeline")
+async def ao_pipeline(user: dict = Depends(require_staff)):
+    """Vue pipeline (équipe UTI) : les AO actifs (non archivés) répartis par étape
+    d'avancement. Chaque AO est tagué d'un `stage` (voir PIPELINE_STAGES) dérivé
+    de l'issue explicite (ao_outcome) puis, à défaut, de l'état des candidats."""
+    _cols_full = ("id, title, reference, client_id, clients(id, name, logo_url), deadline, "
+                  "notified_at, relance_count, ao_outcome, ao_type, status, created_at, submissions(count)")
+    _cols_slim = ("id, title, reference, client_id, clients(id, name, logo_url), deadline, "
+                  "notified_at, relance_count, ao_type, status, created_at, submissions(count)")
+    try:
+        # Actifs + tout AO CLÔTURÉ (bilan posé), même archivé : sinon les colonnes
+        # terminales Gagné/Perdu resteraient vides, l'issue étant souvent posée
+        # APRÈS l'auto-archivage à l'échéance.
+        aos = supabase.table("appels_offres").select(_cols_full).or_(
+            "archived.eq.false,ao_outcome.not.is.null").order("created_at", desc=True).execute().data or []
+    except Exception as e:  # noqa: BLE001
+        # Migration 0004 non appliquée (colonne ao_outcome absente) : dégradation
+        # propre -> AO actifs seuls, issue traitée comme None. Jamais de 500.
+        if _looks_like_missing_outcome(e):
+            aos = supabase.table("appels_offres").select(_cols_slim).eq(
+                "archived", False).order("created_at", desc=True).execute().data or []
+        else:
+            raise
+
+    ao_ids = [a["id"] for a in aos]
+    # Agrégat ao_consultant_state par AO : présenté client ? deal_status connus ?
+    states: dict[str, dict] = {}
+    if ao_ids:
+        try:
+            rows = supabase.table("ao_consultant_state").select(
+                "ao_id, sent_to_client_at, deal_status").in_("ao_id", ao_ids).execute().data or []
+        except Exception:  # noqa: BLE001
+            rows = []
+        for r in rows:
+            st = states.setdefault(r["ao_id"], {"has_sent": False, "deals": []})
+            if r.get("sent_to_client_at"):
+                st["has_sent"] = True
+            if r.get("deal_status"):
+                st["deals"].append(r["deal_status"])
+
+    out = []
+    for a in aos:
+        subs = a.get("submissions")
+        cnt = subs[0].get("count", 0) if isinstance(subs, list) and subs else 0
+        a["submission_count"] = cnt
+        a.pop("submissions", None)
+        a["stage"] = _derive_stage(a, cnt, states.get(a["id"], {}))
+        out.append(a)
+    return {"stages": PIPELINE_STAGES, "aos": out}
+
+
+class OutcomeRequest(BaseModel):
+    ao_outcome: Optional[str] = None          # None = efface le bilan
+    winning_partner_id: Optional[str] = None
+    outcome_note: Optional[str] = None
+
+
+@router.patch("/{ao_id}/outcome")
+async def set_ao_outcome(ao_id: str, body: OutcomeRequest, user: dict = Depends(require_staff)):
+    """Bilan de clôture (équipe UTI) : pose l'issue au niveau AO. Source de vérité
+    pour le pipeline et la supervision. `winning_partner_id` est validé (doit avoir
+    répondu à l'AO) et pré-rempli depuis le candidat gagnant si absent."""
+    outcome = body.ao_outcome
+    if outcome is not None and outcome not in AO_OUTCOMES:
+        raise HTTPException(status_code=422, detail="Issue invalide.")
+    try:
+        ao = supabase.table("appels_offres").select("id").eq("id", ao_id).single().execute().data
+    except Exception:
+        raise HTTPException(status_code=404, detail="AO introuvable")
+    if not ao:
+        raise HTTPException(status_code=404, detail="AO introuvable")
+
+    winner = (body.winning_partner_id or "").strip() or None
+    if outcome == "pourvu":
+        # winner facultatif (« pourvu hors plateforme »). On NE devine PAS à
+        # l'enregistrement : le choix du client fait foi (le pré-remplissage se
+        # fait côté formulaire). S'il est fourni, il doit avoir répondu à l'AO.
+        if winner is not None and winner not in _winner_submitters(ao_id):
+            raise HTTPException(status_code=422, detail="Le partenaire gagnant doit avoir répondu à cet AO.")
+    else:
+        winner = None                                 # pas de gagnant hors « pourvu »
+
+    now = datetime.now(timezone.utc).isoformat()
+    payload = {
+        "ao_outcome": outcome,
+        "winning_partner_id": winner,
+        "outcome_note": (body.outcome_note or "").strip() or None,
+        "outcome_at": now if outcome is not None else None,
+        "outcome_by": user["sub"] if outcome is not None else None,
+    }
+    try:
+        row = supabase.table("appels_offres").update(payload).eq("id", ao_id).execute().data
+    except Exception as e:  # noqa: BLE001
+        if _looks_like_missing_outcome(e):
+            raise HTTPException(status_code=501,
+                                detail="Bilan indisponible : appliquez migrations/0004_ao_outcome.sql.")
+        raise
+    if not row:
+        raise HTTPException(status_code=404, detail="AO introuvable")
+    return {"ok": True, **payload}
 
 
 @router.get("/{ao_id}")

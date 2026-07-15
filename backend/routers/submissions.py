@@ -280,6 +280,129 @@ async def list_my_submissions(user: dict = Depends(get_current_user)):
         raise
 
 
+def _partner_outcome(st: dict) -> str:
+    """Issue ABSOLUE d'un candidat (label partenaire), sans jamais exposer le rang
+    (qui trahirait le nombre de concurrents devant). Champs déjà communiqués au
+    partenaire par e-mail (deal_status, validation, présenté client)."""
+    if not st:
+        return "soumis"
+    if st.get("deal_status") == "gagnee":
+        return "gagne"
+    if st.get("deal_status") == "perdue":
+        return "perdu"
+    if st.get("validation") == "non_retenu":
+        return "ecarte"
+    if st.get("sent_to_client_at"):
+        return "presente"
+    if st.get("validation") == "retenu":
+        return "retenu"
+    if st.get("contact_status") in ("contacted", "proposed"):
+        return "contacte"
+    return "soumis"
+
+
+@router.get("/mine/outcomes")
+async def my_response_outcomes(user: dict = Depends(get_current_user)):
+    """« Mes réponses » enrichi : un bloc par AO où l'utilisateur a proposé un CV,
+    avec l'issue de SES candidats (score + label retenu / écarté / présenté /
+    gagné / perdu). Cloisonné : filtre propriété d'abord, puis les jointures
+    (état, score) sont bornées à SES paires (ao, consultant) — jamais de données
+    concurrentes, et le rang inter-candidats n'est pas exposé."""
+    uid = user["sub"]
+    try:
+        subs = supabase.table("submissions").select(
+            "ao_id, consultant_id, submitted_at, consultants(name)"
+        ).eq("submitted_by", uid).order("submitted_at", desc=True).execute().data or []
+    except Exception:
+        subs = []
+    if not subs:
+        return {"aos": []}
+
+    ao_ids = list({s["ao_id"] for s in subs if s.get("ao_id")})
+    cids = list({s["consultant_id"] for s in subs if s.get("consultant_id")})
+
+    # Métadonnées AO (repli si colonnes récentes absentes).
+    ao_by: dict = {}
+    if ao_ids:
+        try:
+            rows = supabase.table("appels_offres").select(
+                "id, title, reference, status, archived, ao_outcome, winning_partner_id, client_id, clients(name)"
+            ).in_("id", ao_ids).execute().data or []
+        except Exception:
+            try:
+                rows = supabase.table("appels_offres").select(
+                    "id, title, reference, status, client_id"
+                ).in_("id", ao_ids).execute().data or []
+            except Exception:
+                rows = []
+        ao_by = {r["id"]: r for r in rows}
+
+    # État candidat — SEULEMENT mes paires (ao, consultant). On ne sélectionne PAS
+    # les notes internes (eval_*), ni partenaire/contact cible (staff only).
+    state_by: dict = {}
+    if ao_ids and cids:
+        try:
+            for r in supabase.table("ao_consultant_state").select(
+                "ao_id, consultant_id, contact_status, contacted_at, validation, "
+                "deal_status, sent_to_client_at, commercial_exchange"
+            ).in_("ao_id", ao_ids).in_("consultant_id", cids).execute().data or []:
+                state_by[(r["ao_id"], r["consultant_id"])] = r
+        except Exception:
+            pass
+
+    # Score (matchings.consultant_id est TEXT -> cast str pour ne pas perdre les lignes).
+    score_by: dict = {}
+    if ao_ids and cids:
+        try:
+            for m in supabase.table("matchings").select(
+                "ao_id, consultant_id, score_total"
+            ).in_("ao_id", ao_ids).in_("consultant_id", [str(c) for c in cids]).execute().data or []:
+                score_by[(m["ao_id"], str(m["consultant_id"]))] = m.get("score_total")
+        except Exception:
+            pass
+
+    by_ao: dict = {}
+    for s in subs:
+        aid, cid = s.get("ao_id"), s.get("consultant_id")
+        if not aid:
+            continue
+        st = state_by.get((aid, cid), {})
+        # Réconciliation avec le bilan AO : le deal_status candidat ne doit pas
+        # contredire l'issue posée (jamais « gagné » si l'AO est non pourvu, ou
+        # pourvu par un AUTRE partenaire).
+        ao_meta = ao_by.get(aid) or {}
+        ao_outcome = ao_meta.get("ao_outcome")
+        is_winner = ao_meta.get("winning_partner_id") == uid
+        oc = _partner_outcome(st)
+        if oc == "gagne" and (ao_outcome in ("non_pourvu", "sans_suite")
+                              or (ao_outcome == "pourvu" and not is_winner)):
+            oc = "perdu"
+        entry = by_ao.setdefault(aid, {"ao_id": aid, "candidates": []})
+        entry["candidates"].append({
+            "consultant_name": (s.get("consultants") or {}).get("name"),
+            "submitted_at": s.get("submitted_at"),
+            "score": score_by.get((aid, str(cid))),
+            "outcome": oc,
+            "contacted": st.get("contact_status") in ("contacted", "proposed"),
+        })
+
+    out = []
+    for aid, entry in by_ao.items():
+        ao = ao_by.get(aid) or {}
+        last = max((c["submitted_at"] for c in entry["candidates"] if c.get("submitted_at")), default=None)
+        out.append({
+            **entry,
+            "ao_title": ao.get("title") or "Appel d'offres",
+            "ao_reference": ao.get("reference"),
+            "ao_status": ao.get("status"),
+            "ao_archived": bool(ao.get("archived")),
+            "client_name": (ao.get("clients") or {}).get("name") if isinstance(ao.get("clients"), dict) else None,
+            "submitted_at": last,
+        })
+    out.sort(key=lambda x: x.get("submitted_at") or "", reverse=True)
+    return {"aos": out}
+
+
 @router.delete("/{submission_id}")
 async def delete_submission(submission_id: str, user: dict = Depends(get_current_user)):
     try:

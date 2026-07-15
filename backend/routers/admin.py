@@ -878,6 +878,69 @@ async def decision_insights(days: int = 90, user: dict = Depends(require_admin))
     }
 
 
+@router.get("/ao-outcomes")
+async def ao_outcomes(days: int = 180, user: dict = Depends(require_admin)):
+    """Bilan des AO clôturés (issue posée) sur la fenêtre : répartition pourvu /
+    non pourvu / sans suite, taux de pourvu, résultats par partenaire gagnant, et
+    tendance hebdo. Alimente la Supervision. Admin only. Dégradation propre si la
+    migration 0004 n'est pas appliquée (stats vides, jamais de 500)."""
+    days = max(7, min(int(days or 180), 730))
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    empty = {"available": False, "period_days": days, "total": 0,
+             "by_outcome": {"pourvu": 0, "non_pourvu": 0, "sans_suite": 0},
+             "pourvu_rate": 0, "by_partner": [], "weekly": []}
+    try:
+        rows = supabase.table("appels_offres").select(
+            "id, ao_outcome, winning_partner_id, outcome_at"
+        ).not_.is_("ao_outcome", "null").gte("outcome_at", since).execute().data or []
+    except Exception:
+        return empty  # colonnes d'issue absentes ou erreur transitoire
+
+    by_outcome = {"pourvu": 0, "non_pourvu": 0, "sans_suite": 0}
+    by_partner: dict = {}
+    weekly: dict = {}
+    for r in rows:
+        o = r.get("ao_outcome")
+        if o in by_outcome:
+            by_outcome[o] += 1
+        pid = r.get("winning_partner_id")
+        if o == "pourvu" and pid:
+            by_partner[pid] = by_partner.get(pid, 0) + 1
+        try:
+            dt = datetime.fromisoformat(str(r.get("outcome_at")).replace("Z", "+00:00"))
+            iso = dt.isocalendar()
+            wk = f"{iso[0]}-W{iso[1]:02d}"
+        except Exception:
+            wk = "?"
+        w = weekly.setdefault(wk, {"week": wk, "pourvu": 0, "total": 0})
+        w["total"] += 1
+        if o == "pourvu":
+            w["pourvu"] += 1
+
+    total = sum(by_outcome.values())
+    names: dict = {}
+    if by_partner:
+        try:
+            for p in supabase.table("profiles").select("id, name, email").in_(
+                    "id", list(by_partner)).execute().data or []:
+                names[p["id"]] = p.get("name") or p.get("email")
+        except Exception:
+            pass
+    partners = sorted(
+        [{"id": pid, "name": names.get(pid) or "—", "wins": n} for pid, n in by_partner.items()],
+        key=lambda x: x["wins"], reverse=True)[:10]
+
+    return {
+        "available": True,
+        "period_days": days,
+        "total": total,
+        "by_outcome": by_outcome,
+        "pourvu_rate": round(by_outcome["pourvu"] / total * 100) if total else 0,
+        "by_partner": partners,
+        "weekly": [weekly[k] for k in sorted(weekly.keys()) if k != "?"],
+    }
+
+
 @router.post("/backfill-structured")
 async def backfill_structured(background_tasks: BackgroundTasks, limit: int = 50,
                               user: dict = Depends(require_admin)):

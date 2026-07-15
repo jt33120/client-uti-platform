@@ -70,16 +70,20 @@ export default function OnboardingTour({ steps, onClose }) {
   const next = () => { if (last) onClose(); else setI(p => p + 1) }
   const prev = () => setI(p => Math.max(0, p - 1))
 
+  // Largeur effective : plafonnée à la fenêtre (moins une marge) pour ne jamais
+  // déborder sur un petit téléphone, où TW=320 dépassait la largeur d'écran.
+  const tw = Math.min(TW, window.innerWidth - 24)
+
   // Tooltip placement: prefer to the right of left-rail targets, else below, else above.
   let tip
   if (!rect) {
     tip = { left: '50%', top: '50%', transform: 'translate(-50%, -50%)' }
-  } else if (rect.left < 300 && window.innerWidth - rect.right > TW + 28) {
+  } else if (rect.left < 300 && window.innerWidth - rect.right > tw + 28) {
     tip = { left: rect.right + 14, top: clamp(rect.top, 12, window.innerHeight - TH - 12) }
   } else if (rect.bottom + TH + 20 < window.innerHeight) {
-    tip = { left: clamp(rect.left, 12, window.innerWidth - TW - 12), top: rect.bottom + 14 }
+    tip = { left: clamp(rect.left, 12, window.innerWidth - tw - 12), top: rect.bottom + 14 }
   } else {
-    tip = { left: clamp(rect.left, 12, window.innerWidth - TW - 12), top: Math.max(12, rect.top - TH - 14) }
+    tip = { left: clamp(rect.left, 12, window.innerWidth - tw - 12), top: Math.max(12, rect.top - TH - 14) }
   }
 
   return (
@@ -110,7 +114,7 @@ export default function OnboardingTour({ steps, onClose }) {
       <div
         className="fixed rounded-xl overflow-hidden"
         style={{
-          width: TW, ...tip, zIndex: 95,
+          width: tw, ...tip, zIndex: 95,
           background: 'var(--surface)',
           border: '1px solid var(--border)',
           boxShadow: '0 12px 32px rgba(0,0,0,0.28)',

@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef, useLayoutEffect } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import api from '../lib/api'
 import { useAuth } from '../contexts/AuthContext'
@@ -7,6 +7,7 @@ import {
   FileText, Plus, Euro, MapPin, Clock, ArrowRight, Search,
   Building2, Users, Calendar, CalendarClock,
   Pencil, X, Loader2, ChevronDown, ChevronLeft, ChevronRight, Check, Trash2, ArrowDownUp, Sparkles,
+  SlidersHorizontal,
 } from 'lucide-react'
 import { TierBadge } from '../components/badges'
 import { EmptyState } from '../components/EmptyState'
@@ -49,6 +50,27 @@ const DEADLINE_TONE = {
 const deadlineSortKey = (ao) => {
   const d = parseDateLocal(ao.deadline)
   return d ? d.getTime() : Infinity // AO sans échéance en dernier
+}
+
+// Filtre « Échéance » du panneau avancé. Fenêtres glissantes (jours à partir
+// d'aujourd'hui), volontairement intuitives : en retard / sous 7 j / sous 30 j /
+// sans date. Sélection unique.
+const DEADLINE_FILTERS = [
+  { k: 'overdue', l: 'En retard' },
+  { k: 'week', l: 'Sous 7 j' },
+  { k: 'month', l: 'Sous 30 j' },
+  { k: 'none', l: 'Sans date' },
+]
+const matchesDeadline = (ao, f) => {
+  const d = parseDateLocal(ao.deadline)
+  if (f === 'none') return !d
+  if (!d) return false
+  const today = new Date(); today.setHours(0, 0, 0, 0)
+  const days = Math.round((d - today) / 86400000)
+  if (f === 'overdue') return days < 0
+  if (f === 'week') return days >= 0 && days <= 7
+  if (f === 'month') return days >= 0 && days <= 30
+  return true
 }
 import clsx from 'clsx'
 
@@ -646,6 +668,26 @@ function AOCalendar({ items, navigate }) {
   )
 }
 
+// ── Panneau de filtres : section + puce sélectionnable ────────────────────────
+const FSection = ({ label, children }) => (
+  <div className="mb-3">
+    <p className="text-[10px] font-semibold uppercase tracking-wider mb-1.5" style={{ color: 'var(--text-faint)' }}>{label}</p>
+    {children}
+  </div>
+)
+const FChip = ({ active, onClick, children }) => (
+  <button
+    type="button"
+    onClick={onClick}
+    className="px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors border max-w-full truncate"
+    style={active
+      ? { background: 'var(--accent-soft)', color: 'var(--accent-text)', borderColor: 'var(--accent)' }
+      : { background: 'var(--surface-2)', color: 'var(--text-muted)', borderColor: 'var(--border)' }}
+  >
+    {children}
+  </button>
+)
+
 export default function AOSPage() {
   const { isStaff } = useAuth()
   const confirm = useConfirm()
@@ -657,9 +699,20 @@ export default function AOSPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [search, setSearch] = useState('')
-  const [filter, setFilter] = useState('all')
+  const [filter, setFilter] = useState('all')          // statut : 'all' | 'open' | 'closed'
   const [view, setView] = useState('client') // 'client' (cartes groupées) | 'cards' (cartes) | 'table' (liste dense)
   const [sortBy, setSortBy] = useState('created')  // 'created' (émission) | 'deadline' (échéance)
+  // ── Filtres avancés (panneau unifié) ──────────────────────────────────────
+  const [filtersOpen, setFiltersOpen] = useState(false)
+  const [fClients, setFClients] = useState(() => new Set())   // client_id retenus
+  const [fTypes, setFTypes] = useState(() => new Set())       // ao_type retenus
+  const [fDeadline, setFDeadline] = useState(null)            // clé DEADLINE_FILTERS | null
+  const [fTjmMin, setFTjmMin] = useState('')                  // budget_max min (€/j)
+  const [fTjmMax, setFTjmMax] = useState('')                  // budget_max max (€/j)
+  const [fCandidates, setFCandidates] = useState(null)        // 'yes' | 'no' | null (staff)
+  const filtersRef = useRef(null)
+  const triggerRef = useRef(null)
+  const [panelStyle, setPanelStyle] = useState(null)          // position calculée (bornée à la fenêtre)
   const [editAo, setEditAo] = useState(null)
   const [deleting, setDeleting] = useState(null)
   const [selected, setSelected] = useState(() => new Set())
@@ -733,16 +786,81 @@ export default function AOSPage() {
       .catch(() => setMatchedIds(new Set()))
   }, [matchedOnly, isStaff])
 
+  // Options dérivées des AO chargés (le panneau ne propose que ce qui existe).
+  const clientOptions = useMemo(() => {
+    const m = new Map()
+    aos.forEach(a => { if (a.clients?.id) m.set(a.clients.id, a.clients.name || 'Sans nom') })
+    return Array.from(m, ([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name, 'fr'))
+  }, [aos])
+  const typeOptions = useMemo(
+    () => Array.from(new Set(aos.map(a => a.ao_type).filter(Boolean))).sort((a, b) => a.localeCompare(b, 'fr')),
+    [aos]
+  )
+
   const filtered = useMemo(() => aos.filter(ao => {
+    const q = search.toLowerCase()
     const matchSearch = !search ||
-      ao.title.toLowerCase().includes(search.toLowerCase()) ||
-      ao.skills_required?.toLowerCase().includes(search.toLowerCase()) ||
-      ao.reference?.toLowerCase().includes(search.toLowerCase()) ||
-      ao.clients?.name?.toLowerCase().includes(search.toLowerCase())
-    const matchFilter = filter === 'all' || ao.status === filter
+      ao.title.toLowerCase().includes(q) ||
+      ao.skills_required?.toLowerCase().includes(q) ||
+      ao.reference?.toLowerCase().includes(q) ||
+      ao.location?.toLowerCase().includes(q) ||
+      ao.clients?.name?.toLowerCase().includes(q)
+    const matchStatus = filter === 'all' || ao.status === filter
+    const matchClient = fClients.size === 0 || (ao.clients?.id && fClients.has(ao.clients.id))
+    const matchType = fTypes.size === 0 || (ao.ao_type && fTypes.has(ao.ao_type))
+    const matchDeadline = !fDeadline || matchesDeadline(ao, fDeadline)
+    const tjm = ao.budget_max
+    const matchTjm =
+      (!fTjmMin || (tjm != null && tjm >= Number(fTjmMin))) &&
+      (!fTjmMax || (tjm != null && tjm <= Number(fTjmMax)))
+    const cnt = ao.submission_count ?? 0
+    const matchCand = !fCandidates || (fCandidates === 'yes' ? cnt > 0 : cnt === 0)
     const matchPotential = !matchedOnly || (matchedIds && matchedIds.has(ao.id))
-    return matchSearch && matchFilter && matchPotential
-  }), [aos, search, filter, matchedOnly, matchedIds])
+    return matchSearch && matchStatus && matchClient && matchType &&
+      matchDeadline && matchTjm && matchCand && matchPotential
+  }), [aos, search, filter, fClients, fTypes, fDeadline, fTjmMin, fTjmMax, fCandidates, matchedOnly, matchedIds])
+
+  // Nombre de dimensions de filtre actives (badge + rangée de puces).
+  const activeCount =
+    (filter !== 'all' ? 1 : 0) + (fClients.size ? 1 : 0) + (fTypes.size ? 1 : 0) +
+    (fDeadline ? 1 : 0) + (fTjmMin || fTjmMax ? 1 : 0) + (fCandidates ? 1 : 0)
+
+  const toggleIn = (setter) => (val) => setter(prev => {
+    const n = new Set(prev)
+    n.has(val) ? n.delete(val) : n.add(val)
+    return n
+  })
+  const clearFilters = () => {
+    setFilter('all'); setFClients(new Set()); setFTypes(new Set())
+    setFDeadline(null); setFTjmMin(''); setFTjmMax(''); setFCandidates(null)
+  }
+
+  // Fermeture du panneau au clic extérieur.
+  useEffect(() => {
+    if (!filtersOpen) return
+    const onDown = (e) => { if (filtersRef.current && !filtersRef.current.contains(e.target)) setFiltersOpen(false) }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [filtersOpen])
+
+  // Positionne le panneau (fixed) sous le bouton, borné à la fenêtre : jamais
+  // clippé hors écran quand le bouton passe à gauche sur mobile, et le bas reste
+  // au-dessus de la barre de navigation mobile. Recalculé à l'ouverture + resize.
+  useLayoutEffect(() => {
+    if (!filtersOpen) { setPanelStyle(null); return }
+    const place = () => {
+      const btn = triggerRef.current?.getBoundingClientRect()
+      if (!btn) return
+      const width = Math.min(352, window.innerWidth - 16)
+      const left = Math.max(8, Math.min(btn.right - width, window.innerWidth - width - 8))
+      const top = Math.round(btn.bottom + 8)
+      const maxHeight = Math.max(220, window.innerHeight - top - 72)
+      setPanelStyle({ position: 'fixed', top, left: Math.round(left), width, maxHeight, overflowY: 'auto' })
+    }
+    place()
+    window.addEventListener('resize', place)
+    return () => window.removeEventListener('resize', place)
+  }, [filtersOpen])
 
   // Sort: list_1 first, then list_2, then par le critère choisi.
   // - 'created'  : émission la plus récente d'abord
@@ -782,6 +900,15 @@ export default function AOSPage() {
     }
     return Array.from(groups.entries()).map(([id, v]) => ({ id, name: v.name, items: v.items }))
   }, [sorted, view])
+
+  // Puces des filtres actifs (retrait individuel) — sous la barre d'outils.
+  const activeChips = []
+  if (filter !== 'all') activeChips.push({ key: 'status', label: filter === 'open' ? 'Ouverts' : 'Fermés', clear: () => setFilter('all') })
+  fClients.forEach(id => activeChips.push({ key: `c-${id}`, label: clientOptions.find(c => c.id === id)?.name || 'Client', clear: () => toggleIn(setFClients)(id) }))
+  fTypes.forEach(t => activeChips.push({ key: `t-${t}`, label: t, clear: () => toggleIn(setFTypes)(t) }))
+  if (fDeadline) activeChips.push({ key: 'dl', label: `Échéance : ${DEADLINE_FILTERS.find(d => d.k === fDeadline)?.l}`, clear: () => setFDeadline(null) })
+  if (fTjmMin || fTjmMax) activeChips.push({ key: 'tjm', label: `TJM ${fTjmMin || '0'}–${fTjmMax || '∞'} €/j`, clear: () => { setFTjmMin(''); setFTjmMax('') } })
+  if (fCandidates) activeChips.push({ key: 'cand', label: fCandidates === 'yes' ? 'Avec CV' : 'Sans CV', clear: () => setFCandidates(null) })
 
   return (
     <div>
@@ -841,20 +968,101 @@ export default function AOSPage() {
             onChange={e => setSearch(e.target.value)}
           />
         </div>
-        <div className="flex gap-1 bg-white/5 rounded-lg p-1">
-          {['all', 'open', 'closed'].map(f => (
-            <button
-              key={f}
-              onClick={() => setFilter(f)}
-              className={clsx(
-                'px-3 py-1 text-xs rounded-md font-medium transition-all',
-                filter === f ? 'seg-active' : 'text-slate-400 hover:text-slate-200'
+        {/* Filtres avancés — un seul bouton regroupe statut, client, type, échéance, TJM et CV reçus. */}
+        <div className="relative" ref={filtersRef}>
+          <button
+            ref={triggerRef}
+            onClick={() => setFiltersOpen(o => !o)}
+            className="inline-flex items-center gap-2 h-full min-h-[34px] px-3 rounded-lg text-xs font-medium transition-colors border"
+            style={{
+              background: activeCount > 0 ? 'var(--accent-soft)' : 'var(--surface-2)',
+              borderColor: activeCount > 0 ? 'var(--accent)' : 'var(--border)',
+              color: activeCount > 0 ? 'var(--accent-text)' : 'var(--text-muted)',
+            }}
+            title="Filtres avancés"
+          >
+            <SlidersHorizontal size={13} />
+            Filtres
+            {activeCount > 0 && (
+              <span className="inline-flex items-center justify-center min-w-[16px] h-4 px-1 rounded-full text-[10px] font-bold"
+                style={{ background: 'var(--accent)', color: '#fff' }}>{activeCount}</span>
+            )}
+          </button>
+
+          {filtersOpen && (
+            <div
+              className="z-40 p-3 shadow-xl rounded-xl"
+              style={{ ...(panelStyle || { position: 'fixed', top: -9999, left: -9999, overflowY: 'auto' }),
+                background: 'var(--surface)', border: '1px solid var(--border)' }}>
+              <FSection label="Statut">
+                <div className="flex gap-1">
+                  {[['all', 'Tous'], ['open', 'Ouverts'], ['closed', 'Fermés']].map(([k, l]) => (
+                    <FChip key={k} active={filter === k} onClick={() => setFilter(k)}>{l}</FChip>
+                  ))}
+                </div>
+              </FSection>
+
+              {clientOptions.length > 1 && (
+                <FSection label={`Client${fClients.size ? ` · ${fClients.size}` : ''}`}>
+                  <div className="flex flex-wrap gap-1">
+                    {clientOptions.map(c => (
+                      <FChip key={c.id} active={fClients.has(c.id)} onClick={() => toggleIn(setFClients)(c.id)}>{c.name}</FChip>
+                    ))}
+                  </div>
+                </FSection>
               )}
-            >
-              {f === 'all' ? 'Tous' : f === 'open' ? 'Ouverts' : 'Fermés'}
-            </button>
-          ))}
+
+              {typeOptions.length > 0 && (
+                <FSection label={`Type d'AO${fTypes.size ? ` · ${fTypes.size}` : ''}`}>
+                  <div className="flex flex-wrap gap-1">
+                    {typeOptions.map(t => (
+                      <FChip key={t} active={fTypes.has(t)} onClick={() => toggleIn(setFTypes)(t)}>{t}</FChip>
+                    ))}
+                  </div>
+                </FSection>
+              )}
+
+              <FSection label="Échéance">
+                <div className="flex flex-wrap gap-1">
+                  {DEADLINE_FILTERS.map(o => (
+                    <FChip key={o.k} active={fDeadline === o.k} onClick={() => setFDeadline(p => (p === o.k ? null : o.k))}>{o.l}</FChip>
+                  ))}
+                </div>
+              </FSection>
+
+              <FSection label="TJM (€/j)">
+                <div className="flex items-center gap-2">
+                  <input type="number" min="0" inputMode="numeric" placeholder="min" value={fTjmMin}
+                    onChange={e => setFTjmMin(e.target.value)} className="input !h-8 !py-1 text-xs w-full" />
+                  <span className="text-slate-500 text-xs shrink-0">–</span>
+                  <input type="number" min="0" inputMode="numeric" placeholder="max" value={fTjmMax}
+                    onChange={e => setFTjmMax(e.target.value)} className="input !h-8 !py-1 text-xs w-full" />
+                </div>
+              </FSection>
+
+              {isStaff && (
+                <FSection label="CV reçus">
+                  <div className="flex gap-1">
+                    {[['yes', 'Avec CV'], ['no', 'Sans CV']].map(([k, l]) => (
+                      <FChip key={k} active={fCandidates === k} onClick={() => setFCandidates(p => (p === k ? null : k))}>{l}</FChip>
+                    ))}
+                  </div>
+                </FSection>
+              )}
+
+              <div className="flex items-center justify-between pt-2 mt-1" style={{ borderTop: '1px solid var(--border)' }}>
+                <button onClick={clearFilters} disabled={activeCount === 0}
+                  className="text-xs font-medium disabled:opacity-40" style={{ color: 'var(--text-muted)' }}>
+                  Tout effacer
+                </button>
+                <button onClick={() => setFiltersOpen(false)} className="btn-primary text-xs px-3 py-1.5">
+                  Voir {filtered.length} résultat{filtered.length > 1 ? 's' : ''}
+                </button>
+              </div>
+            </div>
+          )}
         </div>
+
         <div className="flex gap-1 bg-white/5 rounded-lg p-1">
           {[
             { k: 'client', l: 'Par client' },
@@ -894,6 +1102,23 @@ export default function AOSPage() {
         </div>
       </div>
 
+      {/* Puces des filtres actifs — retrait individuel ou en un clic. */}
+      {activeChips.length > 0 && (
+        <div className="flex items-center flex-wrap gap-1.5 -mt-2 mb-4">
+          {activeChips.map(c => (
+            <span key={c.key} className="inline-flex items-center gap-1 pl-2 pr-1 py-0.5 rounded-md text-[11px] font-medium"
+              style={{ background: 'var(--accent-soft)', color: 'var(--accent-text)', border: '1px solid var(--border)' }}>
+              <span className="truncate max-w-[180px]">{c.label}</span>
+              <button onClick={c.clear} className="p-0.5 rounded hover:bg-black/10" title="Retirer ce filtre"><X size={11} /></button>
+            </span>
+          ))}
+          <button onClick={clearFilters} className="text-[11px] font-medium underline underline-offset-2 ml-1"
+            style={{ color: 'var(--text-muted)' }}>
+            Tout effacer
+          </button>
+        </div>
+      )}
+
       {error && (
         <div className="mb-4 text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-4 py-3">
           {error}
@@ -907,15 +1132,20 @@ export default function AOSPage() {
           icon={FileText}
           message={matchedOnly
             ? "Aucun AO n'a encore trouvé de consultant potentiel."
-            : search
+            : (search || activeCount > 0)
               ? 'Aucun résultat'
               : 'Aucun appel d\'offres accessible pour le moment'}
           action={<>
-            {/* Ne proposer « créer » que sur un vrai état vide (pas un filtre). */}
-            {isStaff && !search && !matchedOnly && (
+            {/* Ne proposer « créer » que sur un vrai état vide (ni recherche ni filtre). */}
+            {isStaff && !search && activeCount === 0 && !matchedOnly && (
               <Link to="/aos/new" className="btn-primary mt-4 mx-auto">
                 <Plus size={14} /> Créer le premier AO
               </Link>
+            )}
+            {activeCount > 0 && (
+              <button onClick={clearFilters} className="btn-ghost mt-4 mx-auto">
+                Réinitialiser les filtres
+              </button>
             )}
             {matchedOnly && (
               <button onClick={() => setSearchParams({}, { replace: true })} className="btn-ghost mt-4 mx-auto">

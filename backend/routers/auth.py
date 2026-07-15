@@ -246,12 +246,6 @@ def is_staff(user: dict) -> bool:
     return user.get("role") in ("admin", "commerce")
 
 
-async def require_ao(user: dict = Depends(get_current_user)) -> dict:
-    if user.get("role") not in ("ao", "admin"):
-        raise HTTPException(status_code=403, detail="Accès non autorisé")
-    return user
-
-
 def _parse_supabase_error(error_msg: str) -> tuple[int, str]:
     """
     Map raw Supabase / GoTrue error strings to human-readable French messages.

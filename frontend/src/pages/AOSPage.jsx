@@ -748,10 +748,99 @@ function MyResponses({ navigate }) {
 }
 
 // Vue Pipeline (équipe UTI) : kanban des AO actifs par étape d'avancement.
+// Mini-bilan déclenché en glissant une carte sur une colonne terminale du pipeline.
+function PipelineOutcomeModal({ ao, stage, onClose, onSaved }) {
+  const [outcome, setOutcome] = useState(stage === 'gagne' ? 'pourvu' : 'non_pourvu')
+  const [winner, setWinner] = useState('')
+  const [note, setNote] = useState('')
+  const [partners, setPartners] = useState([])
+  const [saving, setSaving] = useState(false)
+  // Gagnant : partenaires ayant répondu à CET AO (chargé à la demande).
+  useEffect(() => {
+    if (stage !== 'gagne') return
+    let ignore = false
+    api.get(`/submissions/ao/${ao.id}`).then(r => {
+      if (ignore) return
+      const m = new Map()
+      ;(r.data || []).forEach(s => { const p = s.submitter; if (p?.id) m.set(p.id, p.name || p.email || 'Partenaire') })
+      setPartners(Array.from(m, ([id, name]) => ({ id, name })))
+    }).catch(() => {})
+    return () => { ignore = true }
+  }, [ao.id, stage])
+  const save = async () => {
+    setSaving(true)
+    try {
+      await api.patch(`/aos/${ao.id}/outcome`, {
+        ao_outcome: outcome,
+        winning_partner_id: outcome === 'pourvu' ? (winner || null) : null,
+        outcome_note: note || null,
+      })
+      await onSaved()
+    } catch (e) {
+      alert(e.response?.data?.detail || 'Enregistrement impossible')
+      setSaving(false)
+    }
+  }
+  return (
+    <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+      <div className="card p-5 w-full max-w-md" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-1">
+          <h3 className="text-sm font-semibold text-white flex items-center gap-2"><Check size={14} className="text-brand-400" /> Clôturer l'AO</h3>
+          <button onClick={onClose} className="btn-ghost p-1.5"><X size={14} /></button>
+        </div>
+        <p className="text-xs text-slate-500 mb-3 line-clamp-1">{ao.title}</p>
+        {stage === 'perdu' && (
+          <div className="flex gap-1.5 mb-3">
+            {[['non_pourvu', 'Non pourvu'], ['sans_suite', 'Sans suite']].map(([k, l]) => (
+              <button key={k} onClick={() => setOutcome(k)}
+                className="px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors"
+                style={outcome === k
+                  ? { background: 'var(--accent-soft)', color: 'var(--accent-text)', borderColor: 'var(--accent)' }
+                  : { background: 'var(--surface-2)', color: 'var(--text-muted)', borderColor: 'var(--border)' }}>
+                {l}
+              </button>
+            ))}
+          </div>
+        )}
+        {outcome === 'pourvu' && (
+          <div className="mb-3">
+            <label className="label">Partenaire gagnant</label>
+            <div className="relative">
+              <select className="input appearance-none pr-9" value={winner} onChange={e => setWinner(e.target.value)}>
+                <option value="" className="bg-navy-900">— (pourvu hors plateforme / à préciser)</option>
+                {partners.map(p => <option key={p.id} value={p.id} className="bg-navy-900">{p.name}</option>)}
+              </select>
+              <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
+            </div>
+          </div>
+        )}
+        <div className="mb-4">
+          <label className="label">Note (optionnel)</label>
+          <textarea className="input min-h-[52px] resize-y" value={note} onChange={e => setNote(e.target.value)} placeholder="Contexte de la clôture…" />
+        </div>
+        <div className="flex justify-end gap-2">
+          <button onClick={onClose} className="btn-ghost text-xs px-3">Annuler</button>
+          <button onClick={save} disabled={saving} className="btn-primary text-xs px-4 flex items-center gap-1.5">
+            {saving ? <Loader2 size={13} className="animate-spin" /> : 'Clôturer'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+const PIPELINE_TERMINAL = { gagne: true, perdu: true }
+
+// Vue Pipeline (équipe UTI) : kanban des AO actifs par étape. Glisser une carte
+// sur Gagné / Perdu-Sans suite ouvre un mini-bilan ; la reglisser vers une
+// colonne active rouvre l'AO (efface l'issue).
 function PipelineBoard({ navigate }) {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [dragId, setDragId] = useState(null)
+  const [over, setOver] = useState(null)
+  const [modal, setModal] = useState(null)   // { ao, stage }
   useEffect(() => {
     let ignore = false
     setLoading(true); setError('')
@@ -761,6 +850,20 @@ function PipelineBoard({ navigate }) {
       .finally(() => { if (!ignore) setLoading(false) })
     return () => { ignore = true }
   }, [])
+  const reload = async () => {
+    try { const r = await api.get('/aos/pipeline'); setData(r.data) } catch { /* garde l'état courant */ }
+  }
+  // Seules les colonnes terminales (Gagné / Perdu) sont des cibles : y déposer une
+  // carte ouvre le mini-bilan. Rouvrir un AO clôturé se fait depuis sa fiche
+  // (effacer le bilan + désarchiver au besoin) — un simple drop ferait « vanish »
+  // un AO archivé dont on efface l'issue.
+  const onDrop = (stageKey) => {
+    setOver(null)
+    const id = dragId; setDragId(null)
+    if (!id || !PIPELINE_TERMINAL[stageKey]) return
+    const ao = (data?.aos || []).find(a => a.id === id)
+    if (ao && ao.stage !== stageKey) setModal({ ao, stage: stageKey })
+  }
   if (loading) return <div className="text-center py-16 text-slate-500 text-sm">Chargement…</div>
   if (error) return <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-4 py-3">{error}</div>
   const stages = data?.stages || []
@@ -768,39 +871,63 @@ function PipelineBoard({ navigate }) {
   stages.forEach(s => { byStage[s.key] = [] })
   ;(data?.aos || []).forEach(a => { (byStage[a.stage] || (byStage[a.stage] = [])).push(a) })
   return (
-    <div className="overflow-x-auto pb-2">
-      <div className="flex gap-3 min-w-max">
-        {stages.map(s => {
-          const items = byStage[s.key] || []
-          return (
-            <div key={s.key} className="w-64 shrink-0">
-              <div className="flex items-center justify-between mb-2 px-1">
-                <span className="text-xs font-semibold text-white">{s.label}</span>
-                <span className="text-[11px] text-slate-500 tabular">{items.length}</span>
-              </div>
-              <div className="space-y-2 rounded-lg p-1.5 min-h-[60px]" style={{ background: 'var(--surface-2)' }}>
-                {items.map(a => {
-                  const dl = deadlineMeta(a.deadline)
-                  return (
-                    <div key={a.id} onClick={() => navigate(`/aos/${a.id}`)}
-                      className="card p-2.5 cursor-pointer hover:border-white/10 transition-colors">
-                      <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-0.5 truncate">{a.clients?.name || '—'}</div>
-                      <div className="text-[12.5px] font-medium text-white line-clamp-2 mb-1.5 leading-snug">{a.title}</div>
-                      <div className="flex items-center gap-2 flex-wrap">
-                        {dl && <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-semibold" style={DEADLINE_TONE[dl.tone]}><CalendarClock size={9} />{dl.rel}</span>}
-                        {a.submission_count > 0 && <span className="text-[10px] text-brand-300 inline-flex items-center gap-0.5"><Users size={9} />{a.submission_count}</span>}
-                        {a.relance_count > 0 && <span className="text-[9px] text-slate-500">· {a.relance_count} relance{a.relance_count > 1 ? 's' : ''}</span>}
+    <>
+      <p className="text-[11px] text-slate-500 mb-2">Glissez une carte sur <span className="text-slate-300">Gagné</span> ou <span className="text-slate-300">Perdu / Sans suite</span> pour clôturer l'AO.</p>
+      <div className="overflow-x-auto pb-2">
+        <div className="flex gap-3 min-w-max">
+          {stages.map(s => {
+            const items = byStage[s.key] || []
+            const droppable = !!PIPELINE_TERMINAL[s.key]
+            const isDropTarget = droppable && dragId && over === s.key
+            return (
+              <div key={s.key} className="w-64 shrink-0">
+                <div className="flex items-center justify-between mb-2 px-1">
+                  <span className="text-xs font-semibold text-white">{s.label}</span>
+                  <span className="text-[11px] text-slate-500 tabular">{items.length}</span>
+                </div>
+                <div
+                  {...(droppable ? {
+                    onDragOver: e => { e.preventDefault(); if (over !== s.key) setOver(s.key) },
+                    onDragLeave: e => { if (!e.currentTarget.contains(e.relatedTarget)) setOver(o => (o === s.key ? null : o)) },
+                    onDrop: e => { e.preventDefault(); onDrop(s.key) },
+                  } : {})}
+                  className="space-y-2 rounded-lg p-1.5 min-h-[60px] transition-colors"
+                  style={{
+                    background: isDropTarget ? 'var(--accent-soft)' : 'var(--surface-2)',
+                    outline: isDropTarget ? '1px dashed var(--accent)' : 'none',
+                  }}>
+                  {items.map(a => {
+                    const dl = deadlineMeta(a.deadline)
+                    return (
+                      <div key={a.id} draggable
+                        onDragStart={e => { e.dataTransfer.setData('text/plain', a.id); e.dataTransfer.effectAllowed = 'move'; setDragId(a.id) }}
+                        onDragEnd={() => { setDragId(null); setOver(null) }}
+                        onClick={() => navigate(`/aos/${a.id}`)}
+                        className="card p-2.5 cursor-grab active:cursor-grabbing hover:border-white/10 transition-colors"
+                        style={{ opacity: dragId === a.id ? 0.5 : 1 }}>
+                        <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-0.5 truncate">{a.clients?.name || '—'}</div>
+                        <div className="text-[12.5px] font-medium text-white line-clamp-2 mb-1.5 leading-snug">{a.title}</div>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          {dl && <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-semibold" style={DEADLINE_TONE[dl.tone]}><CalendarClock size={9} />{dl.rel}</span>}
+                          {a.submission_count > 0 && <span className="text-[10px] text-brand-300 inline-flex items-center gap-0.5"><Users size={9} />{a.submission_count}</span>}
+                          {a.relance_count > 0 && <span className="text-[9px] text-slate-500">· {a.relance_count} relance{a.relance_count > 1 ? 's' : ''}</span>}
+                        </div>
                       </div>
-                    </div>
-                  )
-                })}
-                {items.length === 0 && <div className="text-[11px] text-slate-600 text-center py-3">—</div>}
+                    )
+                  })}
+                  {items.length === 0 && <div className="text-[11px] text-slate-600 text-center py-3">—</div>}
+                </div>
               </div>
-            </div>
-          )
-        })}
+            )
+          })}
+        </div>
       </div>
-    </div>
+      {modal && (
+        <PipelineOutcomeModal ao={modal.ao} stage={modal.stage}
+          onClose={() => setModal(null)}
+          onSaved={async () => { setModal(null); await reload() }} />
+      )}
+    </>
   )
 }
 

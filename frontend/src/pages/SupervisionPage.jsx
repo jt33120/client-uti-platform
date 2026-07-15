@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useSearchParams, useNavigate } from 'react-router-dom'
 import api from '../lib/api'
 import ErrorJournal from '../components/ErrorJournal'
 import UTILoader, { ChartLoader } from '../components/UTILoader'
@@ -954,6 +954,7 @@ const DECISION_WINDOWS = [{ k: 30, l: '30 j' }, { k: 90, l: '90 j' }, { k: 365, 
 // Auto-portant ; ne s'affiche que s'il y a des AO clôturés (migration 0004 posée).
 function AoOutcomeStats() {
   const [d, setD] = useState(null)
+  const navigate = useNavigate()
   useEffect(() => {
     let c = false
     api.get('/admin/ao-outcomes', { params: { days: 180 } })
@@ -961,7 +962,8 @@ function AoOutcomeStats() {
       .catch(() => { if (!c) setD(false) })
     return () => { c = true }
   }, [])
-  if (!d || !d.available || !d.total) return null
+  const toClose = (d && d.to_close) || []
+  if (!d || !d.available || (!d.total && toClose.length === 0)) return null
   const bo = d.by_outcome || {}
   const Pill = ({ label, value, color }) => (
     <div className="card p-3">
@@ -971,24 +973,46 @@ function AoOutcomeStats() {
   )
   return (
     <div className="mb-6">
-      <p className="text-xs font-semibold uppercase tracking-wide flex items-center gap-1.5 mb-2" style={{ color: 'var(--text-muted)' }}>
-        <TrendingUp size={13} className="text-[var(--accent-text)]" /> Bilan des AO clôturés · {d.period_days} j
-      </p>
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-        <Pill label="Taux de pourvu" value={`${d.pourvu_rate}%`} color="var(--accent-text)" />
-        <Pill label="Pourvus" value={bo.pourvu || 0} color="#10b981" />
-        <Pill label="Non pourvus" value={bo.non_pourvu || 0} color="#ef4444" />
-        <Pill label="Sans suite" value={bo.sans_suite || 0} color="#94a3b8" />
-      </div>
-      {(d.by_partner || []).length > 0 && (
-        <div className="card p-3 mt-2">
-          <div className="text-[11px] mb-2" style={{ color: 'var(--text-faint)' }}>Partenaires gagnants</div>
-          <div className="space-y-1.5">
-            {d.by_partner.slice(0, 6).map(p => (
-              <div key={p.id} className="flex items-center justify-between gap-2 text-xs">
-                <span className="truncate" style={{ color: 'var(--text-muted)' }}>{p.name}</span>
-                <span className="tabular font-semibold" style={{ color: 'var(--text)' }}>{p.wins} gagné{p.wins > 1 ? 's' : ''}</span>
+      {d.total > 0 && (
+        <>
+          <p className="text-xs font-semibold uppercase tracking-wide flex items-center gap-1.5 mb-2" style={{ color: 'var(--text-muted)' }}>
+            <TrendingUp size={13} className="text-[var(--accent-text)]" /> Bilan des AO clôturés · {d.period_days} j
+          </p>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            <Pill label="Taux de pourvu" value={`${d.pourvu_rate}%`} color="var(--accent-text)" />
+            <Pill label="Pourvus" value={bo.pourvu || 0} color="#10b981" />
+            <Pill label="Non pourvus" value={bo.non_pourvu || 0} color="#ef4444" />
+            <Pill label="Sans suite" value={bo.sans_suite || 0} color="#94a3b8" />
+          </div>
+          {(d.by_partner || []).length > 0 && (
+            <div className="card p-3 mt-2">
+              <div className="text-[11px] mb-2" style={{ color: 'var(--text-faint)' }}>Partenaires gagnants</div>
+              <div className="space-y-1.5">
+                {d.by_partner.slice(0, 6).map(p => (
+                  <div key={p.id} className="flex items-center justify-between gap-2 text-xs">
+                    <span className="truncate" style={{ color: 'var(--text-muted)' }}>{p.name}</span>
+                    <span className="tabular font-semibold" style={{ color: 'var(--text)' }}>{p.wins} gagné{p.wins > 1 ? 's' : ''}</span>
+                  </div>
+                ))}
               </div>
+            </div>
+          )}
+        </>
+      )}
+      {toClose.length > 0 && (
+        <div className="card p-3 mt-2" style={{ borderColor: 'rgba(245,158,11,0.4)' }}>
+          <div className="text-[11px] mb-2 flex items-center gap-1.5" style={{ color: '#f59e0b' }}>
+            <AlertTriangle size={12} /> À clôturer — {toClose.length} AO archivé{toClose.length > 1 ? 's' : ''} sans bilan
+          </div>
+          <div className="space-y-1">
+            {toClose.slice(0, 8).map(a => (
+              <button key={a.id} onClick={() => navigate(`/aos/${a.id}`)}
+                className="w-full flex items-center justify-between gap-2 text-xs text-left px-2 py-1 rounded hover:bg-[var(--surface-2)] transition-colors">
+                <span className="truncate" style={{ color: 'var(--text-muted)' }}>
+                  {a.client_name ? `${a.client_name} — ` : ''}{a.title || 'AO'}
+                </span>
+                <span className="shrink-0" style={{ color: 'var(--text-faint)' }}>Clôturer →</span>
+              </button>
             ))}
           </div>
         </div>

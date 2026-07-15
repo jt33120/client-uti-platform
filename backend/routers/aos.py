@@ -406,7 +406,7 @@ async def ao_pipeline(user: dict = Depends(require_staff)):
     d'avancement. Chaque AO est tagué d'un `stage` (voir PIPELINE_STAGES) dérivé
     de l'issue explicite (ao_outcome) puis, à défaut, de l'état des candidats."""
     _cols_full = ("id, title, reference, client_id, clients(id, name, logo_url), deadline, "
-                  "notified_at, relance_count, ao_outcome, ao_type, status, created_at, submissions(count)")
+                  "notified_at, relance_count, ao_outcome, winning_partner_id, ao_type, status, created_at, submissions(count)")
     _cols_slim = ("id, title, reference, client_id, clients(id, name, logo_url), deadline, "
                   "notified_at, relance_count, ao_type, status, created_at, submissions(count)")
     try:
@@ -440,6 +440,17 @@ async def ao_pipeline(user: dict = Depends(require_staff)):
             if r.get("deal_status"):
                 st["deals"].append(r["deal_status"])
 
+    # Noms des partenaires gagnants (colonnes Gagné) — résolus en un appel.
+    winner_ids = {a.get("winning_partner_id") for a in aos if a.get("winning_partner_id")}
+    winner_names: dict = {}
+    if winner_ids:
+        try:
+            for p in supabase.table("profiles").select("id, name, email").in_(
+                    "id", list(winner_ids)).execute().data or []:
+                winner_names[p["id"]] = p.get("name") or p.get("email")
+        except Exception:  # noqa: BLE001
+            pass
+
     out = []
     for a in aos:
         subs = a.get("submissions")
@@ -447,6 +458,7 @@ async def ao_pipeline(user: dict = Depends(require_staff)):
         a["submission_count"] = cnt
         a.pop("submissions", None)
         a["stage"] = _derive_stage(a, cnt, states.get(a["id"], {}))
+        a["winner_name"] = winner_names.get(a.get("winning_partner_id"))
         out.append(a)
     return {"stages": PIPELINE_STAGES, "aos": out}
 

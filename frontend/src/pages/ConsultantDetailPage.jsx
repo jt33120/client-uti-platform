@@ -9,7 +9,7 @@ import {
   Calendar, Download, Target, Award,
 } from 'lucide-react'
 import clsx from 'clsx'
-import { availabilityLabel, availabilityTone } from '../lib/availability'
+import { availabilityLabel, availabilityTone, AVAILABILITY_OPTIONS } from '../lib/availability'
 
 const fmtDate = (iso) => iso ? new Date(iso).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' }) : null
 const employmentLabel = (t) => t === 'salarie' ? 'Salarié' : t === 'independant' ? 'Indépendant' : null
@@ -98,10 +98,57 @@ function HistoryEntry({ h }) {
   )
 }
 
+// Statut de disponibilité éditable en ligne (info clé). Sauvegarde immédiate
+// (PATCH). Lecture seule si l'utilisateur n'a pas le droit d'éditer.
+function AvailabilityEditor({ consultant, canEdit, onSaved }) {
+  const [status, setStatus] = useState(consultant.availability_status || '')
+  const [from, setFrom] = useState(consultant.available_from ? String(consultant.available_from).slice(0, 10) : '')
+  const [saving, setSaving] = useState(false)
+
+  const save = async (nextStatus, nextFrom) => {
+    setSaving(true)
+    try {
+      const { data } = await api.patch(`/consultants/${consultant.id}`, {
+        availability_status: nextStatus || null,
+        available_from: (nextStatus === 'soon' || nextStatus === 'on_mission') ? (nextFrom || null) : null,
+      })
+      onSaved?.(data)
+    } catch { /* best-effort : l'état local reste affiché */ }
+    finally { setSaving(false) }
+  }
+
+  if (!canEdit) {
+    return consultant.availability_status ? (
+      <span className={clsx('text-[11px] px-2 py-0.5 rounded-full border inline-flex items-center gap-1', availabilityTone(consultant.availability_status))}>
+        <Clock size={11} /> {availabilityLabel(consultant.availability_status, consultant.available_from)}
+        {consultant.availability && <span className="opacity-70">· {consultant.availability}</span>}
+      </span>
+    ) : null
+  }
+
+  const needsDate = status === 'soon' || status === 'on_mission'
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <select value={status} disabled={saving}
+        onChange={e => { const v = e.target.value; const nf = (v === 'soon' || v === 'on_mission') ? from : ''; setStatus(v); setFrom(nf); save(v, nf) }}
+        className="input h-7 py-0 text-[12px] w-auto" title="Statut de disponibilité">
+        <option value="">Statut ?</option>
+        {AVAILABILITY_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+      </select>
+      {needsDate && (
+        <input type="date" value={from} disabled={saving}
+          onChange={e => { setFrom(e.target.value); save(status, e.target.value) }}
+          className="input h-7 py-0 text-[12px] w-auto" title="Échéance / date de disponibilité" />
+      )}
+      {saving && <Loader2 size={11} className="animate-spin" style={{ color: 'var(--text-faint)' }} />}
+    </span>
+  )
+}
+
 export default function ConsultantDetailPage() {
   const { id } = useParams()
   const navigate = useNavigate()
-  const { isStaff } = useAuth()
+  const { isStaff, isAdmin, user } = useAuth()
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -136,6 +183,10 @@ export default function ConsultantDetailPage() {
   const cvs = history.filter(h => h.cv_url)
   const ownerIsPartner = owner?.role === 'ao'
   const hasCoords = c.latitude != null && c.longitude != null
+  // Édition du statut : admin, ou le propriétaire du profil (le backend restreint
+  // pareil). Le commercial ne peut pas éditer un consultant qu'il ne porte pas.
+  const canEditStatus = isAdmin || c.created_by === user?.id
+  const mergeConsultant = (patch) => setData(d => ({ ...d, consultant: { ...d.consultant, ...patch } }))
 
   return (
     <div className="animate-slide-up">
@@ -163,12 +214,7 @@ export default function ConsultantDetailPage() {
               {c.tjm != null && <span className="flex items-center gap-1"><Euro size={12} /> {c.tjm} €/j</span>}
               {c.city && <span className="flex items-center gap-1"><MapPin size={12} /> {c.city}</span>}
               {c.experience_years != null && <span className="flex items-center gap-1"><Briefcase size={12} /> {c.experience_years} ans d'exp.</span>}
-              {c.availability_status ? (
-                <span className={clsx('text-[11px] px-2 py-0.5 rounded-full border inline-flex items-center gap-1', availabilityTone(c.availability_status))}>
-                  <Clock size={11} /> {availabilityLabel(c.availability_status, c.available_from)}
-                  {c.availability && <span className="opacity-70">· {c.availability}</span>}
-                </span>
-              ) : c.availability && <span className="flex items-center gap-1"><Clock size={12} /> {c.availability}</span>}
+              <AvailabilityEditor consultant={c} canEdit={canEditStatus} onSaved={mergeConsultant} />
             </div>
           </div>
           <div className="flex items-center gap-1.5 shrink-0">

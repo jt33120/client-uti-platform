@@ -387,7 +387,7 @@ export default function Layout() {
             <span className="text-[13px] font-semibold tracking-tightest text-[var(--text)] truncate">Groupement-IT</span>
           </div>
           <div className="flex items-center gap-1 ml-auto">
-          {isStaff && <NotificationBell />}
+          <NotificationBell />
           <button
             onClick={() => openContact('bug')}
             className="h-8 w-8 rounded-md flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-2)] transition-colors"

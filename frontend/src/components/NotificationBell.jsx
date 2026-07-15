@@ -1,14 +1,14 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import api from '../lib/api'
-import { Bell, AlertTriangle, Clock, Mail, X } from 'lucide-react'
+import { Bell, AlertTriangle, Clock, Mail, X, PencilLine } from 'lucide-react'
 
 const SEV = {
   urgent:  { color: '#ef4444', ring: 'rgba(239,68,68,0.15)' },
   warning: { color: '#f59e0b', ring: 'rgba(245,158,11,0.15)' },
   info:    { color: '#3b82f6', ring: 'rgba(59,130,246,0.12)' },
 }
-const KIND_ICON = { ao_urgent: Clock, email: Mail }
+const KIND_ICON = { ao_urgent: Clock, email: Mail, missing_info: PencilLine }
 
 // Cloche de notifications (staff) : AO urgents (échéance ≤ 3 j) + miroir des
 // e-mails partenaires. Le badge rouge compte les AO urgents (le signal qui
@@ -48,6 +48,10 @@ export default function NotificationBell() {
 
   const urgent = data?.urgent_count || 0
   const items = data?.items || []
+  // Badge = éléments actionnables (AO urgents + infos à compléter). Rouge s'il y a
+  // une vraie urgence d'échéance, ambre sinon (invitations à compléter).
+  const badge = data?.action_count ?? urgent
+  const badgeColor = urgent > 0 ? '#ef4444' : '#f59e0b'
 
   const go = (link) => { setOpen(false); if (link) navigate(link) }
 
@@ -60,10 +64,10 @@ export default function NotificationBell() {
         aria-label="Notifications"
       >
         <Bell size={15} strokeWidth={1.75} />
-        {urgent > 0 && (
+        {badge > 0 && (
           <span className="absolute -top-0.5 -right-0.5 min-w-[15px] h-[15px] px-1 rounded-full text-[9px] font-bold text-white flex items-center justify-center"
-                style={{ background: '#ef4444' }}>
-            {urgent > 9 ? '9+' : urgent}
+                style={{ background: badgeColor }}>
+            {badge > 9 ? '9+' : badge}
           </span>
         )}
       </button>

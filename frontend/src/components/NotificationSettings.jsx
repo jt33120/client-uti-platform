@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import api from '../lib/api'
-import { Bell, Loader2 } from 'lucide-react'
+import { Bell, Loader2, ShieldCheck } from 'lucide-react'
 
 function Toggle({ checked, onChange, label, hint }) {
   return (
@@ -29,6 +29,61 @@ function NumberField({ label, value, onChange, min = 0, suffix }) {
           className="input w-20 text-right" />
         {suffix && <span className="text-[12px]" style={{ color: 'var(--text-faint)' }}>{suffix}</span>}
       </span>
+    </div>
+  )
+}
+
+// Conservation des données / RGPD (admin). Autonome. Opt-in strict : la purge
+// automatique des CV est désactivée par défaut et ne supprime rien tant qu'elle
+// n'est pas activée ici.
+function RetentionCard() {
+  const [cfg, setCfg] = useState(null)
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+  const [err, setErr] = useState('')
+  useEffect(() => {
+    api.get('/admin/settings')
+      .then(r => setCfg(r.data.data_retention || { enabled: false, months: 24 }))
+      .catch(() => setCfg(false))
+  }, [])
+  if (cfg === false || cfg === null) return null
+  const upd = (k, v) => { setCfg(p => ({ ...p, [k]: v })); setSaved(false) }
+  const save = async () => {
+    setSaving(true); setErr('')
+    try {
+      const { data } = await api.put('/admin/settings/retention', {
+        enabled: cfg.enabled,
+        months: cfg.months === '' ? 6 : cfg.months,
+      })
+      setCfg(data.data_retention); setSaved(true)
+    } catch (e) {
+      setErr(e.response?.data?.detail || "Erreur lors de l'enregistrement")
+    } finally { setSaving(false) }
+  }
+  return (
+    <div className="mt-8">
+      <h2 className="text-[11px] uppercase tracking-[0.08em] font-semibold mb-3 flex items-center gap-1.5" style={{ color: 'var(--text-faint)' }}>
+        <ShieldCheck size={13} strokeWidth={2} /> Conservation des données (RGPD)
+      </h2>
+      <div className="card p-4 space-y-4 max-w-xl">
+        <Toggle label="Purge automatique des CV"
+          hint="Anonymise les CV passé le délai (opt-in : rien n'est supprimé tant que ceci est désactivé)."
+          checked={cfg.enabled} onChange={v => upd('enabled', v)} />
+        <div className="h-px" style={{ background: 'var(--border)' }} />
+        <NumberField label="Durée de conservation" suffix="mois" min={6}
+          value={cfg.months} onChange={v => upd('months', v)} />
+        <p className="text-[11px]" style={{ color: 'var(--text-faint)' }}>
+          La purge retire le fichier et le texte du CV ; la trace de la candidature (statistiques) est
+          conservée, anonymisée. Délai minimum : 6 mois.
+        </p>
+        {err && <p className="text-[12px]" style={{ color: 'var(--danger)' }}>{err}</p>}
+        <div className="flex items-center justify-end gap-3">
+          {saved && <span className="text-[12px]" style={{ color: 'var(--success)' }}>Enregistré ✓</span>}
+          <button onClick={save} disabled={saving} className="btn-primary">
+            {saving ? <><Loader2 size={14} className="animate-spin" /> Enregistrement…</> : 'Enregistrer'}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
@@ -104,6 +159,7 @@ export default function NotificationSettings() {
           </button>
         </div>
       </div>
+      <RetentionCard />
     </div>
   )
 }

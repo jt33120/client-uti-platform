@@ -5,6 +5,7 @@ import { EmptyState } from '../components/EmptyState'
 import { useAuth } from '../contexts/AuthContext'
 import { useConfirm } from '../contexts/ConfirmContext'
 import ContactPartnerModal from '../components/ContactPartnerModal'
+import { availabilityLabel, availabilityTone, AVAILABILITY_OPTIONS } from '../lib/availability'
 import {
   Users, Plus, X, Search, Euro, Clock, MapPin, Map as MapIcon,
   Mail, SlidersHorizontal,
@@ -91,7 +92,12 @@ function ConsultantRow({ consultant, onOpen, onMap, onContact, onDelete, onDeduc
             <MapPin size={11} /> {c.city}
           </span>
         )}
-        {c.availability && (
+        {c.availability_status ? (
+          <span className={clsx('text-[10px] mt-1 px-1.5 py-0.5 rounded-full border inline-flex items-center gap-1', availabilityTone(c.availability_status))}
+                title={c.availability || undefined}>
+            <Clock size={9} /> {availabilityLabel(c.availability_status, c.available_from)}
+          </span>
+        ) : c.availability && (
           <span className="text-[11px] flex items-center gap-1 mt-0.5" style={{ color: 'var(--text-faint)' }}>
             <Clock size={10} /> {c.availability}
           </span>
@@ -254,7 +260,7 @@ export default function ConsultantsPage() {
       if (filters.employment !== 'all' && c.employment_type !== filters.employment) return false
       if (filters.city && !c.city?.toLowerCase().includes(filters.city.toLowerCase())) return false
       if (filters.skill && !c.skills?.toLowerCase().includes(filters.skill.toLowerCase())) return false
-      if (filters.availability && !c.availability?.toLowerCase().includes(filters.availability.toLowerCase())) return false
+      if (filters.availability && c.availability_status !== filters.availability) return false
       if (filters.tjmMin && (c.tjm == null || c.tjm < Number(filters.tjmMin))) return false
       if (filters.tjmMax && (c.tjm == null || c.tjm > Number(filters.tjmMax))) return false
       if (filters.owner !== 'all' && c.created_by !== filters.owner) return false
@@ -384,7 +390,10 @@ export default function ConsultantsPage() {
 
             <div>
               <label className="label">Disponibilité</label>
-              <input className="input h-9 py-0 text-sm" placeholder="Immédiate…" value={filters.availability} onChange={setF('availability')} />
+              <select className="input h-9 py-0 text-sm" value={filters.availability} onChange={setF('availability')}>
+                <option value="">Toutes</option>
+                {AVAILABILITY_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
             </div>
 
             <div>

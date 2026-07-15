@@ -156,6 +156,15 @@ async def _tick() -> None:
         print(f"[SCHED] auto-archivage en erreur (ignoré): {e}")
         _record_err("scheduler", "Auto-archivage en erreur", exc=e)
 
+    # Purge RGPD des CV hors délai — OPT-IN (désactivée par défaut), isolée : une
+    # erreur de purge ne doit jamais bloquer les campagnes AO.
+    try:
+        from services.data_retention import process_data_retention
+        await process_data_retention(now)
+    except Exception as e:  # noqa: BLE001
+        print(f"[SCHED] purge RGPD en erreur (ignorée): {e}")
+        _record_err("scheduler", "Purge RGPD en erreur", exc=e)
+
     cfg = get_notification_settings()
     if not cfg.get("enabled"):
         return

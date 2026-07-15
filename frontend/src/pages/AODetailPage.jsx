@@ -8,7 +8,7 @@ import { useConfirm } from '../contexts/ConfirmContext'
 import {
   ArrowLeft, Zap, Euro, MapPin, Clock, Users, CheckCircle,
   AlertCircle, TrendingUp, Award, ChevronDown, ChevronUp, ChevronLeft, ChevronRight,
-  Loader2, FileText, FileSearch, Highlighter, Trash2, RotateCcw, Building2, Plus,
+  Loader2, FileText, FileSearch, Highlighter, ZoomIn, ZoomOut, Trash2, RotateCcw, Building2, Plus,
   Upload, X, UserCircle2, Briefcase, Calendar, Pencil,
   CalendarClock, AlertTriangle, BarChart3, Sparkles,
   UploadCloud, Download, Target, Hash, Send, Bell, Mail, MessageSquareWarning, Languages, GripVertical, HelpCircle,
@@ -24,7 +24,7 @@ import { Radar, RadarChart, PolarGrid, PolarAngleAxis, ResponsiveContainer } fro
 // est absente (carte réduite, aucun résultat) est ignorée automatiquement.
 const MATCH_TOUR_STEPS = [
   { title: 'Lire le matching CV',
-    text: "En 6 écrans : comment l’IA classe les candidats, comment lire un profil, et comment reprendre la main (classement, contact, désaccord). L’IA propose — vous décidez." },
+    text: "En quelques écrans : comment l’IA classe les candidats, comment lire un profil (jusqu’au CV surligné), et comment reprendre la main (classement, contact, désaccord). L’IA propose — vous décidez." },
   { selector: '[data-tour="match-selector"]', title: 'Le classement des candidats',
     text: "Une vignette par candidat (trigramme + score), du meilleur au moins bon. Cliquez-en une pour afficher son détail ; la barre reste visible quand vous faites défiler. Glissez une vignette pour imposer VOTRE ordre — il prime sur celui de l'IA." },
   { selector: '[data-tour="match-score"]', title: 'Le score d’adéquation',
@@ -33,6 +33,8 @@ const MATCH_TOUR_STEPS = [
     text: "En 2-3 phrases : qui contacter et pourquoi, points forts et réserves — en citant des éléments concrets du CV. C’est un 2ᵉ avis : la grille reste l’ancre." },
   { selector: '[data-tour="match-criteria"]', title: 'Le détail par critère',
     text: "Chaque critère (compétences, séniorité, contexte, points forts, éléments différenciants, TJM) est noté sur son barème, avec une justification citée du CV. Les langues détectées et la langue exigée par l’AO sont contrôlées ici." },
+  { selector: '[data-tour="match-cv"]', title: 'Le CV analysé',
+    text: "Cette languette ouvre le CV du candidat surligné par l’IA, zone par zone, avec ses commentaires reliés — comme un relecteur humain. L’IA lit aussi les étoiles, jauges et graphiques du CV (même scanné). Basculez entre le CV mis en forme et le PDF original." },
   { selector: '[data-tour="match-contact"]', title: 'Contacter le partenaire',
     text: "Juste à côté du nom : ouvre un brouillon d’e-mail pré-rempli vers le partenaire porteur. Le suivi (contacté / proposé au client) est mémorisé." },
   { selector: '[data-tour="match-decision"]', title: 'Votre décision (et le désaccord)',
@@ -432,6 +434,8 @@ function extractQuotes(justif) {
 
 function CvTransparencyView({ result, ao, onClose }) {
   const [mode, setMode] = useState('analyse')  // 'analyse' (CV structuré) | 'pdf' (document original)
+  const [mobilePane, setMobilePane] = useState('cv')  // mobile : 'cv' | 'annos' (panneaux empilés → onglets)
+  const [pdfZoom, setPdfZoom] = useState(false)       // mobile : PDF agrandi (défilement horizontal) pour la lisibilité
   const [cv, setCv] = useState(null)           // CV structuré GRP-IT (source primaire)
   const [src, setSrc] = useState(null)         // repli : texte anonymisé lu par l'IA
   const [pages, setPages] = useState(null)     // PDF rendu (chargé à la demande)
@@ -584,8 +588,25 @@ function CvTransparencyView({ result, ao, onClose }) {
   const markCount = (idx) => (mode === 'pdf' ? marks.filter(m => m.annoIdx === idx).length : textFrags.filter(f => f.annoIdx === idx).length)
 
   const flash = (idx) => { setPulse(idx); setTimeout(() => setPulse(p => (p === idx ? null : p)), 1400) }
-  const toAnno = (idx) => { flash(idx); rightRef.current?.querySelector(`#anno-${idx}`)?.scrollIntoView({ block: 'center', behavior: 'smooth' }) }
-  const toMark = (idx) => { flash(idx); leftRef.current?.querySelector(`[data-anno="${idx}"]`)?.scrollIntoView({ block: 'center', behavior: 'smooth' }) }
+  // Sur mobile les deux panneaux sont empilés en onglets : cliquer un surlignage
+  // (resp. un commentaire) bascule d'abord sur le bon onglet, PUIS défile — sinon
+  // la cible est dans un panneau masqué et le scroll ne fait rien.
+  const _isNarrow = () => typeof window !== 'undefined' && window.innerWidth < 1024
+  const _scrollInto = (container, sel) => container?.querySelector(sel)?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  const toAnno = (idx) => {
+    flash(idx)
+    if (_isNarrow() && mobilePane !== 'annos') {
+      setMobilePane('annos')
+      setTimeout(() => _scrollInto(rightRef.current, `#anno-${idx}`), 70)
+    } else _scrollInto(rightRef.current, `#anno-${idx}`)
+  }
+  const toMark = (idx) => {
+    flash(idx)
+    if (_isNarrow() && mobilePane !== 'cv') {
+      setMobilePane('cv')
+      setTimeout(() => _scrollInto(leftRef.current, `[data-anno="${idx}"]`), 70)
+    } else _scrollInto(leftRef.current, `[data-anno="${idx}"]`)
+  }
 
   // Rend un texte (mode « CV analysé ») avec les extraits cités surlignés.
   const hl = (text) => {
@@ -657,7 +678,7 @@ function CvTransparencyView({ result, ao, onClose }) {
             {canPdf && (
               <div className="inline-flex rounded-lg p-0.5 shrink-0" style={{ background: 'var(--surface-2)', border: '1px solid var(--border)' }}>
                 {[['analyse', 'CV analysé', FileSearch], ['pdf', 'PDF original', FileText]].map(([m, label, Ic]) => (
-                  <button key={m} onClick={() => setMode(m)}
+                  <button key={m} onClick={() => { setMode(m); setMobilePane('cv'); setPdfZoom(false) }}
                     className="inline-flex items-center gap-1.5 px-2.5 h-7 text-[11px] font-semibold rounded-md transition-colors"
                     style={mode === m
                       ? { background: 'var(--surface)', color: 'var(--text)', boxShadow: '0 1px 2px rgba(0,0,0,.12)' }
@@ -670,12 +691,39 @@ function CvTransparencyView({ result, ao, onClose }) {
           </div>
         </div>
 
+        {/* Mobile : les deux colonnes s'empilent → on les transforme en onglets
+            pour que chacune occupe toute la hauteur (au lieu de deux zones de
+            défilement l'une sous l'autre). Masqué dès lg (affichage 2 colonnes). */}
+        {annos.length > 0 && (
+          <div className="lg:hidden flex items-center gap-1 p-2 border-b shrink-0" style={{ borderColor: 'var(--border)', background: 'var(--surface-2)' }}>
+            {[['cv', mode === 'pdf' ? 'Document' : 'Le CV', FileText], ['annos', `Analyse IA${annos.length ? ` · ${annos.length}` : ''}`, Sparkles]].map(([p, label, Ic]) => (
+              <button key={p} onClick={() => setMobilePane(p)}
+                className="flex-1 inline-flex items-center justify-center gap-1.5 h-8 text-[12px] font-semibold rounded-md transition-colors"
+                style={mobilePane === p
+                  ? { background: 'var(--surface)', color: 'var(--text)', boxShadow: '0 1px 2px rgba(0,0,0,.12)' }
+                  : { color: 'var(--text-muted)', background: 'transparent' }}>
+                <Ic size={13} /> {label}
+              </button>
+            ))}
+          </div>
+        )}
+
         <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[1.15fr_1fr] divide-y lg:divide-y-0 lg:divide-x" style={{ borderColor: 'var(--border)' }}>
           {/* Gauche : le CV (structuré par défaut, PDF original à la demande). */}
-          <div ref={leftRef} className="overflow-y-auto p-3 sm:p-4 lg:p-5" style={{ background: mode === 'pdf' ? 'var(--surface-2)' : 'var(--surface)' }}>
-            <p className="text-[10px] font-semibold uppercase tracking-wider mb-3 flex items-center gap-1" style={{ color: 'var(--text-faint)' }}>
-              <FileText size={11} /> {leftLabel}
-            </p>
+          <div ref={leftRef} className={clsx('overflow-y-auto p-3 sm:p-4 lg:p-5', mobilePane === 'annos' && 'hidden lg:block')} style={{ background: mode === 'pdf' ? 'var(--surface-2)' : 'var(--surface)' }}>
+            <div className="flex items-center justify-between gap-2 mb-3">
+              <p className="text-[10px] font-semibold uppercase tracking-wider flex items-center gap-1 min-w-0" style={{ color: 'var(--text-faint)' }}>
+                <FileText size={11} className="shrink-0" /> <span className="truncate">{leftLabel}</span>
+              </p>
+              {mode === 'pdf' && pages && (
+                <button onClick={() => setPdfZoom(z => !z)}
+                  className="lg:hidden inline-flex items-center gap-1 shrink-0 px-2 h-6 rounded-md text-[10.5px] font-semibold"
+                  style={{ color: 'var(--text-muted)', border: '1px solid var(--border)', background: 'var(--surface)' }}
+                  title={pdfZoom ? 'Ajuster à la largeur' : 'Agrandir pour lire'}>
+                  {pdfZoom ? <ZoomOut size={11} /> : <ZoomIn size={11} />} {pdfZoom ? 'Ajuster' : 'Agrandir'}
+                </button>
+              )}
+            </div>
 
             {mode === 'pdf' ? (
               pdfLoading ? (
@@ -685,7 +733,11 @@ function CvTransparencyView({ result, ao, onClose }) {
               ) : pdfError ? (
                 <div className="py-16 text-center text-sm px-6" style={{ color: 'var(--text-muted)' }}>{pdfError}</div>
               ) : pages ? (
-                <div className="mx-auto space-y-4" style={{ maxWidth: 780 }}>
+                <div className={clsx('mx-auto', pdfZoom ? 'max-w-full overflow-x-auto lg:max-w-[780px] lg:overflow-x-visible' : 'max-w-[780px]')}>
+                 {/* Zoom mobile piloté par classes responsive (et non un style inline) :
+                     au-delà de lg, les variantes lg:* neutralisent le zoom → jamais
+                     d'agrandissement coincé dans la vue 2 colonnes. */}
+                 <div className={clsx('space-y-4', pdfZoom && 'w-[175%] lg:w-full')}>
                   {pages.map((pg, pi) => (
                     <div key={pg.pageNum} className="relative rounded-md overflow-hidden shadow-sm" style={{ border: '1px solid var(--border)', background: '#fff' }}>
                       <img src={pg.imgUrl} alt={`CV page ${pg.pageNum}`} className="block w-full select-none" draggable={false} />
@@ -715,6 +767,7 @@ function CvTransparencyView({ result, ao, onClose }) {
                   <p className="text-[10px] text-center pt-1 pb-2" style={{ color: 'var(--text-faint)' }}>
                     Document soumis, tel quel · surlignage posé par l’IA d’après ses justifications.
                   </p>
+                 </div>
                 </div>
               ) : null
             ) : loading ? (
@@ -769,7 +822,7 @@ function CvTransparencyView({ result, ao, onClose }) {
           </div>
 
           {/* Droite : annotations de l'IA, reliées aux surlignages (comme un relecteur). */}
-          <div ref={rightRef} className="overflow-y-auto p-4 lg:p-5" style={{ background: 'var(--surface-2)' }}>
+          <div ref={rightRef} className={clsx('overflow-y-auto p-4 lg:p-5', mobilePane === 'cv' && 'hidden lg:block')} style={{ background: 'var(--surface-2)' }}>
             <p className="text-[10px] font-semibold uppercase tracking-wider mb-3 flex items-center gap-1" style={{ color: 'var(--text-faint)' }}>
               <Sparkles size={11} className="text-violet-400" /> Annotations de l’IA
             </p>
@@ -895,7 +948,7 @@ function MatchCard({ result, rank, aoId, isAdmin, ao, onContact, expanded: expan
 
       {/* Languette « CV analysé » : ouvre le CV surligné + analyse reliée. */}
       {showLanguette && (
-        <button onClick={(e) => { e.stopPropagation(); setShowCv(true) }}
+        <button data-tour="match-cv" onClick={(e) => { e.stopPropagation(); setShowCv(true) }}
           title="Ouvrir le CV analysé : CV surligné + analyse IA reliée"
           className="absolute right-0 top-1/2 -translate-y-1/2 z-10 flex flex-col items-center gap-1.5 py-3.5 px-1.5 rounded-l-lg bg-brand-600 text-white shadow-lg shadow-brand-600/30 hover:bg-brand-500 hover:px-2 transition-all">
           <Highlighter size={14} />

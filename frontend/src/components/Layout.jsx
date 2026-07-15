@@ -19,7 +19,7 @@ const TOUR_KEY = 'uti_tour_v1' // bump suffix to re-show the tour to everyone
 
 const ADMIN_STEPS = [
   { selector: '[data-tour="brand"]', title: 'Bienvenue 👋', text: "Voici un tour rapide de la plateforme Groupement-IT. Vous pouvez le passer à tout moment." },
-  { selector: '[data-tour="nav-aos"]', title: "Appels d'offres", text: "Créez et suivez vos AOs. En ouvrant un AO, le matching IA se lance automatiquement et vous visualisez la couverture (partenaires & consultants) ainsi que la date limite." },
+  { selector: '[data-tour="nav-aos"]', title: "Appels d'offres", text: "Créez et suivez vos AOs. En ouvrant un AO, le matching IA se lance automatiquement : couverture (partenaires & consultants), date d'échéance, et pour chaque CV reçu une note IA avec un « CV analysé » surligné à l'appui." },
   { selector: '[data-tour="nav-clients"]', title: 'Clients', text: 'Gérez vos comptes clients : chaque appel d’offres est rattaché à un client.' },
   { selector: '[data-tour="nav-consultants"]', title: 'Vivier de consultants', text: 'Retrouvez tous les consultants proposés par les partenaires.' },
   { selector: '[data-tour="nav-partners"]', title: 'Partenaires & accès', text: 'Invitez des partenaires et définissez leurs accès par client (Liste 1 / Liste 2).' },
@@ -30,7 +30,7 @@ const ADMIN_STEPS = [
 
 const COMMERCE_STEPS = [
   { selector: '[data-tour="brand"]', title: 'Bienvenue 👋', text: "Voici un tour rapide de votre espace commercial UTI. Vous pouvez le passer à tout moment." },
-  { selector: '[data-tour="nav-aos"]', title: "Appels d'offres", text: "Votre cœur de métier : créez les besoins clients et suivez-les. Le matching IA se lance automatiquement à chaque CV reçu, et dès la création, des consultants du vivier vous sont recommandés." },
+  { selector: '[data-tour="nav-aos"]', title: "Appels d'offres", text: "Votre cœur de métier : créez les besoins clients et suivez-les. Le matching IA note chaque CV reçu (avec un « CV analysé » surligné), et dès la création des consultants du vivier vous sont recommandés." },
   { selector: '[data-tour="nav-new-ao"]', title: 'Créer un AO', text: "Le raccourci pour publier un besoin en quelques secondes : l'IA peut le générer depuis un email." },
   { selector: '[data-tour="nav-consultants"]', title: 'Vivier de consultants', text: "Tous les consultants des partenaires, en consultation. Un bouton vous permet de contacter directement le partenaire porteur." },
   { selector: '[data-tour="nav-clients"]', title: 'Clients', text: "Tous les clients, en lecture : la création et la modification restent réservées aux administrateurs." },
@@ -152,15 +152,36 @@ export default function Layout() {
   useEffect(() => {
     if (!tourStorageKey) return
     if (localStorage.getItem(tourStorageKey)) return
-    const t = setTimeout(() => setShowTour(true), 700) // let the layout settle
-    return () => clearTimeout(t)
+    let inner
+    const t = setTimeout(() => {
+      // Mobile : la barre latérale est un tiroir hors-écran. On l'ouvre AVANT de
+      // lancer le tour et on laisse la transition se poser, sinon le spotlight
+      // éclairerait la navigation encore hors-écran (flash au 1er rendu).
+      if (window.innerWidth < 768) {
+        setMobileNavOpen(true)
+        inner = setTimeout(() => setShowTour(true), 300)
+      } else {
+        setShowTour(true)
+      }
+    }, 700) // let the layout settle
+    return () => { clearTimeout(t); clearTimeout(inner) }
   }, [tourStorageKey])
 
   const finishTour = () => {
     if (tourStorageKey) localStorage.setItem(tourStorageKey, 'done')
     setShowTour(false)
+    setMobileNavOpen(false)
   }
-  const replayTour = () => { setProfileMenuOpen(false); setShowTour(true) }
+  // Rejouer le tutoriel : même logique « tiroir d'abord » sur mobile.
+  const replayTour = () => {
+    setProfileMenuOpen(false)
+    if (window.innerWidth < 768) {
+      setMobileNavOpen(true)
+      setTimeout(() => setShowTour(true), 300)
+    } else {
+      setShowTour(true)
+    }
+  }
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', dark)

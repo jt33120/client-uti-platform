@@ -80,8 +80,12 @@ def _stored_row() -> dict:
 
 
 @router.get("")
-async def get_scoring_config(user: dict = Depends(require_staff)):
-    """Config effective (étoiles + poids dérivés + seuils) et métadonnées."""
+async def get_scoring_config(user: dict = Depends(require_admin)):
+    """Config effective (étoiles + poids dérivés + seuils) et métadonnées.
+
+    Réservée à l'admin (comme la page UI /admin/scoring et l'écriture PUT) : les
+    pondérations du matching sont un réglage de gouvernance, pas une donnée
+    consultée par les commerciaux."""
     row = _stored_row()
 
     # Fusion critère par critère : une config antérieure (4 axes) conserve ses

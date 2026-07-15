@@ -1021,6 +1021,131 @@ function AoOutcomeStats() {
   )
 }
 
+// Bilan business — KPIs opérationnels de staffing (délai de placement, funnel de
+// transformation, performance partenaire, taux de pourvu). Alimenté par /admin/kpis.
+// Auto-portant : ne s'affiche qu'en présence de données (aucun AO diffusé -> masqué).
+function BusinessKpis() {
+  const [d, setD] = useState(undefined) // undefined = chargement, false = erreur
+  useEffect(() => {
+    let c = false
+    api.get('/admin/kpis')
+      .then(r => { if (!c) setD(r.data) })
+      .catch(() => { if (!c) setD(false) })
+    return () => { c = true }
+  }, [])
+
+  if (d === undefined) {
+    return <div className="py-6 flex justify-center"><UTILoader /></div>
+  }
+  if (d === false) {
+    return (
+      <div className="card p-4 text-center text-xs mb-6" style={{ color: 'var(--text-muted)' }}>
+        Bilan business indisponible pour le moment.
+      </div>
+    )
+  }
+
+  const ttf = d.time_to_fill || {}
+  const funnel = (d.funnel && d.funnel.stages) || []
+  const partners = d.partners || []
+  const pv = d.pourvu || {}
+
+  const diffuses = funnel.find(s => s.label === 'Diffusés')?.count || 0
+  const gagnes = funnel.find(s => s.label === 'Gagnés')?.count || 0
+  // Rien de significatif à montrer : on masque (cohérent avec AoOutcomeStats)
+  if (!diffuses && !partners.length && !pv.total) return null
+
+  const transfoGlobal = diffuses ? Math.round((gagnes / diffuses) * 100) : null
+  const dash = (v) => (v == null ? '—' : v)
+
+  const Stat = ({ label, value, sub, tone }) => (
+    <div className="card p-3">
+      <div className="text-[11px]" style={{ color: 'var(--text-faint)' }}>{label}</div>
+      <div className="text-2xl font-bold tabular leading-tight mt-0.5" style={{ color: tone || 'var(--text)' }}>
+        {value}{sub ? <span className="text-xs font-normal ml-0.5" style={{ color: 'var(--text-faint)' }}>{sub}</span> : null}
+      </div>
+    </div>
+  )
+
+  // Palette d'étage du funnel (du plus large au plus étroit)
+  const stageColors = ['var(--viz-1)', 'var(--viz-2)', 'var(--viz-3)', 'var(--viz-5)', '#10b981']
+  const maxStage = Math.max(1, ...funnel.map(s => Number(s.count) || 0))
+
+  return (
+    <div className="mb-6">
+      <p className="text-xs font-semibold uppercase tracking-wide flex items-center gap-1.5 mb-2" style={{ color: 'var(--text-muted)' }}>
+        <TrendingUp size={13} className="text-[var(--accent-text)]" /> Bilan business — staffing
+      </p>
+
+      {/* Tuiles clés */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <Stat label="Délai de placement médian" value={dash(ttf.median_days)} sub={ttf.median_days != null ? ' j' : null} tone="var(--accent-text)" />
+        <Stat label="Taux de pourvu" value={pv.pourvu_rate == null ? '—' : `${pv.pourvu_rate}%`} tone="#10b981" />
+        <Stat label="Gagnés" value={gagnes} />
+        <Stat label="Taux de transfo global" value={transfoGlobal == null ? '—' : `${transfoGlobal}%`} sub={diffuses ? ' gagnés/diffusés' : null} />
+      </div>
+
+      {/* Funnel de transformation */}
+      {funnel.length > 0 && (
+        <div className="card p-4 mt-2">
+          <p className="text-[11px] font-semibold uppercase tracking-wide mb-3" style={{ color: 'var(--text-faint)' }}>Funnel de transformation</p>
+          <div className="space-y-2.5">
+            {funnel.map((s, i) => (
+              <div key={s.label}>
+                <div className="flex justify-between items-baseline text-[12px] mb-1">
+                  <span style={{ color: 'var(--text)' }}>{s.label}</span>
+                  <span className="flex items-center gap-2">
+                    <span className="tabular font-semibold" style={{ color: 'var(--text-muted)' }}>{fmtInt(s.count)}</span>
+                    {s.conversion_from_prev != null && (
+                      <span className="tabular text-[11px]" style={{ color: 'var(--text-faint)' }}>↳ {s.conversion_from_prev}%</span>
+                    )}
+                  </span>
+                </div>
+                <div className="h-2 rounded-full overflow-hidden" style={{ background: 'var(--surface-2)' }}>
+                  <div className="h-full rounded-full" style={{ width: `${Math.max(2, ((Number(s.count) || 0) / maxStage) * 100)}%`, background: stageColors[i] || 'var(--viz-1)' }} />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Performance partenaire */}
+      {partners.length > 0 && (
+        <div className="card p-4 mt-2">
+          <p className="text-[11px] font-semibold uppercase tracking-wide mb-3" style={{ color: 'var(--text-faint)' }}>Performance partenaire</p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr style={{ color: 'var(--text-faint)' }}>
+                  <th className="text-left font-medium pb-2">Partenaire</th>
+                  <th className="text-right font-medium pb-2">Répondus</th>
+                  <th className="text-right font-medium pb-2">Soumis</th>
+                  <th className="text-right font-medium pb-2">Retenus</th>
+                  <th className="text-right font-medium pb-2">Gagnés</th>
+                  <th className="text-right font-medium pb-2">Taux retenue</th>
+                </tr>
+              </thead>
+              <tbody>
+                {partners.map(p => (
+                  <tr key={p.id} className="border-t" style={{ borderColor: 'var(--surface-2)' }}>
+                    <td className="py-1.5 pr-2 truncate max-w-[160px]" style={{ color: 'var(--text)' }}>{p.name}</td>
+                    <td className="py-1.5 text-right tabular" style={{ color: 'var(--text-muted)' }}>{fmtInt(p.aos)}</td>
+                    <td className="py-1.5 text-right tabular" style={{ color: 'var(--text-muted)' }}>{fmtInt(p.soumis)}</td>
+                    <td className="py-1.5 text-right tabular" style={{ color: 'var(--text-muted)' }}>{fmtInt(p.retenus)}</td>
+                    <td className="py-1.5 text-right tabular font-semibold" style={{ color: p.gagnes > 0 ? '#10b981' : 'var(--text-muted)' }}>{fmtInt(p.gagnes)}</td>
+                    <td className="py-1.5 text-right tabular" style={{ color: 'var(--text-muted)' }}>{p.retention_rate == null ? '—' : `${p.retention_rate}%`}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function DecisionsTab() {
   const [days, setDays] = useState(90)
   const [data, setData] = useState(null)
@@ -1072,6 +1197,7 @@ function DecisionsTab() {
       </div>
 
       <AoOutcomeStats />
+      <BusinessKpis />
 
       {loading ? (
         <div className="py-20 flex justify-center"><UTILoader /></div>

@@ -9,6 +9,7 @@ import {
   Calendar, Download, Target, Award,
 } from 'lucide-react'
 import clsx from 'clsx'
+import { availabilityLabel, availabilityTone } from '../lib/availability'
 
 const fmtDate = (iso) => iso ? new Date(iso).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' }) : null
 const employmentLabel = (t) => t === 'salarie' ? 'Salarié' : t === 'independant' ? 'Indépendant' : null
@@ -162,7 +163,12 @@ export default function ConsultantDetailPage() {
               {c.tjm != null && <span className="flex items-center gap-1"><Euro size={12} /> {c.tjm} €/j</span>}
               {c.city && <span className="flex items-center gap-1"><MapPin size={12} /> {c.city}</span>}
               {c.experience_years != null && <span className="flex items-center gap-1"><Briefcase size={12} /> {c.experience_years} ans d'exp.</span>}
-              {c.availability && <span className="flex items-center gap-1"><Clock size={12} /> {c.availability}</span>}
+              {c.availability_status ? (
+                <span className={clsx('text-[11px] px-2 py-0.5 rounded-full border inline-flex items-center gap-1', availabilityTone(c.availability_status))}>
+                  <Clock size={11} /> {availabilityLabel(c.availability_status, c.available_from)}
+                  {c.availability && <span className="opacity-70">· {c.availability}</span>}
+                </span>
+              ) : c.availability && <span className="flex items-center gap-1"><Clock size={12} /> {c.availability}</span>}
             </div>
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
@@ -170,6 +176,22 @@ export default function ConsultantDetailPage() {
               <Link to={`/carte?focus=${c.id}`} className="btn-ghost gap-1.5 text-sm" title="Voir sur la carte">
                 <MapIcon size={14} /> Carte
               </Link>
+            )}
+            {isStaff && (
+              <button
+                onClick={async () => {
+                  try {
+                    const res = await api.get(`/consultants/${c.id}/export`, { responseType: 'blob' })
+                    const url = URL.createObjectURL(res.data)
+                    const a = document.createElement('a')
+                    a.href = url; a.download = `export-consultant-${c.id}.json`
+                    document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url)
+                  } catch { alert('Export impossible') }
+                }}
+                className="btn-ghost gap-1.5 text-sm"
+                title="Exporter toutes les données détenues sur ce consultant (RGPD, portabilité art. 20)">
+                <Download size={14} /> Export RGPD
+              </button>
             )}
             {isStaff && ownerIsPartner && (
               <button onClick={() => setContactOpen(true)} className="btn-primary gap-1.5 text-sm">
@@ -202,6 +224,11 @@ export default function ConsultantDetailPage() {
             </InfoRow>
             <InfoRow icon={Mail} label="Email">{c.email}</InfoRow>
             <InfoRow icon={Phone} label="Téléphone">{c.phone}</InfoRow>
+            <InfoRow icon={CheckCircle2} label="Consentement RGPD">
+              {c.consent_at
+                ? <span className="text-emerald-400">Recueilli le {new Date(c.consent_at).toLocaleDateString('fr-FR')}</span>
+                : <span style={{ color: 'var(--text-faint)' }}>Non renseigné</span>}
+            </InfoRow>
             <InfoRow icon={UserCircle2} label="Partenaire porteur">
               {owner ? (
                 ownerIsPartner

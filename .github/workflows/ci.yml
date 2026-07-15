@@ -1,0 +1,62 @@
+name: CI
+
+# Filet de sécurité : la suite pytest (scoring, hybride, anti-biais, extraction AO)
+# et le build front tournent sur chaque PR et sur master. Jusqu'ici les tests
+# existaient mais ne s'exécutaient nulle part automatiquement — un merge pouvait
+# casser le scoring sans que rien ne l'attrape.
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend · pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install dependencies
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio
+      - name: Run tests
+        working-directory: backend
+        # `config.Settings` exige supabase_url / service_key et construit un client
+        # à l'import : on fournit des valeurs factices (aucun appel réseau à la
+        # construction). Les tests sont de la logique pure (aucune I/O réelle).
+        env:
+          SUPABASE_URL: https://placeholder.supabase.co
+          # supabase-py valide le FORMAT de la clé (JWT à 3 segments) à la
+          # construction du client : une chaîne quelconque lève « Invalid API key ».
+          # Faux JWT syntaxiquement valide (aucun appel réseau) — suffit à l'import.
+          SUPABASE_SERVICE_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIn0.c2lnbmF0dXJlLXBsYWNlaG9sZGVy
+        run: pytest -q
+
+  frontend:
+    name: Frontend · build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Build
+        working-directory: frontend
+        run: npm run build

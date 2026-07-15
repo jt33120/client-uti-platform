@@ -1,3 +1,4 @@
+from datetime import date, datetime, timezone
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
 from typing import Optional, Literal
@@ -11,16 +12,25 @@ from routers.auth import get_current_user, require_staff, is_staff
 router = APIRouter(prefix="/consultants", tags=["consultants"])
 
 
+# Disponibilité STRUCTURÉE (requêtable) en plus de la note libre `availability` :
+#   - availability_status : état courant (dispo / bientôt / en mission / inconnu) ;
+#   - available_from       : date à partir de laquelle le profil est libre.
+AvailabilityStatus = Literal["available", "soon", "on_mission", "unknown"]
+
+
 class ConsultantCreate(BaseModel):
     name: str
     skills: str
     tjm: Optional[int] = Field(default=None, ge=0, le=100_000)
     experience_years: Optional[int] = Field(default=None, ge=0, le=70)
-    availability: Optional[str] = None
+    availability: Optional[str] = None  # note libre (précision)
+    availability_status: Optional[AvailabilityStatus] = None
+    available_from: Optional[date] = None
     employment_type: Optional[Literal["independant", "salarie"]] = None
     email: Optional[str] = None
     phone: Optional[str] = None
     city: Optional[str] = None  # ville de résidence (géocodée pour la carte)
+    consent: Optional[bool] = None  # consentement RGPD au traitement (→ consent_at)
 
 
 class ConsultantUpdate(BaseModel):
@@ -29,18 +39,25 @@ class ConsultantUpdate(BaseModel):
     tjm: Optional[int] = Field(default=None, ge=0, le=100_000)
     experience_years: Optional[int] = Field(default=None, ge=0, le=70)
     availability: Optional[str] = None
+    availability_status: Optional[AvailabilityStatus] = None
+    available_from: Optional[date] = None
     employment_type: Optional[Literal["independant", "salarie"]] = None
     email: Optional[str] = None
     phone: Optional[str] = None
     city: Optional[str] = None
 
 
+# Colonnes optionnelles susceptibles de ne pas être migrées : on retente sans
+# elles plutôt que d'échouer (géo/ville + disponibilité structurée).
+_OPTIONAL_COLS = ("city", "latitude", "longitude", "availability_status", "available_from", "consent_at")
+
+
 def _insert_with_geo_fallback(table: str, record: dict):
-    """Insert tolérant : retente sans les colonnes géo/ville si non migrées."""
+    """Insert tolérant : retente sans les colonnes optionnelles si non migrées."""
     try:
         return supabase.table(table).insert(record).execute()
     except Exception:
-        slim = {k: v for k, v in record.items() if k not in ("city", "latitude", "longitude")}
+        slim = {k: v for k, v in record.items() if k not in _OPTIONAL_COLS}
         return supabase.table(table).insert(slim).execute()
 
 
@@ -48,7 +65,7 @@ def _update_with_geo_fallback(table: str, data: dict, id_: str):
     try:
         return supabase.table(table).update(data).eq("id", id_).execute()
     except Exception:
-        slim = {k: v for k, v in data.items() if k not in ("city", "latitude", "longitude")}
+        slim = {k: v for k, v in data.items() if k not in _OPTIONAL_COLS}
         return supabase.table(table).update(slim).eq("id", id_).execute()
 
 
@@ -65,10 +82,13 @@ async def create_consultant(body: ConsultantCreate, user: dict = Depends(get_cur
             "tjm": body.tjm,
             "experience_years": body.experience_years,
             "availability": body.availability,
+            "availability_status": body.availability_status,
+            "available_from": body.available_from.isoformat() if body.available_from else None,
             "employment_type": body.employment_type,
             "email": body.email,
             "phone": body.phone,
             "city": body.city,
+            "consent_at": datetime.now(timezone.utc).isoformat() if body.consent else None,
             "created_by": user["sub"],
         }
         geo = await geocode(body.city)
@@ -137,6 +157,44 @@ async def get_consultant(consultant_id: str, user: dict = Depends(get_current_us
         raise
     except Exception:
         raise HTTPException(status_code=404, detail="Consultant introuvable")
+
+
+@router.get("/{consultant_id}/export")
+async def gdpr_export_consultant(consultant_id: str, user: dict = Depends(get_current_user)):
+    """
+    Portabilité RGPD (art. 20) : export JSON de TOUTES les données détenues sur un
+    consultant — fiche vivier, soumissions (métadonnées), scores de matching. Le
+    contenu brut des CV (fichier / texte) n'est pas ré-empaqueté ici : il reste
+    accessible via la fiche. Accès : staff, ou le partenaire propriétaire du profil.
+    """
+    from fastapi.responses import JSONResponse
+
+    try:
+        c = supabase.table("consultants").select("*").eq("id", consultant_id).single().execute().data
+    except Exception:
+        raise HTTPException(status_code=404, detail="Consultant introuvable")
+    if user["role"] == "ao" and c.get("created_by") != user["sub"]:
+        raise HTTPException(status_code=403, detail="Accès interdit")
+
+    subs = supabase.table("submissions").select(
+        "id, ao_id, submitted_by, submitted_at, cv_filename"
+    ).eq("consultant_id", consultant_id).execute().data or []
+    matchings = supabase.table("matchings").select(
+        "ao_id, rank, score_total, score_hybride"
+    ).eq("consultant_id", consultant_id).execute().data or []
+
+    bundle = {
+        "export_type": "rgpd_portabilite_art20",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "consultant": c,
+        "submissions": subs,
+        "matchings": matchings,
+    }
+    filename = f"export-consultant-{consultant_id}.json"
+    return JSONResponse(
+        content=bundle,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/{consultant_id}/history")
@@ -266,7 +324,8 @@ async def update_consultant(consultant_id: str, body: ConsultantUpdate, user: di
         # Owner or admin only — commerce has read-only access to the vivier
         if user["role"] != "admin" and consultant["created_by"] != user["sub"]:
             raise HTTPException(status_code=403, detail="Accès interdit")
-        update_data = body.model_dump(exclude_none=True)
+        # mode="json" : sérialise `available_from` (date) en "YYYY-MM-DD" pour PostgREST.
+        update_data = body.model_dump(exclude_none=True, mode="json")
         # Ville modifiée → re-géocoder (best-effort).
         if "city" in update_data:
             geo = await geocode(update_data["city"])

@@ -87,6 +87,44 @@ def _coerce_ai_budget(raw: Any) -> dict:
     return cfg
 
 
+# ── Conservation des données / RGPD ────────────────────────────────
+# Purge automatique des CV (contenu personnel le plus lourd) passé un délai de
+# conservation depuis la dernière activité. OPT-IN strict : désactivé par défaut,
+# ne supprime JAMAIS tant que l'admin ne l'active pas explicitement. La purge
+# anonymise la soumission (retire le fichier + textes du CV) mais conserve la
+# ligne pour les statistiques agrégées.
+RETENTION_DEFAULTS: dict[str, Any] = {
+    "enabled": False,   # opt-in : aucune suppression tant que non activé
+    "months": 24,       # durée de conservation (mois) depuis la dernière activité
+}
+
+_RETENTION_KEY = "data_retention"
+
+
+def _coerce_retention(raw: Any) -> dict:
+    cfg = dict(RETENTION_DEFAULTS)
+    if isinstance(raw, dict):
+        for k in RETENTION_DEFAULTS:
+            if raw.get(k) is not None:
+                cfg[k] = raw[k]
+    cfg["enabled"] = bool(cfg["enabled"])
+    # Plancher à 6 mois : garde-fou contre une purge trop agressive par erreur.
+    cfg["months"] = max(6, int(cfg["months"]))
+    return cfg
+
+
+def get_retention_settings() -> dict:
+    return _coerce_retention(get_setting(_RETENTION_KEY))
+
+
+def set_retention_settings(patch: dict) -> dict:
+    current = get_retention_settings()
+    current.update({k: patch[k] for k in RETENTION_DEFAULTS if k in patch})
+    cfg = _coerce_retention(current)
+    set_setting(_RETENTION_KEY, cfg)
+    return cfg
+
+
 def get_ai_budget_settings() -> dict:
     """Budgets IA effectifs (défauts + surcharges admin)."""
     return _coerce_ai_budget(get_setting(_AI_BUDGET_KEY))

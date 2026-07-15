@@ -14,6 +14,7 @@ from services.supabase_client import supabase
 from services.app_settings import (
     get_notification_settings, set_notification_settings,
     get_ai_budget_settings, set_ai_budget_settings,
+    get_retention_settings, set_retention_settings,
 )
 from routers.auth import require_admin
 from config import settings
@@ -692,11 +693,26 @@ class AiBudgetSettings(BaseModel):
 
 @router.get("/settings")
 async def get_settings(user: dict = Depends(require_admin)):
-    """Réglages globaux pilotés par l'admin (notifications + relances + budget IA)."""
+    """Réglages globaux pilotés par l'admin (notifications + relances + budget IA + rétention RGPD)."""
     return {
         "notifications": get_notification_settings(),
         "ai_budget": get_ai_budget_settings(),
+        "data_retention": get_retention_settings(),
     }
+
+
+class RetentionSettings(BaseModel):
+    enabled: Optional[bool] = None
+    months: Optional[int] = None
+
+
+@router.put("/settings/retention")
+async def update_retention_settings(body: RetentionSettings, user: dict = Depends(require_admin)):
+    """Conservation des données (RGPD) : purge auto des CV passé N mois. Opt-in."""
+    patch = body.model_dump(exclude_none=True)
+    if not patch:
+        raise HTTPException(status_code=422, detail="Aucun réglage fourni.")
+    return {"data_retention": set_retention_settings(patch)}
 
 
 @router.put("/settings/notifications")
@@ -956,6 +972,222 @@ async def ao_outcomes(days: int = 180, user: dict = Depends(require_admin)):
         "by_partner": partners,
         "weekly": [weekly[k] for k in sorted(weekly.keys()) if k != "?"],
         "to_close": to_close,
+    }
+
+
+@router.get("/kpis")
+async def business_kpis(user: dict = Depends(require_admin)):
+    """KPIs opérationnels de staffing (Bilan business) sur l'ensemble des données :
+      1. Délai de placement (time-to-fill) : diffusion -> envoi client des AO gagnés
+      2. Funnel de transformation : diffusés -> soumissions -> proposés -> retenus -> gagnés
+      3. Performance partenaire (top ~10) : répondus / soumis / retenus / gagnés
+      4. Taux de pourvu : répartition des AO clôturés (pourvu / non pourvu / sans suite)
+
+    Staff only (service-role -> Python est le seul garde d'accès). Chaque sous-métrique
+    est isolée dans son propre try/except : une colonne absente (migration non appliquée)
+    renvoie un agrégat vide plutôt qu'un 500. Les tables sont chargées une seule fois puis
+    agrégées en Python (aucune requête par ligne)."""
+
+    def _parse_dt(v):
+        """Parse ISO date/datetime tolérant (None -> None). Normalise en tz-aware
+        (UTC) : une valeur naïve mêlée à une valeur tz-aware ferait échouer la
+        soustraction et annulerait TOUT le calcul du délai (un seul mauvais row)."""
+        if not v:
+            return None
+        try:
+            dt = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+        except Exception:
+            return None
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+    def _median(nums):
+        s = sorted(nums)
+        n = len(s)
+        if n == 0:
+            return None
+        mid = n // 2
+        return s[mid] if n % 2 else (s[mid - 1] + s[mid]) / 2
+
+    # --- Chargement des tables (une passe, colonnes minimales) -----------------
+    aos = []
+    try:
+        aos = supabase.table("appels_offres").select(
+            "id, notified_at, created_at, ao_outcome, outcome_at, status, archived"
+        ).execute().data or []
+    except Exception:
+        aos = []
+
+    states = []
+    try:
+        states = supabase.table("ao_consultant_state").select(
+            "ao_id, consultant_id, contact_status, validation, sent_to_client_at, deal_status"
+        ).execute().data or []
+    except Exception:
+        states = []
+
+    subs = []
+    try:
+        subs = supabase.table("submissions").select(
+            "id, ao_id, consultant_id, submitted_by"
+        ).execute().data or []
+    except Exception:
+        subs = []
+
+    # Index AO par id (dates de diffusion) pour éviter des lookups répétés
+    ao_by_id = {a.get("id"): a for a in aos}
+
+    # --- 1) Délai de placement (time-to-fill) ---------------------------------
+    time_to_fill = {"median_days": None, "avg_days": None, "n": 0}
+    try:
+        deltas = []
+        for st in states:
+            if st.get("deal_status") != "gagnee":
+                continue
+            ao = ao_by_id.get(st.get("ao_id"))
+            if not ao:
+                continue
+            start = _parse_dt(ao.get("notified_at")) or _parse_dt(ao.get("created_at"))
+            end = _parse_dt(st.get("sent_to_client_at")) or _parse_dt(ao.get("outcome_at"))
+            if not start or not end:
+                continue
+            days = (end - start).total_seconds() / 86400.0
+            if days < 0:
+                continue  # incohérence de dates : on ignore
+            deltas.append(days)
+        if deltas:
+            med = _median(deltas)
+            time_to_fill = {
+                "median_days": round(med, 1) if med is not None else None,
+                "avg_days": round(sum(deltas) / len(deltas), 1),
+                "n": len(deltas),
+            }
+    except Exception:
+        pass
+
+    # --- 2) Funnel de transformation ------------------------------------------
+    funnel = {"stages": []}
+    try:
+        n_diffuses = sum(1 for a in aos if a.get("notified_at"))
+        n_soumis = len(subs)
+        n_proposes = sum(
+            1 for st in states
+            if st.get("contact_status") == "proposed" or st.get("sent_to_client_at")
+        )
+        n_retenus = sum(1 for st in states if st.get("validation") == "retenu")
+        n_gagnes = sum(1 for st in states if st.get("deal_status") == "gagnee")
+
+        raw = [
+            ("Diffusés", n_diffuses),
+            ("CV soumis", n_soumis),
+            ("Proposés client", n_proposes),
+            ("Retenus", n_retenus),
+            ("Gagnés", n_gagnes),
+        ]
+        stages = []
+        for i, (label, count) in enumerate(raw):
+            prev = raw[i - 1][1] if i > 0 else None
+            conv = round(count / prev * 100) if prev else None  # None si étage précédent = 0
+            stages.append({
+                "label": label,
+                "count": count,
+                "conversion_from_prev": conv,  # % vs étage précédent (None pour le 1er)
+            })
+        funnel = {"stages": stages}
+    except Exception:
+        funnel = {"stages": []}
+
+    # --- 3) Performance partenaire (role='ao', top ~10 par activité) -----------
+    partners = []
+    try:
+        # AO répondus (par partenaire) : set d'ao_id distincts issus des soumissions
+        per_partner: dict = {}
+
+        def _p(pid):
+            return per_partner.setdefault(pid, {
+                "aos": set(), "soumis": 0, "consultants": set(), "retenus": 0, "gagnes": 0,
+            })
+
+        # Consultant -> submitted_by : pour rattacher validation/deal au partenaire.
+        # (ao_id, consultant_id) est la clé de jointure avec ao_consultant_state.
+        sub_owner: dict = {}
+        for s in subs:
+            pid = s.get("submitted_by")
+            if not pid:
+                continue
+            rec = _p(pid)
+            rec["soumis"] += 1
+            if s.get("ao_id"):
+                rec["aos"].add(s.get("ao_id"))
+            key = (s.get("ao_id"), s.get("consultant_id"))
+            sub_owner[key] = pid
+
+        for st in states:
+            pid = sub_owner.get((st.get("ao_id"), st.get("consultant_id")))
+            if not pid:
+                continue
+            rec = per_partner.get(pid)
+            if not rec:
+                continue
+            if st.get("validation") == "retenu":
+                rec["retenus"] += 1
+            if st.get("deal_status") == "gagnee":
+                rec["gagnes"] += 1
+
+        # Filtre role='ao' + noms
+        names: dict = {}
+        ao_ids: set = set()
+        if per_partner:
+            try:
+                for p in supabase.table("profiles").select(
+                        "id, name, email, role").in_("id", list(per_partner)).execute().data or []:
+                    if p.get("role") == "ao":
+                        ao_ids.add(p["id"])
+                        names[p["id"]] = p.get("name") or p.get("email") or "—"
+            except Exception:
+                # Sans profiles on ne peut pas filtrer role='ao' -> on n'affiche rien
+                ao_ids = set()
+
+        for pid, rec in per_partner.items():
+            if pid not in ao_ids:
+                continue
+            soumis = rec["soumis"]
+            partners.append({
+                "id": pid,
+                "name": names.get(pid) or "—",
+                "aos": len(rec["aos"]),
+                "soumis": soumis,
+                "retenus": rec["retenus"],
+                "gagnes": rec["gagnes"],
+                "retention_rate": round(rec["retenus"] / soumis * 100) if soumis else None,
+            })
+        partners.sort(key=lambda x: (x["gagnes"], x["soumis"]), reverse=True)
+        partners = partners[:10]
+    except Exception:
+        partners = []
+
+    # --- 4) Taux de pourvu -----------------------------------------------------
+    pourvu = {"total": 0, "by_outcome": {"pourvu": 0, "non_pourvu": 0, "sans_suite": 0},
+              "pourvu_rate": None}
+    try:
+        by_outcome = {"pourvu": 0, "non_pourvu": 0, "sans_suite": 0}
+        for a in aos:
+            o = a.get("ao_outcome")
+            if o in by_outcome:
+                by_outcome[o] += 1
+        total = sum(by_outcome.values())
+        pourvu = {
+            "total": total,
+            "by_outcome": by_outcome,
+            "pourvu_rate": round(by_outcome["pourvu"] / total * 100) if total else None,
+        }
+    except Exception:
+        pass
+
+    return {
+        "time_to_fill": time_to_fill,
+        "funnel": funnel,
+        "partners": partners,
+        "pourvu": pourvu,
     }
 
 

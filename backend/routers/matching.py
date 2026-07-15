@@ -236,6 +236,13 @@ async def get_matching_results(ao_id: str, user: dict = Depends(get_current_user
         states = _fetch_states(ao_id)
         # Cible de contact : seulement côté staff (le partenaire n'a personne à contacter ici).
         targets = {} if is_partner else _contact_targets(results)
+        # Conflit de présentation (même personne présentée par 2 partenaires) :
+        # drapeau CONSULTATIF réservé au staff. Le partenaire ne doit JAMAIS voir
+        # de données sur les autres partenaires. Import paresseux (évite les cycles).
+        conflicts = {}
+        if not is_partner:
+            from services.presentation_conflict import find_conflicts
+            conflicts = find_conflicts(ao_id)
 
         for r in results:
             c = r.get("consultants") or {}
@@ -261,6 +268,8 @@ async def get_matching_results(ao_id: str, user: dict = Depends(get_current_user
                 r["sent_to_client_at"] = st.get("sent_to_client_at")
                 r["commercial_exchange"] = bool(st.get("commercial_exchange"))
                 r["deal_status"] = st.get("deal_status")
+                # Conflit de présentation multi-partenaires (advisory, staff only).
+                r["presentation_conflict"] = conflicts.get(r.get("consultant_id"))
 
         # L'humain a le dernier mot : son classement prime, sinon le rang IA.
         results.sort(key=lambda r: (r.get("human_rank") is None, r.get("human_rank") or 0, r.get("rank") or 0))

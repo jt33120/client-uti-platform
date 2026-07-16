@@ -102,9 +102,26 @@ async def overview(user: dict = Depends(require_admin)):
 _AI_WINDOWS = {"24h": 1, "7d": 7, "30d": 30, "90d": 90}
 
 
-def _ai_usage_from_ledger(since_iso: str) -> Optional[dict]:
+def _acct_key(r: dict) -> Optional[str]:
+    """Clé d'attribution d'un compte : user_id si présent, sinon email."""
+    return r.get("user_id") or r.get("user_email")
+
+
+def _ai_usage_from_ledger(
+    since_iso: str,
+    *,
+    f_op: Optional[str] = None,
+    f_model: Optional[str] = None,
+    f_account: Optional[str] = None,
+) -> Optional[dict]:
     """Agrège le registre ``ai_usage`` (source de vérité). Renvoie None si la
-    table est absente pour que l'appelant se rabatte sur les matchings."""
+    table est absente pour que l'appelant se rabatte sur les matchings.
+
+    Filtres optionnels (croisables) : ``f_op`` (fonction/opération IA),
+    ``f_model`` (modèle), ``f_account`` (compte consommateur). Les *facettes*
+    (valeurs disponibles pour les filtres) sont TOUJOURS calculées sur le jeu
+    complet, avant filtrage, pour que les menus déroulants restent stables quel
+    que soit le filtre actif."""
     try:
         rows = supabase.table("ai_usage").select(
             "created_at, provider, model, operation, cost_usd, cost_source, "
@@ -117,11 +134,38 @@ def _ai_usage_from_ledger(since_iso: str) -> Optional[dict]:
     def _c(r):
         return float(r.get("cost_usd") or 0)
 
-    total_cost = round(sum(_c(r) for r in rows), 4)
-    total_calls = len(rows)
-    total_in = sum(int(r.get("input_tokens") or 0) for r in rows)
-    total_out = sum(int(r.get("output_tokens") or 0) for r in rows)
-    total_cached = sum(int(r.get("cached_tokens") or 0) for r in rows)
+    # ── Facettes (avant filtrage) : valeurs sélectionnables + volume associé ──
+    facet_ops: dict = {}
+    facet_models: dict = {}
+    facet_accounts: dict = {}
+    for r in rows:
+        op = r.get("operation") or "—"
+        md = r.get("model") or "—"
+        facet_ops[op] = facet_ops.get(op, 0) + 1
+        facet_models[md] = facet_models.get(md, 0) + 1
+        acct = _acct_key(r)
+        if acct:
+            fa = facet_accounts.setdefault(acct, {"key": acct, "id": r.get("user_id"),
+                                                  "email": r.get("user_email"), "calls": 0})
+            fa["calls"] += 1
+
+    # ── Filtrage (croisé) ────────────────────────────────────────────────────
+    def _match(r) -> bool:
+        if f_op and (r.get("operation") or "—") != f_op:
+            return False
+        if f_model and (r.get("model") or "—") != f_model:
+            return False
+        if f_account and _acct_key(r) != f_account:
+            return False
+        return True
+
+    frows = [r for r in rows if _match(r)] if (f_op or f_model or f_account) else rows
+
+    total_cost = round(sum(_c(r) for r in frows), 4)
+    total_calls = len(frows)
+    total_in = sum(int(r.get("input_tokens") or 0) for r in frows)
+    total_out = sum(int(r.get("output_tokens") or 0) for r in frows)
+    total_cached = sum(int(r.get("cached_tokens") or 0) for r in frows)
 
     by_op: dict = {}
     by_model: dict = {}
@@ -129,7 +173,7 @@ def _ai_usage_from_ledger(since_iso: str) -> Optional[dict]:
     by_day: dict = {}
     by_ao: dict = {}
     by_user: dict = {}
-    for r in rows:
+    for r in frows:
         cost = _c(r)
         toks = int(r.get("input_tokens") or 0) + int(r.get("output_tokens") or 0)
         op = r.get("operation") or "—"
@@ -142,12 +186,14 @@ def _ai_usage_from_ledger(since_iso: str) -> Optional[dict]:
         by_source[src] = round(by_source.get(src, 0.0) + cost, 4)
         day = str(r.get("created_at") or "")[:10]
         if day:
-            d = by_day.setdefault(day, {"date": day, "cost": 0.0, "calls": 0})
+            d = by_day.setdefault(day, {"date": day, "cost": 0.0, "calls": 0, "ops": {}})
             d["cost"] += cost; d["calls"] += 1
+            # Ventilation par fonction DANS la journée → graphe empilé par fonction.
+            d["ops"][op] = d["ops"].get(op, 0) + 1
         if r.get("entity_type") == "ao" and r.get("entity_id"):
             a = by_ao.setdefault(r["entity_id"], {"ao_id": r["entity_id"], "cost": 0.0, "calls": 0})
             a["cost"] += cost; a["calls"] += 1
-        uid = r.get("user_id") or r.get("user_email")
+        uid = _acct_key(r)
         if uid:
             u = by_user.setdefault(uid, {"user_id": r.get("user_id"), "email": r.get("user_email"),
                                           "cost": 0.0, "calls": 0})
@@ -187,6 +233,19 @@ def _ai_usage_from_ledger(since_iso: str) -> Optional[dict]:
         except Exception:
             pass
 
+    # Noms des comptes de la facette (best-effort, batch) — pour le menu déroulant.
+    try:
+        fa_ids = [v["id"] for v in facet_accounts.values() if v.get("id")]
+        if fa_ids:
+            profs = supabase.table("profiles").select("id, name, email").in_("id", fa_ids).execute().data or []
+            names = {p["id"]: p for p in profs}
+            for v in facet_accounts.values():
+                p = names.get(v.get("id")) or {}
+                v["name"] = p.get("name") or v.get("email") or "—"
+                v["email"] = v.get("email") or p.get("email")
+    except Exception:
+        pass
+
     for e in by_op.values():
         e["cost"] = round(e["cost"], 4)
     for m in by_model.values():
@@ -203,17 +262,38 @@ def _ai_usage_from_ledger(since_iso: str) -> Optional[dict]:
         "by_model": sorted(by_model.values(), key=lambda x: x["cost"], reverse=True),
         "by_cost_source": by_source,
         "series": [{"date": k, "cost": round(by_day[k]["cost"], 4),
-                    "calls": by_day[k]["calls"]} for k in sorted(by_day)],
+                    "calls": by_day[k]["calls"], "ops": by_day[k]["ops"]} for k in sorted(by_day)],
         "top_aos": top_aos,
         "top_users": top_users,
+        "facets": {
+            "operations": sorted(
+                ({"key": k, "calls": v} for k, v in facet_ops.items()),
+                key=lambda x: x["calls"], reverse=True),
+            "models": sorted(
+                ({"key": k, "calls": v} for k, v in facet_models.items()),
+                key=lambda x: x["calls"], reverse=True),
+            "accounts": sorted(facet_accounts.values(), key=lambda x: x["calls"], reverse=True),
+        },
+        "filters": {"operation": f_op, "model": f_model, "account": f_account},
     }
 
 
 @router.get("/ai-usage")
-async def ai_usage(window: str = "30d", user: dict = Depends(require_admin)):
+async def ai_usage(
+    window: str = "30d",
+    operation: Optional[str] = None,
+    model: Optional[str] = None,
+    account: Optional[str] = None,
+    user: dict = Depends(require_admin),
+):
     """Usage & coûts IA — lit le registre ``ai_usage`` (coût réel OpenRouter par
     appel, attribué au compte / système IA / AO). Se rabat sur les matchings tant
-    que la table n'existe pas. `window` ∈ 24h|7d|30d|90d."""
+    que la table n'existe pas. `window` ∈ 24h|7d|30d|90d.
+
+    Filtres optionnels (croisables) : `operation` (fonction IA : extraction,
+    scoring, draft, summary, assistant…), `model` (modèle exact), `account`
+    (compte consommateur = user_id ou email). Les facettes disponibles sont
+    renvoyées dans la réponse (`facets`) pour alimenter les menus de filtre."""
     days = _AI_WINDOWS.get(window, 30)
     now = datetime.now(timezone.utc)
     since = now - timedelta(days=days)
@@ -228,7 +308,7 @@ async def ai_usage(window: str = "30d", user: dict = Depends(require_admin)):
         "assistant": settings.assistant_model,
     }
 
-    ledger = _ai_usage_from_ledger(since_iso)
+    ledger = _ai_usage_from_ledger(since_iso, f_op=operation, f_model=model, f_account=account)
     if ledger is not None:
         ledger["window"] = window
         ledger["models"] = models

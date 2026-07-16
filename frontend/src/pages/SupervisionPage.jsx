@@ -6,6 +6,7 @@ import UTILoader, { ChartLoader } from '../components/UTILoader'
 import {
   Activity, Coins, Radio, RefreshCw, Cpu, TrendingUp,
   Wallet, ShieldCheck, Layers, FileText, Users, AlertTriangle, Loader2, Scale,
+  SlidersHorizontal, X, BarChart3,
 } from 'lucide-react'
 
 const TABS = [
@@ -97,21 +98,152 @@ function BudgetRow({ label, periodHint, spend, limitDraft, onLimit }) {
   )
 }
 
+// Axe des jours sous un graphe en barres : 5 repères espacés (premier → dernier),
+// pour lire la période couverte sans surcharger (« légende des jours »).
+function DayAxis({ dates }) {
+  const n = Array.isArray(dates) ? dates.length : 0
+  if (n === 0) return null
+  if (n === 1) return (
+    <div className="mt-1.5 text-[9px] text-center tabular" style={{ color: 'var(--text-faint)' }}>{fmtDay(dates[0])}</div>
+  )
+  const picks = [...new Set([0, Math.floor(n * 0.25), Math.floor(n * 0.5), Math.floor(n * 0.75), n - 1])]
+  return (
+    <div className="flex justify-between mt-1.5 px-0.5">
+      {picks.map(i => (
+        <span key={i} className="text-[9px] tabular" style={{ color: 'var(--text-faint)' }}>{fmtDay(dates[i])}</span>
+      ))}
+    </div>
+  )
+}
+
+// Graphe interne : appels IA par jour, empilés par FONCTION (extraction, scoring,
+// draft…) — répond à « quelle fonctionnalité consomme, et quand ». Couleur stable
+// par rang de volume ; au-delà du 6ᵉ → « Autres ». Axe des jours dessous.
+function InternalUsageChart({ series }) {
+  const list = Array.isArray(series) ? series : []
+  const totals = {}
+  for (const d of list) for (const [op, c] of Object.entries(d.ops || {})) totals[op] = (totals[op] || 0) + c
+  const ordered = Object.keys(totals).sort((a, b) => totals[b] - totals[a])
+  const top = ordered.slice(0, 6)
+  const rank = new Map(top.map((op, i) => [op, i]))
+  const hasOther = ordered.length > 6
+  const colorOf = (op) => (rank.has(op) ? VIZ[rank.get(op)] : VIZ_OTHER)
+  const maxCalls = Math.max(1, ...list.map(d => d.calls || 0))
+  const segsOf = (d) => {
+    const segs = []; let other = 0
+    for (const [op, c] of Object.entries(d.ops || {})) {
+      if (rank.has(op)) segs.push({ op, c, color: colorOf(op) }); else other += c
+    }
+    segs.sort((a, b) => rank.get(a.op) - rank.get(b.op))
+    if (other > 0) segs.push({ op: 'Autres', c: other, color: VIZ_OTHER })
+    // Rétrocompat : registre sans ventilation par fonction → barre unique (total).
+    if (segs.length === 0 && (d.calls || 0) > 0) segs.push({ op: '—', c: d.calls, color: 'var(--accent)' })
+    return segs
+  }
+  return (
+    <>
+      <div className="flex items-end gap-1 h-40">
+        {list.map(d => {
+          const segs = segsOf(d)
+          return (
+            <div key={d.date} className="flex-1 h-full flex flex-col justify-end"
+                 title={`${fmtDay(d.date)} · ${fmtInt(d.calls)} appel(s)`}>
+              {[...segs].reverse().map((s, i) => (
+                <div key={s.op}
+                  style={{
+                    height: `${Math.max(1.5, (s.c / maxCalls) * 100)}%`,
+                    background: s.color, marginTop: i ? 2 : 0,
+                    borderRadius: i === 0 ? '3px 3px 0 0' : 0,
+                  }}
+                  title={`${OP_LABELS[s.op] || s.op} · ${fmtDay(d.date)} · ${fmtInt(s.c)} appel(s)`} />
+              ))}
+            </div>
+          )
+        })}
+      </div>
+      <DayAxis dates={list.map(d => d.date)} />
+      {top.length > 0 && top[0] !== '—' && (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 mt-3">
+          {top.map((op, i) => (
+            <span key={op} className="inline-flex items-center gap-1.5 text-[11px]" style={{ color: 'var(--text-muted)' }}>
+              <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: VIZ[i] }} />
+              {OP_LABELS[op] || op}
+              <span className="tabular" style={{ color: 'var(--text-faint)' }}>{fmtInt(totals[op])}</span>
+            </span>
+          ))}
+          {hasOther && (
+            <span className="inline-flex items-center gap-1.5 text-[11px]" style={{ color: 'var(--text-muted)' }}>
+              <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: VIZ_OTHER }} /> Autres
+            </span>
+          )}
+        </div>
+      )}
+    </>
+  )
+}
+
+// Barre de filtres du registre interne (fonction / modèle / compte). Les options
+// et leur volume viennent des facettes serveur (calculées avant filtrage).
+function LedgerFilters({ facets, fOp, setFOp, fModel, setFModel, fAccount, setFAccount, active, onReset }) {
+  if (!facets) return null
+  const ops = facets.operations || [], mods = facets.models || [], accts = facets.accounts || []
+  const cls = 'input !h-8 !py-0 text-[12px]'
+  return (
+    <div className="flex items-center gap-2 flex-wrap">
+      <span className="inline-flex items-center gap-1.5 text-[11px] uppercase tracking-[0.07em] font-semibold" style={{ color: 'var(--text-faint)' }}>
+        <SlidersHorizontal size={12} /> Filtrer
+      </span>
+      <select value={fOp} onChange={e => setFOp(e.target.value)} className={cls} title="Fonction IA">
+        <option value="">Toutes les fonctions</option>
+        {ops.map(o => <option key={o.key} value={o.key}>{(OP_LABELS[o.key] || o.key)} · {o.calls}</option>)}
+      </select>
+      <select value={fModel} onChange={e => setFModel(e.target.value)} className={cls} title="Modèle">
+        <option value="">Tous les modèles</option>
+        {mods.map(m => <option key={m.key} value={m.key}>{shortModel(m.key)} · {m.calls}</option>)}
+      </select>
+      <select value={fAccount} onChange={e => setFAccount(e.target.value)} className={cls} title="Compte consommateur">
+        <option value="">Tous les comptes</option>
+        {accts.map(a => <option key={a.key} value={a.key}>{(a.name || a.email || a.key)} · {a.calls}</option>)}
+      </select>
+      {active && (
+        <button onClick={onReset} className="btn-ghost !h-8 !px-2 text-[11px] inline-flex items-center gap-1" title="Réinitialiser les filtres">
+          <X size={12} /> Réinitialiser
+        </button>
+      )}
+    </div>
+  )
+}
+
 // ── Onglet Usage & coûts IA — miroir OpenRouter + traçabilité ────
 function AiUsageTab() {
   const [win, setWin] = useState('30d')
+  // Filtres du registre interne (attribution) — croisables. '' = pas de filtre.
+  const [fOp, setFOp] = useState('')
+  const [fModel, setFModel] = useState('')
+  const [fAccount, setFAccount] = useState('')
   const [data, setData] = useState(null)   // registre interne (attribution)
   const [orr, setOrr] = useState(undefined) // undefined=chargement, null=indispo
   const [rum, setRum] = useState(undefined) // télémétrie IA via MIP (latence / erreur)
-  const load = (w = win) => {
-    setData(null); setOrr(undefined); setRum(undefined)
-    api.get('/admin/ai-usage', { params: { window: w } }).then(r => setData(r.data)).catch(() => setData(false))
+
+  // Facturation OpenRouter + télémétrie MIP : dépendent SEULEMENT de la fenêtre
+  // (elles ignorent nos filtres d'attribution, qui n'existent que côté registre).
+  const loadExternal = (w) => {
+    setOrr(undefined); setRum(undefined)
     api.get('/admin/ai-openrouter', { params: { window: w } }).then(r => setOrr(r.data)).catch(() => setOrr(null))
     // MIP /rum/summary porte aussi la perf IA (latence p75, taux d'erreur) que
     // la facturation OpenRouter n'a pas. Fenêtre MIP : 30 j max (90 j → 30 j).
     api.get('/admin/rum', { params: { window: w === '90d' ? '30d' : w } }).then(r => setRum(r.data)).catch(() => setRum(null))
   }
-  useEffect(() => { load(win) }, [win])
+  // Registre interne : fenêtre + filtres fonction/modèle/compte.
+  const loadLedger = (w, op, md, acct) => {
+    setData(null)
+    api.get('/admin/ai-usage', { params: {
+      window: w, operation: op || undefined, model: md || undefined, account: acct || undefined,
+    } }).then(r => setData(r.data)).catch(() => setData(false))
+  }
+  const load = (w = win) => { loadExternal(w); loadLedger(w, fOp, fModel, fAccount) }
+  useEffect(() => { loadExternal(win) }, [win])
+  useEffect(() => { loadLedger(win, fOp, fModel, fAccount) }, [win, fOp, fModel, fAccount])
 
   // Budget IA (indépendant de la fenêtre) — chargé une fois.
   const [budget, setBudget] = useState(null)
@@ -177,6 +309,13 @@ function AiUsageTab() {
   const topAos = (data && data.top_aos) || []
   const topUsers = (data && data.top_users) || []
   const models = (data && data.models) || {}
+  // Registre interne prêt (source ledger) + facettes/séries pour filtres & graphes.
+  const ledgerReady = !!(data && data.source === 'ledger')
+  const facets = (data && data.facets) || null
+  const ledgerSeries = (data && data.series) || []
+  const byOperation = (data && data.by_operation) || []
+  const filtersActive = !!(fOp || fModel || fAccount)
+  const resetFilters = () => { setFOp(''); setFModel(''); setFAccount('') }
 
   // Séries par jour pour les mini-courbes des tuiles (données réelles OpenRouter).
   const costSpark = orSeries.map(d => d.cost)
@@ -353,6 +492,7 @@ function AiUsageTab() {
                   )
                 })}
               </div>
+              <DayAxis dates={orSeries.map(d => d.date)} />
               {/* Légende — l'identité ne repose jamais sur la couleur seule */}
               {topModels.length > 0 && (
                 <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 mt-3">
@@ -389,6 +529,7 @@ function AiUsageTab() {
               </div>
             ))}
           </div>
+          <DayAxis dates={orSeries.map(d => d.date)} />
         </div>
       )}
 
@@ -441,21 +582,72 @@ function AiUsageTab() {
       )}
 
       {/* Attribution interne — ce qu'OpenRouter ne sait pas : quel AO / quel compte */}
-      {(topAos.length > 0 || topUsers.length > 0) && (
-        <div>
-          <p className="text-[11px] uppercase tracking-[0.08em] font-semibold mb-2 flex items-center gap-1.5" style={{ color: 'var(--text-faint)' }}>
-            <ShieldCheck size={13} /> Attribution interne UTI <span className="normal-case tracking-normal font-normal" style={{ color: 'var(--text-faint)' }}>· qui a consommé (registre <code>ai_usage</code>)</span>
-          </p>
-          <div className="grid lg:grid-cols-2 gap-6">
-            <div>
-              <p className="text-[11px] mb-2 flex items-center gap-1.5" style={{ color: 'var(--text-faint)' }}><FileText size={12} /> AOs les plus consommateurs</p>
-              <ConsumerTable rows={topAos} nameOf={(r) => r.title || r.ao_id} />
-            </div>
-            <div>
-              <p className="text-[11px] mb-2 flex items-center gap-1.5" style={{ color: 'var(--text-faint)' }}><Users size={12} /> Comptes les plus consommateurs</p>
-              <ConsumerTable rows={topUsers} nameOf={(r) => r.name || r.email || '—'} />
-            </div>
+      {/* Attribution interne UTI — ce qu'OpenRouter/MIP ne savent pas : quelle
+          FONCTION, quel AO, quel COMPTE. Filtrable (fonction/modèle/compte) : la
+          série, la répartition par fonction et les classements suivent le filtre. */}
+      {ledgerReady && (
+        <div className="space-y-5">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <p className="text-[11px] uppercase tracking-[0.08em] font-semibold flex items-center gap-1.5" style={{ color: 'var(--text-faint)' }}>
+              <ShieldCheck size={13} /> Attribution interne UTI
+              <span className="normal-case tracking-normal font-normal" style={{ color: 'var(--text-faint)' }}>
+                · qui / quoi a consommé (registre <code>ai_usage</code>) · {winLabel}
+              </span>
+            </p>
+            <LedgerFilters facets={facets}
+              fOp={fOp} setFOp={setFOp} fModel={fModel} setFModel={setFModel}
+              fAccount={fAccount} setFAccount={setFAccount}
+              active={filtersActive} onReset={resetFilters} />
           </div>
+
+          {/* Résumé de la sélection filtrée (indépendant de la facturation OpenRouter). */}
+          <div className="card p-4 grid grid-cols-2 lg:grid-cols-4 gap-y-5">
+            {[
+              { label: 'Appels IA', value: fmtInt(data.total_calls), sub: filtersActive ? 'sélection filtrée' : 'toutes fonctions' },
+              { label: 'Coût attribué', value: fmtUsd(data.total_cost_usd), sub: 'registre interne' },
+              { label: 'Tokens', value: fmtTok(data.tokens && data.tokens.total), sub: data.tokens ? `${fmtTok(data.tokens.input)} in · ${fmtTok(data.tokens.output)} out` : '' },
+              { label: 'Coût moyen / appel', value: fmtUsd(data.avg_cost_per_call), sub: 'sur la sélection' },
+            ].map((k, i) => (
+              <div key={i} className="flex flex-col gap-1.5 lg:px-5 lg:border-l lg:first:border-l-0 lg:first:pl-0 border-[color:var(--border)]">
+                <span className="text-[11px] uppercase tracking-[0.07em] font-semibold" style={{ color: 'var(--text-faint)' }}>{k.label}</span>
+                <span className="text-[22px] font-semibold tabular leading-none" style={{ color: 'var(--text)' }}>{k.value}</span>
+                <span className="text-[11px]" style={{ color: 'var(--text-faint)' }}>{k.sub}</span>
+              </div>
+            ))}
+          </div>
+
+          {/* Appels IA par jour, empilés par fonction + axe des jours (« quelle fonction, quand »). */}
+          {ledgerSeries.length > 0 ? (
+            <div>
+              <p className="text-[11px] mb-3 flex items-center gap-1.5" style={{ color: 'var(--text-faint)' }}>
+                <BarChart3 size={12} /> Appels IA par jour <span style={{ color: 'var(--text-faint)' }}>· empilés par fonction</span>
+              </p>
+              <InternalUsageChart series={ledgerSeries} />
+            </div>
+          ) : (
+            <p className="text-[12.5px] py-2" style={{ color: 'var(--text-faint)' }}>
+              Aucun appel IA sur la période {filtersActive ? 'pour ce filtre' : ''}.
+            </p>
+          )}
+
+          {/* Répartition par fonction IA — « quelle fonctionnalité brûle le budget ». */}
+          {byOperation.length > 0 && (
+            <div className="grid lg:grid-cols-2 gap-6">
+              <BreakdownTable icon={Layers} title="Usage par fonction IA"
+                rows={byOperation.map(o => ({ key: o.key, cost: o.cost, calls: o.calls, tokens: o.tokens }))}
+                total={data.total_cost_usd} labelOf={(r) => OP_LABELS[r.key] || r.key} />
+              <div className="grid gap-6">
+                <div>
+                  <p className="text-[11px] mb-2 flex items-center gap-1.5" style={{ color: 'var(--text-faint)' }}><FileText size={12} /> AOs les plus consommateurs</p>
+                  <ConsumerTable rows={topAos} nameOf={(r) => r.title || r.ao_id} />
+                </div>
+                <div>
+                  <p className="text-[11px] mb-2 flex items-center gap-1.5" style={{ color: 'var(--text-faint)' }}><Users size={12} /> Comptes les plus consommateurs</p>
+                  <ConsumerTable rows={topUsers} nameOf={(r) => r.name || r.email || '—'} />
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

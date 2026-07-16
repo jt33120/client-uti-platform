@@ -155,6 +155,17 @@ export default function NewAOPage() {
     if (!form.title.trim()) missing.push('Titre de la mission')
     if (!form.description.trim()) missing.push('Description')
     if (!form.skills_required.trim()) missing.push('Compétences requises')
+    // Ces champs alimentent la carte AO (AOSPage) : requis pour PUBLIER (pas
+    // pour un brouillon), sinon les cartes affichent une information partielle
+    // et des tailles différentes selon les AO.
+    if (!asDraft) {
+      if (!form.reference.trim()) missing.push('Référence')
+      if (!form.ao_type) missing.push("Type d'AO")
+      if (!form.deadline) missing.push('Date limite de réponse')
+      if (!form.budget_max) missing.push('Budget max')
+      if (!form.location.trim()) missing.push('Localisation')
+      if (!form.duration.trim()) missing.push('Durée')
+    }
     if (missing.length) {
       setError(`Champ${missing.length > 1 ? 's' : ''} obligatoire${missing.length > 1 ? 's' : ''} manquant${missing.length > 1 ? 's' : ''} : ${missing.join(', ')}.`)
       errorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
@@ -319,7 +330,7 @@ export default function NewAOPage() {
               </div>
 
               <div>
-                <label className="label">Type d'AO</label>
+                <label className="label">Type d'AO *</label>
                 <div className="relative">
                   <select
                     value={form.ao_type} onChange={set('ao_type')}
@@ -335,7 +346,7 @@ export default function NewAOPage() {
               </div>
 
               <div>
-                <label className="label">Référence client / consultation</label>
+                <label className="label">Référence client / consultation *</label>
                 <input
                   type="text" className="input"
                   placeholder="ex: Marché Spécifique n°23915SA230MS"
@@ -420,11 +431,16 @@ export default function NewAOPage() {
 
             {/* Conditions */}
             <div className="card p-6 space-y-4">
-              <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-widest">Conditions</h2>
+              <div>
+                <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-widest">Conditions</h2>
+                <p className="text-[10px] text-slate-600 mt-1">
+                  * Requis pour publier — facultatif si vous enregistrez en brouillon.
+                </p>
+              </div>
 
               <div>
                 <label className="label flex items-center gap-1.5">
-                  <CalendarClock size={12} style={{ color: 'var(--danger)' }} /> Date limite de réponse
+                  <CalendarClock size={12} style={{ color: 'var(--danger)' }} /> Date limite de réponse *
                 </label>
                 <input type="date" className="input"
                   value={form.deadline} onChange={set('deadline')} />
@@ -432,7 +448,7 @@ export default function NewAOPage() {
 
               <div>
                 <label className="label flex items-center gap-1.5">
-                  <Euro size={12} className="text-emerald-400" /> Budget max (€/jour)
+                  <Euro size={12} className="text-emerald-400" /> Budget max (€/jour) *
                 </label>
                 <input type="number" className="input" placeholder="700"
                   value={form.budget_max} onChange={set('budget_max')} min="0" />
@@ -440,7 +456,7 @@ export default function NewAOPage() {
 
               <div>
                 <label className="label flex items-center gap-1.5">
-                  <Clock size={12} className="text-amber-400" /> Durée
+                  <Clock size={12} className="text-amber-400" /> Durée *
                 </label>
                 <input type="text" className="input" placeholder="3 mois renouvelable"
                   value={form.duration} onChange={set('duration')} />
@@ -448,7 +464,7 @@ export default function NewAOPage() {
 
               <div>
                 <label className="label flex items-center gap-1.5">
-                  <MapPin size={12} className="text-brand-400" /> Localisation
+                  <MapPin size={12} className="text-brand-400" /> Localisation *
                 </label>
                 <input type="text" className="input" placeholder="Paris 8e, Lyon, Nantes..."
                   value={form.location} onChange={set('location')} />

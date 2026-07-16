@@ -17,6 +17,14 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _looks_like_missing_col(err: Exception, col: str) -> bool:
+    """Colonne absente (migration non appliquée) — pour dégrader au lieu de bloquer."""
+    s = str(err).lower()
+    return col in s and any(
+        k in s for k in ("column", "42703", "does not exist", "schema cache", "pgrst204")
+    )
+
+
 def _fetch_states(ao_id: str) -> dict:
     """État humain (classement + contact) par consultant. Best-effort (table absente → {})."""
     try:
@@ -414,6 +422,7 @@ class ValidationRequest(BaseModel):
     deal_status: Optional[str] = None          # 'gagnee' | 'perdue' | 'none'
     eval_points_forts: Optional[str] = None     # commentaire libre « Points forts »
     eval_differenciants: Optional[str] = None   # commentaire libre « Éléments différenciants »
+    refusal_reason: Optional[str] = None        # motif de refus (visible partenaire) si « non retenu »
     notify: bool = False                        # True → notifie le partenaire par email
 
 
@@ -450,6 +459,14 @@ async def set_cv_validation(ao_id: str, body: ValidationRequest, background_task
             raise HTTPException(status_code=422, detail=f"validation doit être l'un de {VALID_VALIDATION}")
         payload["validation"] = None if body.validation == "none" else body.validation
         changed["validation"] = payload["validation"]
+        # Un motif de refus n'a de sens que sur « non retenu » : on le purge dès qu'on
+        # repasse à retenu / neutre pour ne pas laisser un motif obsolète visible.
+        if payload["validation"] != "non_retenu" and body.refusal_reason is None:
+            payload["refusal_reason"] = None
+
+    if body.refusal_reason is not None:
+        payload["refusal_reason"] = body.refusal_reason.strip()[:200] or None
+        changed["refusal_reason"] = True
 
     if body.sent_to_client is not None:
         payload["sent_to_client_at"] = now if body.sent_to_client else None
@@ -481,7 +498,19 @@ async def set_cv_validation(ao_id: str, body: ValidationRequest, background_task
             payload, on_conflict="ao_id,consultant_id"
         ).execute().data[0]
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erreur mise à jour validation: {e}")
+        # Repli si la colonne `refusal_reason` n'est pas encore migrée : on ré-essaie
+        # sans elle plutôt que de bloquer toute la validation (DB en retard sur le code).
+        if "refusal_reason" in payload and _looks_like_missing_col(e, "refusal_reason"):
+            payload.pop("refusal_reason", None)
+            changed.pop("refusal_reason", None)
+            try:
+                row = supabase.table("ao_consultant_state").upsert(
+                    payload, on_conflict="ao_id,consultant_id"
+                ).execute().data[0]
+            except Exception as e2:
+                raise HTTPException(status_code=500, detail=f"Erreur mise à jour validation: {e2}")
+        else:
+            raise HTTPException(status_code=500, detail=f"Erreur mise à jour validation: {e}")
 
     try:
         audit.log_event(
@@ -505,6 +534,38 @@ async def set_cv_validation(ao_id: str, body: ValidationRequest, background_task
             background_tasks.add_task(_notify_events_bg, ao_id, body.consultant_id, events, user["sub"])
 
     return row
+
+
+@router.get("/refusal-reasons")
+async def list_refusal_reasons(user: dict = Depends(require_staff)):
+    """Référentiel des motifs de refus (code + libellé) pour la liste déroulante."""
+    from services.refusal_reason import REASONS
+    return {"reasons": REASONS}
+
+
+@router.get("/{ao_id}/refusal-suggestion")
+async def refusal_suggestion(ao_id: str, consultant_id: str, user: dict = Depends(require_staff)):
+    """Motif de refus PRÉ-REMPLI par l'IA pour un candidat (staff). Jamais bloquant :
+    repli déterministe dérivé du plus faible critère si le LLM est indisponible."""
+    from services.refusal_reason import suggest_refusal_reason
+    try:
+        match = (
+            supabase.table("matchings")
+            .select("consultant_id, score_total, score_hybride, breakdown, hybrid_breakdown, llm_global, weights")
+            .eq("ao_id", ao_id).eq("consultant_id", str(consultant_id))
+            .limit(1).execute().data or [None]
+        )[0]
+    except Exception:
+        match = None
+    ao = (supabase.table("appels_offres").select(
+        "title, skills_required, seniority, budget_max, context"
+    ).eq("id", ao_id).limit(1).execute().data or [None])[0]
+    if ao is None:
+        raise HTTPException(status_code=404, detail="AO introuvable")
+    if not match:
+        # Pas de ligne de matching (CV hors scoring) : repli neutre.
+        return {"code": "autre", "reason": "", "source": "none"}
+    return await suggest_refusal_reason(ao, match)
 
 
 class SendCvClientRequest(BaseModel):
@@ -550,15 +611,21 @@ async def get_ao_states(ao_id: str, user: dict = Depends(require_staff)):
     """État par consultant pour un AO (classement humain, contact et cycle de
     vie « Validation CV »). Renvoie une map consultant_id → état pour que l'onglet
     Validation CV puisse afficher tous les CV reçus avec leur statut."""
+    cols = (
+        "consultant_id, human_rank, contact_status, validation, "
+        "sent_to_client_at, commercial_exchange, deal_status, "
+        "eval_points_forts, eval_differenciants, refusal_reason"
+    )
     try:
-        rows = supabase.table("ao_consultant_state").select(
-            "consultant_id, human_rank, contact_status, validation, "
-            "sent_to_client_at, commercial_exchange, deal_status, "
-            "eval_points_forts, eval_differenciants"
-        ).eq("ao_id", ao_id).execute().data or []
-    except Exception:
-        # Détail loggé côté serveur ; réponse 500 générique (handler global).
-        raise
+        rows = supabase.table("ao_consultant_state").select(cols).eq("ao_id", ao_id).execute().data or []
+    except Exception as e:
+        # Repli si `refusal_reason` pas encore migrée : on relit sans elle.
+        if _looks_like_missing_col(e, "refusal_reason"):
+            rows = supabase.table("ao_consultant_state").select(
+                cols.replace(", refusal_reason", "")
+            ).eq("ao_id", ao_id).execute().data or []
+        else:
+            raise
     return {"states": {r["consultant_id"]: r for r in rows if r.get("consultant_id")}}
 
 

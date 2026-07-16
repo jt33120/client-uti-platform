@@ -2197,12 +2197,111 @@ function OutcomeBilan({ ao, submissions, suggestedWinnerId, onSaved }) {
   )
 }
 
+// Référentiel des motifs de refus (miroir de services/refusal_reason.py).
+const REFUSAL_REASONS = [
+  { code: 'tjm_eleve', label: 'TJM au-dessus de la fourchette cible' },
+  { code: 'seniorite', label: 'Séniorité insuffisante pour la mission' },
+  { code: 'competences', label: 'Compétences techniques clés non couvertes' },
+  { code: 'domaine', label: "Manque d'expérience dans le secteur / domaine" },
+  { code: 'disponibilite', label: 'Disponibilité incompatible avec le besoin' },
+  { code: 'localisation', label: 'Localisation / mobilité incompatible' },
+  { code: 'deja_pourvu', label: 'Mission déjà pourvue / short-list bouclée' },
+  { code: 'autre', label: 'Autre (précisé ci-dessous)' },
+]
+
+// Motif de refus « Non retenu » : pré-rempli par l'IA (à partir du score vs l'AO),
+// ajustable dans une liste + texte libre. Le motif est communiqué au partenaire.
+function RefusalReasonModal({ aoId, sub, onClose, onConfirm }) {
+  const [code, setCode] = useState('autre')
+  const [text, setText] = useState('')
+  const [aiState, setAiState] = useState('loading')  // 'loading' | 'done' | 'off'
+  const [saving, setSaving] = useState(false)
+  const touched = useRef(false)  // l'utilisateur a-t-il déjà tapé/choisi ? (ne pas écraser)
+
+  useEffect(() => {
+    let ignore = false
+    api.get(`/matching/${aoId}/refusal-suggestion`, { params: { consultant_id: sub.consultant_id } })
+      .then(r => {
+        if (ignore) return
+        const d = r.data || {}
+        // Si l'utilisateur a déjà agi pendant le chargement, on ne l'écrase pas.
+        if (!touched.current) {
+          if (d.code && REFUSAL_REASONS.some(x => x.code === d.code)) setCode(d.code)
+          if (d.reason) setText(d.reason)
+        }
+        setAiState(d.source === 'llm' ? 'done' : 'off')
+      })
+      .catch(() => { if (!ignore) setAiState('off') })
+    return () => { ignore = true }
+  }, [aoId, sub.consultant_id])
+
+  // Changer le motif dans la liste réécrit le texte (sauf « Autre » : on garde
+  // le texte libre existant pour ne pas effacer une saisie).
+  const pickCode = (c) => {
+    touched.current = true
+    setCode(c)
+    const m = REFUSAL_REASONS.find(x => x.code === c)
+    if (m && c !== 'autre') setText(m.label)
+  }
+
+  const confirm = async () => {
+    setSaving(true)
+    try {
+      await onConfirm((text || '').trim())
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+      <div className="card p-6 w-full max-w-md" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-1">
+          <h2 className="text-sm font-semibold text-white flex items-center gap-2">
+            <X size={14} className="text-red-400" /> Marquer « Non retenu »
+          </h2>
+          <button onClick={onClose} className="btn-ghost p-1.5"><X size={14} /></button>
+        </div>
+        <p className="text-xs text-slate-500 mb-4">
+          Le partenaire porteur de <strong>{sub.consultants?.name || 'ce profil'}</strong> sera notifié
+          par email, avec le motif ci-dessous. Un motif clair l'aide à mieux cibler ses prochaines réponses.
+        </p>
+
+        <label className="label flex items-center gap-1.5">
+          Motif
+          {aiState === 'loading' && <span className="text-[10px] text-slate-500 inline-flex items-center gap-1"><Loader2 size={10} className="animate-spin" /> suggestion IA…</span>}
+          {aiState === 'done' && <span className="text-[10px] text-brand-300 inline-flex items-center gap-1"><Sparkles size={10} /> pré-rempli par l'IA</span>}
+        </label>
+        <div className="relative mb-2">
+          <select className="input appearance-none pr-9" value={code} onChange={e => pickCode(e.target.value)}>
+            {REFUSAL_REASONS.map(r => <option key={r.code} value={r.code} className="bg-navy-900">{r.label}</option>)}
+          </select>
+          <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
+        </div>
+        <textarea className="input min-h-[70px] resize-y text-sm" value={text} maxLength={200}
+          onChange={e => { touched.current = true; setText(e.target.value) }}
+          placeholder="Précisez le motif communiqué au partenaire…" />
+        <p className="text-[10px] text-slate-600 mt-1 text-right">{text.length}/200</p>
+
+        <div className="flex items-center justify-end gap-2 mt-4">
+          <button onClick={onClose} className="btn-ghost text-xs px-4">Annuler</button>
+          <button onClick={confirm} disabled={saving} className={PILL} style={TONE.red}>
+            {saving ? <Loader2 size={12} className="animate-spin" /> : <X size={12} />}
+            Confirmer et notifier
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function ValidationTab({ aoId, submissions, clientId, scores }) {
   const confirm = useConfirm()
   const [states, setStates] = useState({})
   const [busy, setBusy] = useState(null)
   const [clientModalSub, setClientModalSub] = useState(null)
   const [cvModalSub, setCvModalSub] = useState(null)
+  const [refusalSub, setRefusalSub] = useState(null)
   const [selected, setSelected] = useState(() => new Set())
   const toggleSel = (cid) => setSelected(p => { const n = new Set(p); n.has(cid) ? n.delete(cid) : n.add(cid); return n })
 
@@ -2243,6 +2342,14 @@ function ValidationTab({ aoId, submissions, clientId, scores }) {
     } finally {
       setBusy(null)
     }
+  }
+
+  // « Non retenu » : le motif (pré-rempli IA + liste) est saisi dans un modal,
+  // puis persisté + notifié au partenaire.
+  const confirmRefusal = async (reason) => {
+    const cid = refusalSub.consultant_id
+    await update(cid, { validation: 'non_retenu', refusal_reason: reason || null, notify: true })
+    setRefusalSub(null)
   }
 
   // Action qui notifie le partenaire : confirmation avant envoi (décision « auto + confirmation »).
@@ -2354,7 +2461,7 @@ function ValidationTab({ aoId, submissions, clientId, scores }) {
                 <button disabled={busyRow} className={PILL} style={rejected ? TONE.red : TONE.off}
                   onClick={() => rejected
                     ? update(s.consultant_id, { validation: 'none' })
-                    : act(s.consultant_id, { validation: 'non_retenu' }, 'Marquer « Non retenu » ?')}>
+                    : setRefusalSub(s)}>
                   <X size={12} /> Non retenu
                 </button>
                 {retained && (
@@ -2385,6 +2492,13 @@ function ValidationTab({ aoId, submissions, clientId, scores }) {
                   Affaire perdue
                 </button>
               </div>
+              {/* Motif de refus communiqué au partenaire (si « Non retenu »). */}
+              {rejected && st.refusal_reason && (
+                <div className="mt-2 sm:pl-9 text-[11px] flex items-start gap-1.5" style={{ color: 'var(--text-muted)' }}>
+                  <X size={11} className="text-red-400/70 mt-0.5 shrink-0" />
+                  <span><span className="text-slate-500">Motif communiqué :</span> {st.refusal_reason}</span>
+                </div>
+              )}
               {/* Points forts / éléments différenciants : déplacés dans l'onglet
                   « Matching CV » (carte du CV reçu), demande Sullyvan. */}
             </div>
@@ -2409,6 +2523,14 @@ function ValidationTab({ aoId, submissions, clientId, scores }) {
           submissionId={cvModalSub.id}
           name={cvModalSub.consultants?.name}
           onClose={() => setCvModalSub(null)}
+        />
+      )}
+      {refusalSub && (
+        <RefusalReasonModal
+          aoId={aoId}
+          sub={refusalSub}
+          onClose={() => setRefusalSub(null)}
+          onConfirm={confirmRefusal}
         />
       )}
     </div>

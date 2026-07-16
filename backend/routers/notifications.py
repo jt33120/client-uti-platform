@@ -11,6 +11,9 @@ router = APIRouter(prefix="/notifications", tags=["notifications"])
 
 # Fenêtre d'urgence : un AO à échéance dans ≤ 3 jours remonte comme alerte.
 _URGENT_DAYS = 3
+# Fenêtre des « bonnes nouvelles » candidat (retenu / présenté / gagné) : 14 jours,
+# pour ne pas re-notifier indéfiniment une décision ancienne.
+_STATUS_WINDOW_DAYS = 14
 _EMAIL_KIND_LABEL = {
     "list_1": "Diffusion liste 1",
     "list_2": "Diffusion liste 2",
@@ -93,6 +96,123 @@ def _email_items():
     return out
 
 
+def _partner_eligible_client_ids(uid):
+    """client_ids visibles par ce partenaire (accès list_1 / list_2, non suspendu)."""
+    try:
+        rows = supabase.table("partner_clients").select("client_id").eq(
+            "partner_id", uid).in_("tier", ["list_1", "list_2"]).execute().data or []
+        return [r["client_id"] for r in rows if r.get("client_id")]
+    except Exception:
+        return []
+
+
+def _partner_responded_ao_ids(uid):
+    """ao_id auxquels ce partenaire a déjà soumis au moins un CV."""
+    try:
+        rows = supabase.table("submissions").select("ao_id").eq(
+            "submitted_by", uid).execute().data or []
+        return {r["ao_id"] for r in rows if r.get("ao_id")}
+    except Exception:
+        return set()
+
+
+def _partner_urgent_ao_items(uid, today, horizon):
+    """AO éligibles à échéance ≤ 3 j auxquels le partenaire n'a PAS encore répondu.
+    « Il te reste X jours pour répondre. » Best-effort, cloisonné à ses clients."""
+    out = []
+    try:
+        client_ids = _partner_eligible_client_ids(uid)
+        if not client_ids:
+            return out
+        answered = _partner_responded_ao_ids(uid)
+        base = supabase.table("appels_offres").select(
+            "id, title, deadline, client_id, clients(name)"
+        ).eq("status", "open").in_("client_id", client_ids).gte(
+            "deadline", today.isoformat()).lte("deadline", horizon.isoformat())
+        try:
+            rows = base.eq("archived", False).eq("is_draft", False).order("deadline").execute().data or []
+        except Exception:
+            rows = base.order("deadline").execute().data or []
+        for a in rows:
+            if a["id"] in answered:
+                continue
+            dl = _parse_date(a.get("deadline"))
+            if not dl:
+                continue
+            days = (dl - today).days
+            cl = (a.get("clients") or {}).get("name")
+            when = "aujourd'hui" if days <= 0 else ("demain" if days == 1 else f"dans {days} jours")
+            out.append({
+                "id": f"ao-{a['id']}", "kind": "ao_urgent",
+                "severity": "urgent" if days <= 1 else "warning",
+                "title": a.get("title") or "Appel d'offres",
+                "subtitle": (f"{cl} · " if cl else "") + f"Échéance {when} — pas encore de réponse",
+                "link": f"/aos/{a['id']}", "date": a.get("deadline"),
+            })
+    except Exception:
+        pass
+    return out
+
+
+def _partner_status_items(uid, since):
+    """Bonnes nouvelles récentes sur les candidats du partenaire : retenu, présenté
+    au client, affaire gagnée (≤ 14 j). Motivant, non-spam. Cloisonné à SES paires
+    (ao, consultant). Best-effort (colonnes récentes → rien plutôt qu'une erreur)."""
+    out = []
+    try:
+        subs = supabase.table("submissions").select(
+            "ao_id, consultant_id, consultants(name)"
+        ).eq("submitted_by", uid).execute().data or []
+        if not subs:
+            return out
+        ao_ids = list({s["ao_id"] for s in subs if s.get("ao_id")})
+        cids = list({s["consultant_id"] for s in subs if s.get("consultant_id")})
+        name_by = {s.get("consultant_id"): (s.get("consultants") or {}).get("name") for s in subs}
+        # Paires RÉELLEMENT soumises par ce partenaire. Le double .in_() ci-dessous
+        # renverrait le produit cartésien (ao ∈ ao_ids × consultant ∈ cids) ; on
+        # re-filtre donc sur les vraies paires pour ne jamais notifier une décision
+        # portant sur une paire (ao, consultant) que le partenaire n'a pas soumise.
+        pairs = {(s.get("ao_id"), s.get("consultant_id")) for s in subs}
+        if not ao_ids or not cids:
+            return out
+        rows = supabase.table("ao_consultant_state").select(
+            "ao_id, consultant_id, validation, sent_to_client_at, deal_status, updated_at"
+        ).in_("ao_id", ao_ids).in_("consultant_id", cids).execute().data or []
+        rows = [r for r in rows if (r.get("ao_id"), r.get("consultant_id")) in pairs]
+        titles = {}
+        try:
+            for a in supabase.table("appels_offres").select("id, title").in_("id", ao_ids).execute().data or []:
+                titles[a["id"]] = a.get("title")
+        except Exception:
+            pass
+        for r in rows:
+            upd = _parse_date(r.get("updated_at"))
+            if upd and upd < since:
+                continue  # trop ancien : on ne re-notifie pas indéfiniment
+            nm = name_by.get(r.get("consultant_id")) or "Votre candidat"
+            t = titles.get(r.get("ao_id"))
+            ctx = f" · {t}" if t else ""
+            if r.get("deal_status") == "gagnee":
+                label, sev = "Affaire gagnée 🎉", "info"
+                sub = f"{nm} — mission remportée{ctx}"
+            elif r.get("sent_to_client_at"):
+                label, sev = "Profil présenté au client", "info"
+                sub = f"{nm} a été présenté au client{ctx}"
+            elif r.get("validation") == "retenu":
+                label, sev = "Profil retenu", "info"
+                sub = f"{nm} a été retenu par GRP-IT{ctx}"
+            else:
+                continue
+            out.append({
+                "id": f"status-{r.get('ao_id')}-{r.get('consultant_id')}", "kind": "status",
+                "severity": sev, "title": label, "subtitle": sub,
+                "link": f"/aos/{r.get('ao_id')}", "date": r.get("updated_at"),
+            })
+    except Exception:
+        pass
+    return out
+
+
 def _missing_info_items(role, uid):
     """Invitation à compléter les infos VRAIMENT importantes des consultants : ici,
     le statut de disponibilité manquant. Agrégé (un seul item), non-spam. Partenaire :
@@ -133,6 +253,10 @@ async def notifications_feed(user: dict = Depends(get_current_user)):
     if is_staff:
         items += _urgent_ao_items(today, horizon)
         items += _email_items()
+    elif role == "ao":
+        # Partenaire : AO éligibles urgents non répondus + progression de SES candidats.
+        items += _partner_urgent_ao_items(uid, today, horizon)
+        items += _partner_status_items(uid, today - timedelta(days=_STATUS_WINDOW_DAYS))
     items += _missing_info_items(role, uid)
 
     urgent_count = sum(1 for i in items if i["kind"] == "ao_urgent")

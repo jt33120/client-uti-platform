@@ -13,6 +13,20 @@ import uuid
 
 router = APIRouter(prefix="/submissions", tags=["submissions"])
 
+
+def _parse_date(s):
+    """Date d'un horodatage ISO (ou 'YYYY-MM-DD') ; None si illisible."""
+    if not s:
+        return None
+    from datetime import datetime as _dt, date as _date
+    try:
+        return _dt.fromisoformat(str(s).replace("Z", "+00:00")).date()
+    except Exception:
+        try:
+            return _date.fromisoformat(str(s)[:10])
+        except Exception:
+            return None
+
 # Extension → (content-type de stockage, extracteur de texte). Le format réel
 # est déterminé par l'extension du nom de fichier (le content-type envoyé par
 # le navigateur est peu fiable pour docx/xlsx), même approche que la
@@ -348,14 +362,23 @@ async def my_response_outcomes(user: dict = Depends(get_current_user)):
     # les notes internes (eval_*), ni partenaire/contact cible (staff only).
     state_by: dict = {}
     if ao_ids and cids:
+        _state_cols = (
+            "ao_id, consultant_id, contact_status, contacted_at, validation, "
+            "deal_status, sent_to_client_at, commercial_exchange, refusal_reason"
+        )
         try:
-            for r in supabase.table("ao_consultant_state").select(
-                "ao_id, consultant_id, contact_status, contacted_at, validation, "
-                "deal_status, sent_to_client_at, commercial_exchange"
-            ).in_("ao_id", ao_ids).in_("consultant_id", cids).execute().data or []:
+            for r in supabase.table("ao_consultant_state").select(_state_cols).in_(
+                "ao_id", ao_ids).in_("consultant_id", cids).execute().data or []:
                 state_by[(r["ao_id"], r["consultant_id"])] = r
         except Exception:
-            pass
+            # Repli si `refusal_reason` pas encore migrée : on relit sans elle.
+            try:
+                for r in supabase.table("ao_consultant_state").select(
+                    _state_cols.replace(", refusal_reason", "")
+                ).in_("ao_id", ao_ids).in_("consultant_id", cids).execute().data or []:
+                    state_by[(r["ao_id"], r["consultant_id"])] = r
+            except Exception:
+                pass
 
     # Score (matchings.consultant_id est TEXT -> cast str pour ne pas perdre les lignes).
     score_by: dict = {}
@@ -391,6 +414,9 @@ async def my_response_outcomes(user: dict = Depends(get_current_user)):
             "score": score_by.get((aid, str(cid))),
             "outcome": oc,
             "contacted": st.get("contact_status") in ("contacted", "proposed"),
+            # Motif de refus : communiqué UNIQUEMENT quand le profil est écarté
+            # (jamais de fuite de note interne sur les autres issues).
+            "refusal_reason": (st.get("refusal_reason") or None) if oc == "ecarte" else None,
         })
 
     out = []
@@ -408,6 +434,133 @@ async def my_response_outcomes(user: dict = Depends(get_current_user)):
         })
     out.sort(key=lambda x: x.get("submitted_at") or "", reverse=True)
     return {"aos": out}
+
+
+def _days_between(a: str, b: str):
+    """Nombre de jours (float) entre deux horodatages ISO ; None si illisible."""
+    from datetime import datetime as _dt
+    def _p(s):
+        try:
+            return _dt.fromisoformat(str(s).replace("Z", "+00:00"))
+        except Exception:
+            return None
+    da, db = _p(a), _p(b)
+    if not da or not db:
+        return None
+    try:
+        return (db - da).total_seconds() / 86400.0
+    except TypeError:
+        # Mélange naïf / tz-aware (vieilles lignes) : on ignore plutôt que 500.
+        return None
+
+
+@router.get("/mine/dashboard")
+async def my_partner_dashboard(user: dict = Depends(get_current_user)):
+    """Mini-tableau de bord partenaire : volumétrie, taux de profils retenus, délai
+    moyen de première réponse, et prochaines échéances éligibles NON répondues
+    (calendrier). Cloisonné à SES données. Dégrade proprement (jamais 500)."""
+    from datetime import datetime as _dt, timezone as _tz
+    uid = user["sub"]
+    today = _dt.now(_tz.utc).date()
+
+    # ── Mes soumissions → paires (ao, consultant) ──────────────────────────────
+    try:
+        subs = supabase.table("submissions").select(
+            "ao_id, consultant_id, submitted_at"
+        ).eq("submitted_by", uid).execute().data or []
+    except Exception:
+        subs = []
+
+    stats = {"responses": 0, "candidates": len(subs), "en_attente": 0,
+             "retenu": 0, "presente": 0, "gagne": 0, "perdu": 0, "ecarte": 0}
+    delais = []
+    if subs:
+        ao_ids = list({s["ao_id"] for s in subs if s.get("ao_id")})
+        cids = list({s["consultant_id"] for s in subs if s.get("consultant_id")})
+        stats["responses"] = len(ao_ids)
+        state_by = {}
+        if ao_ids and cids:
+            try:
+                for r in supabase.table("ao_consultant_state").select(
+                    "ao_id, consultant_id, contact_status, contacted_at, validation, "
+                    "deal_status, sent_to_client_at"
+                ).in_("ao_id", ao_ids).in_("consultant_id", cids).execute().data or []:
+                    state_by[(r["ao_id"], r["consultant_id"])] = r
+            except Exception:
+                pass
+        # Issue de l'AO (bilan de clôture) pour réconcilier « gagné » — même règle
+        # que « Mes réponses » : un candidat gagnant sur un AO finalement non pourvu
+        # (ou pourvu par un AUTRE) est requalifié « perdu ». Garde les deux vues
+        # cohérentes (taux non gonflé). Best-effort (colonnes récentes → repli).
+        ao_meta = {}
+        if ao_ids:
+            try:
+                for a in supabase.table("appels_offres").select(
+                    "id, ao_outcome, winning_partner_id"
+                ).in_("id", ao_ids).execute().data or []:
+                    ao_meta[a["id"]] = a
+            except Exception:
+                pass
+        for s in subs:
+            st = state_by.get((s.get("ao_id"), s.get("consultant_id")), {})
+            oc = _partner_outcome(st)
+            meta = ao_meta.get(s.get("ao_id")) or {}
+            if oc == "gagne" and (meta.get("ao_outcome") in ("non_pourvu", "sans_suite")
+                                  or (meta.get("ao_outcome") == "pourvu" and meta.get("winning_partner_id") != uid)):
+                oc = "perdu"
+            if oc in ("retenu", "presente", "gagne", "perdu", "ecarte"):
+                stats[oc] += 1
+            else:  # 'soumis' | 'contacte' → en attente d'une décision
+                stats["en_attente"] += 1
+            # Délai de 1re réponse : soumission → 1er contact daté.
+            d = _days_between(s.get("submitted_at"), st.get("contacted_at")) if st.get("contacted_at") else None
+            if d is not None and d >= 0:
+                delais.append(d)
+
+    decided = stats["candidates"] - stats["en_attente"]
+    advanced = stats["retenu"] + stats["presente"] + stats["gagne"]
+    taux_retenu = round(100 * advanced / decided) if decided > 0 else None
+    delai_moyen = round(sum(delais) / len(delais), 1) if delais else None
+
+    # ── Prochaines échéances éligibles NON répondues (calendrier) ──────────────
+    upcoming = []
+    try:
+        access = supabase.table("partner_clients").select("client_id").eq(
+            "partner_id", uid).in_("tier", ["list_1", "list_2"]).execute().data or []
+        client_ids = [r["client_id"] for r in access if r.get("client_id")]
+        answered = {s["ao_id"] for s in subs if s.get("ao_id")}
+        if client_ids:
+            base = supabase.table("appels_offres").select(
+                "id, title, deadline, client_id, clients(name)"
+            ).eq("status", "open").in_("client_id", client_ids).gte(
+                "deadline", today.isoformat())
+            try:
+                rows = base.eq("archived", False).eq("is_draft", False).order("deadline").limit(20).execute().data or []
+            except Exception:
+                rows = base.order("deadline").limit(20).execute().data or []
+            for a in rows:
+                if a["id"] in answered:
+                    continue
+                dl = _parse_date(a.get("deadline"))
+                if not dl:
+                    continue
+                upcoming.append({
+                    "ao_id": a["id"], "title": a.get("title") or "Appel d'offres",
+                    "client_name": (a.get("clients") or {}).get("name"),
+                    "deadline": a.get("deadline"), "days": (dl - today).days,
+                })
+                if len(upcoming) >= 6:
+                    break
+    except Exception:
+        pass
+
+    return {
+        "stats": stats,
+        "taux_retenu": taux_retenu,
+        "delai_moyen_jours": delai_moyen,
+        "en_attente": stats["en_attente"],
+        "upcoming": upcoming,
+    }
 
 
 @router.delete("/{submission_id}")

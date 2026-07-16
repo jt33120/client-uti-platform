@@ -8,6 +8,7 @@ import {
   Building2, Users, Calendar, CalendarClock,
   Pencil, X, Loader2, ChevronDown, ChevronLeft, ChevronRight, Check, Trash2, ArrowDownUp, Sparkles,
   SlidersHorizontal, Archive, ArchiveRestore, Award, Send,
+  Hourglass,
 } from 'lucide-react'
 import { TierBadge } from '../components/badges'
 import { EmptyState } from '../components/EmptyState'
@@ -720,6 +721,85 @@ const OUTCOME_META = {
   soumis:   { l: 'Soumis',           bg: 'rgba(148,163,184,0.10)', c: '#94a3b8' },
 }
 
+// Teinte d'urgence d'une échéance (jours restants).
+function deadlineTone(days) {
+  if (days <= 1) return { bg: 'rgba(239,68,68,0.12)', c: '#f87171', b: 'rgba(239,68,68,0.3)' }
+  if (days <= 3) return { bg: 'rgba(245,158,11,0.12)', c: '#f59e0b', b: 'rgba(245,158,11,0.3)' }
+  if (days <= 7) return { bg: 'rgba(59,130,246,0.10)', c: '#93c5fd', b: 'rgba(59,130,246,0.25)' }
+  return { bg: 'var(--surface-2)', c: 'var(--text-muted)', b: 'var(--border)' }
+}
+
+// Mini-tableau de bord partenaire : volumétrie de réponses, taux de profils
+// retenus, délai moyen de 1re réponse, et prochaines échéances éligibles non
+// répondues (calendrier). Dégrade en silence si l'endpoint n'est pas déployé.
+function PartnerDashboard({ navigate }) {
+  const [d, setD] = useState(null)
+  useEffect(() => {
+    let ignore = false
+    api.get('/submissions/mine/dashboard')
+      .then(r => { if (!ignore) setD(r.data) })
+      .catch(() => { if (!ignore) setD(null) })
+    return () => { ignore = true }
+  }, [])
+  if (!d) return null
+  const s = d.stats || {}
+  const tiles = [
+    { icon: FileText, label: 'AO répondus', value: s.responses ?? 0, tone: '#93c5fd' },
+    { icon: Award, label: 'Taux de profils retenus', value: d.taux_retenu == null ? '—' : `${d.taux_retenu}%`, tone: '#34d399' },
+    { icon: Clock, label: 'Délai moyen 1re réponse', value: d.delai_moyen_jours == null ? '—' : `${d.delai_moyen_jours} j`, tone: '#c4b5fd' },
+    { icon: Hourglass, label: 'Candidats en attente', value: d.en_attente ?? 0, tone: '#f59e0b' },
+  ]
+  const upcoming = d.upcoming || []
+  const empty = (s.candidates ?? 0) === 0 && upcoming.length === 0
+  if (empty) return null
+  return (
+    <div className="mb-4 space-y-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+        {tiles.map((t, i) => {
+          const Icon = t.icon
+          return (
+            <div key={i} className="card p-3">
+              <div className="flex items-center gap-1.5 mb-1">
+                <Icon size={12} style={{ color: t.tone }} />
+                <span className="text-[10px] uppercase tracking-wide text-slate-500 leading-tight">{t.label}</span>
+              </div>
+              <div className="text-lg font-semibold tabular" style={{ color: 'var(--text)' }}>{t.value}</div>
+            </div>
+          )
+        })}
+      </div>
+
+      {upcoming.length > 0 && (
+        <div className="card p-4">
+          <div className="flex items-center gap-2 mb-2.5">
+            <CalendarClock size={13} className="text-brand-400" />
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400">Prochaines échéances à saisir</h3>
+          </div>
+          <div className="space-y-1.5">
+            {upcoming.map(u => {
+              const t = deadlineTone(u.days)
+              const when = u.days <= 0 ? "aujourd'hui" : u.days === 1 ? 'demain' : `dans ${u.days} j`
+              return (
+                <button key={u.ao_id} onClick={() => navigate(`/aos/${u.ao_id}`)}
+                  className="w-full flex items-center gap-2.5 text-left rounded-lg px-2.5 py-2 hover:bg-white/5 transition-colors">
+                  <span className="text-[10px] font-bold px-1.5 py-0.5 rounded shrink-0 tabular"
+                    style={{ background: t.bg, color: t.c, border: `1px solid ${t.b}` }}>{when}</span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-xs font-medium text-white truncate">{u.title}</span>
+                    {u.client_name && <span className="block text-[10px] text-slate-500 truncate">{u.client_name}</span>}
+                  </span>
+                  <ArrowRight size={12} className="text-slate-600 shrink-0" />
+                </button>
+              )
+            })}
+          </div>
+          <p className="text-[10px] text-slate-600 mt-2">Ces appels d'offres vous sont accessibles et n'ont pas encore de réponse de votre part.</p>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // « Mes réponses » enrichi (partenaire) : un bloc par AO répondu, avec l'issue
 // de chaque candidat proposé (score + label). Auto-portant (fetch dédié).
 function MyResponses({ navigate }) {
@@ -758,11 +838,17 @@ function MyResponses({ navigate }) {
             {(ao.candidates || []).map((c, i) => {
               const m = OUTCOME_META[c.outcome] || OUTCOME_META.soumis
               return (
-                <div key={i} className="flex items-center gap-2 text-xs">
-                  <Users size={12} className="text-slate-500 shrink-0" />
-                  <span className="text-slate-300 truncate flex-1">{c.consultant_name || 'Consultant'}</span>
-                  {typeof c.score === 'number' && <span className="text-slate-500 tabular shrink-0">{Math.round(c.score)}/100</span>}
-                  <span className="badge text-[10px] shrink-0" style={{ background: m.bg, color: m.c, border: 'none' }}>{m.l}</span>
+                <div key={i}>
+                  <div className="flex items-center gap-2 text-xs">
+                    <Users size={12} className="text-slate-500 shrink-0" />
+                    <span className="text-slate-300 truncate flex-1">{c.consultant_name || 'Consultant'}</span>
+                    {typeof c.score === 'number' && <span className="text-slate-500 tabular shrink-0">{Math.round(c.score)}/100</span>}
+                    <span className="badge text-[10px] shrink-0" style={{ background: m.bg, color: m.c, border: 'none' }}>{m.l}</span>
+                  </div>
+                  {/* Motif de refus communiqué par GRP-IT (uniquement si écarté). */}
+                  {c.outcome === 'ecarte' && c.refusal_reason && (
+                    <p className="text-[11px] text-slate-500 mt-0.5 ml-[18px] italic">« {c.refusal_reason} »</p>
+                  )}
                 </div>
               )
             })}
@@ -1513,7 +1599,10 @@ export default function AOSPage() {
       )}
 
       {partnerMine ? (
-        <MyResponses navigate={navigate} />
+        <>
+          <PartnerDashboard navigate={navigate} />
+          <MyResponses navigate={navigate} />
+        </>
       ) : pipelineView ? (
         <PipelineBoard navigate={navigate} />
       ) : loading ? (

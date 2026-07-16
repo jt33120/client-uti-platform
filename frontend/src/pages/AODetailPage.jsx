@@ -12,6 +12,7 @@ import {
   Upload, X, UserCircle2, Briefcase, Calendar, Pencil,
   CalendarClock, AlertTriangle, BarChart3, Sparkles,
   UploadCloud, Download, Target, Hash, Send, Bell, Mail, MessageSquareWarning, Languages, GripVertical, HelpCircle,
+  ThumbsUp, ThumbsDown, Link2, Copy,
   Infinity as InfinityIcon
 } from 'lucide-react'
 import ScoringPriorities, { DEFAULT_STARS } from '../components/ScoringPriorities'
@@ -2295,6 +2296,155 @@ function RefusalReasonModal({ aoId, sub, onClose, onConfirm }) {
   )
 }
 
+// [C] Modal « Affaire gagnée » : saisit le TJM d'achat (coût consultant, pré-rempli
+// depuis c.tjm) et le TJM de vente (prix client). Affiche la marge en direct. Ces
+// montants sont STAFF-ONLY : jamais communiqués au partenaire. Calqué sur RefusalReasonModal.
+function DealWonModal({ sub, onClose, onConfirm }) {
+  const c = sub.consultants || {}
+  const [achat, setAchat] = useState(c.tjm != null ? String(c.tjm) : '')
+  const [vente, setVente] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  const parse = (v) => { if (v === '' || v == null) return null; const n = parseInt(v, 10); return Number.isNaN(n) ? null : n }
+  const nAchat = parse(achat)
+  const nVente = parse(vente)
+  const marge = (nAchat != null && nVente != null) ? nVente - nAchat : null
+  const margePct = (marge != null && nVente > 0) ? Math.round((marge / nVente) * 100) : null
+
+  const confirm = async () => {
+    setSaving(true)
+    try {
+      await onConfirm(nAchat, nVente)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+      <div className="card p-6 w-full max-w-md" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-1">
+          <h2 className="text-sm font-semibold text-white flex items-center gap-2">
+            <Award size={14} className="text-emerald-400" /> Affaire gagnée
+          </h2>
+          <button onClick={onClose} className="btn-ghost p-1.5"><X size={14} /></button>
+        </div>
+        <p className="text-xs text-slate-500 mb-4">
+          Renseignez le TJM d'achat (coût de <strong>{c.name || 'ce profil'}</strong>) et le TJM
+          de vente (prix facturé au client). Ces montants sont <strong>internes</strong> et ne sont
+          jamais communiqués au partenaire.
+        </p>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="label flex items-center gap-1"><Euro size={11} /> TJM d'achat (€/j)</label>
+            <input className="input" type="number" min="0" inputMode="numeric" value={achat}
+              onChange={e => setAchat(e.target.value)} placeholder="Coût consultant" />
+          </div>
+          <div>
+            <label className="label flex items-center gap-1"><Euro size={11} /> TJM de vente (€/j)</label>
+            <input className="input" type="number" min="0" inputMode="numeric" value={vente}
+              onChange={e => setVente(e.target.value)} placeholder="Prix client" />
+          </div>
+        </div>
+
+        {/* Marge en direct (vente − achat) */}
+        <div className="mt-3 rounded-lg border px-3 py-2 flex items-center justify-between text-xs"
+          style={{ borderColor: 'var(--border)', background: 'var(--accent-soft)' }}>
+          <span className="inline-flex items-center gap-1.5 text-slate-400">
+            <TrendingUp size={12} /> Marge estimée
+          </span>
+          {marge != null ? (
+            <span className="font-semibold tabular" style={{ color: marge >= 0 ? '#10b981' : '#dc2626' }}>
+              {marge} €/j{margePct != null && <span className="text-slate-500 font-normal"> · {margePct} %</span>}
+            </span>
+          ) : (
+            <span className="text-slate-600">—</span>
+          )}
+        </div>
+
+        <div className="flex items-center justify-end gap-2 mt-4">
+          <button onClick={onClose} className="btn-ghost text-xs px-4">Annuler</button>
+          <button onClick={confirm} disabled={saving} className={PILL} style={TONE.green}>
+            {saving ? <Loader2 size={12} className="animate-spin" /> : <Award size={12} />}
+            Confirmer l'affaire gagnée
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// [A] Modal « Lien de retour client » : affiche l'URL publique renvoyée par le
+// backend (POST /matching/{ao}/client-review-link) avec un bouton « Copier ».
+function ClientReviewLinkModal({ link, aoId, onClose, onRevoked }) {
+  const confirm = useConfirm()
+  const [copied, setCopied] = useState(false)
+  const [revoking, setRevoking] = useState(false)
+  const url = link?.url || ''
+  const sent = link?.sent_count ?? 0
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(url)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch { /* presse-papier indisponible — l'URL reste sélectionnable */ }
+  }
+  // Révocation : coupe l'accès immédiatement (fuite du lien, demande du client…).
+  // Un prochain « Lien de retour client » régénérera un token neuf.
+  const revoke = async () => {
+    const ok = await confirm({
+      title: 'Révoquer ce lien ?',
+      message: "Le client ne pourra plus y accéder. Vous pourrez en générer un nouveau à tout moment.",
+      confirmLabel: 'Révoquer',
+    })
+    if (!ok) return
+    setRevoking(true)
+    try {
+      await api.post(`/matching/${aoId}/client-review-link/revoke`)
+      onRevoked?.()
+      onClose()
+    } catch (e) {
+      alert(e.response?.data?.detail || 'Révocation impossible')
+    } finally {
+      setRevoking(false)
+    }
+  }
+  return (
+    <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+      <div className="card p-6 w-full max-w-md" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-1">
+          <h2 className="text-sm font-semibold text-white flex items-center gap-2">
+            <Link2 size={14} className="text-brand-400" /> Lien de retour client
+          </h2>
+          <button onClick={onClose} className="btn-ghost p-1.5"><X size={14} /></button>
+        </div>
+        <p className="text-xs text-slate-500 mb-4">
+          <strong>À envoyer au client.</strong> Il pourra consulter les {sent} profil{sent > 1 ? 's' : ''} déjà
+          présenté{sent > 1 ? 's' : ''} et indiquer, pour chacun, s'il est intéressé, à revoir ou non retenu.
+        </p>
+        <div className="flex items-center gap-2">
+          <input className="input flex-1 text-xs" readOnly value={url} onFocus={e => e.target.select()} />
+          <button onClick={copy} className={PILL} style={copied ? TONE.green : TONE.accent}>
+            {copied ? <CheckCircle size={12} /> : <Copy size={12} />} {copied ? 'Copié' : 'Copier'}
+          </button>
+        </div>
+        <div className="flex items-center justify-between mt-2 gap-2">
+          {link?.expires_at ? (
+            <p className="text-[10px] text-slate-600">
+              Ce lien expire le {new Date(link.expires_at).toLocaleDateString('fr-FR')}.
+            </p>
+          ) : <span />}
+          <button onClick={revoke} disabled={revoking}
+            className="text-[11px] text-red-400/80 hover:text-red-400 inline-flex items-center gap-1 disabled:opacity-50">
+            {revoking ? <Loader2 size={11} className="animate-spin" /> : <X size={11} />} Révoquer le lien
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function ValidationTab({ aoId, submissions, clientId, scores }) {
   const confirm = useConfirm()
   const [states, setStates] = useState({})
@@ -2302,6 +2452,9 @@ function ValidationTab({ aoId, submissions, clientId, scores }) {
   const [clientModalSub, setClientModalSub] = useState(null)
   const [cvModalSub, setCvModalSub] = useState(null)
   const [refusalSub, setRefusalSub] = useState(null)
+  const [dealWonSub, setDealWonSub] = useState(null)
+  const [reviewLink, setReviewLink] = useState(null)
+  const [linkBusy, setLinkBusy] = useState(false)
   const [selected, setSelected] = useState(() => new Set())
   const toggleSel = (cid) => setSelected(p => { const n = new Set(p); n.has(cid) ? n.delete(cid) : n.add(cid); return n })
 
@@ -2352,6 +2505,28 @@ function ValidationTab({ aoId, submissions, clientId, scores }) {
     setRefusalSub(null)
   }
 
+  // [C] « Affaire gagnée » : le TJM d'achat/vente est saisi dans un modal, puis
+  // persisté avec le deal_status (le partenaire est notifié du gain, jamais des TJM).
+  const confirmDealWon = async (tjmAchat, tjmVente) => {
+    const cid = dealWonSub.consultant_id
+    await update(cid, { deal_status: 'gagnee', tjm_achat: tjmAchat, tjm_vente: tjmVente, notify: true })
+    setDealWonSub(null)
+  }
+
+  // [A] Génère (ou réutilise) un lien public de retour client pour l'AO, puis
+  // ouvre le modal qui affiche l'URL à copier. Best-effort : jamais bloquant.
+  const createReviewLink = async () => {
+    setLinkBusy(true)
+    try {
+      const { data } = await api.post(`/matching/${aoId}/client-review-link`)
+      setReviewLink(data)
+    } catch (e) {
+      alert(e.response?.data?.detail || 'Impossible de générer le lien de retour client')
+    } finally {
+      setLinkBusy(false)
+    }
+  }
+
   // Action qui notifie le partenaire : confirmation avant envoi (décision « auto + confirmation »).
   const act = async (consultantId, patch, confirmTitle) => {
     const ok = await confirm({
@@ -2377,11 +2552,17 @@ function ValidationTab({ aoId, submissions, clientId, scores }) {
   return (
     <div className="card p-4">
       <div className="flex items-center justify-between gap-2 mb-3 flex-wrap">
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
           <span className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Validation finale ({rows.length})</span>
           <button className="text-[11px] text-slate-400 hover:text-white"
             onClick={() => setSelected(selected.size === rows.length ? new Set() : new Set(rows.map(r => r.consultant_id)))}>
             {selected.size === rows.length && rows.length > 0 ? 'Tout désélectionner' : 'Tout sélectionner'}
+          </button>
+          <button className={PILL} style={TONE.accent} disabled={linkBusy}
+            onClick={createReviewLink}
+            title="Générer un lien à envoyer au client pour recueillir son retour sur les profils présentés">
+            {linkBusy ? <Loader2 size={12} className="animate-spin" /> : <Link2 size={12} />}
+            Lien de retour client
           </button>
         </div>
         {selected.size > 0 && (
@@ -2482,7 +2663,7 @@ function ValidationTab({ aoId, submissions, clientId, scores }) {
                 <button disabled={busyRow} className={PILL} style={st.deal_status === 'gagnee' ? TONE.green : TONE.off}
                   onClick={() => st.deal_status === 'gagnee'
                     ? update(s.consultant_id, { deal_status: 'none' })
-                    : act(s.consultant_id, { deal_status: 'gagnee' }, "Marquer l'affaire comme gagnée ?")}>
+                    : setDealWonSub(s)}>
                   <Award size={12} /> Affaire gagnée
                 </button>
                 <button disabled={busyRow} className={PILL} style={st.deal_status === 'perdue' ? TONE.red : TONE.off}
@@ -2499,6 +2680,44 @@ function ValidationTab({ aoId, submissions, clientId, scores }) {
                   <span><span className="text-slate-500">Motif communiqué :</span> {st.refusal_reason}</span>
                 </div>
               )}
+              {/* [C] Marge (staff-only) affichée quand l'affaire est gagnée avec TJM connus. */}
+              {st.deal_status === 'gagnee' && st.tjm_vente != null && st.tjm_achat != null && (
+                <div className="mt-2 sm:pl-9 text-[11px] flex items-start gap-1.5" style={{ color: 'var(--text-muted)' }}>
+                  <TrendingUp size={11} className="text-emerald-400/70 mt-0.5 shrink-0" />
+                  <span>
+                    <span className="text-slate-500">Marge :</span>{' '}
+                    <span className="text-emerald-400 font-semibold tabular">{st.tjm_vente - st.tjm_achat} €/j</span>
+                    {st.tjm_vente > 0 && (
+                      <span className="text-slate-500"> · {Math.round(((st.tjm_vente - st.tjm_achat) / st.tjm_vente) * 100)} %</span>
+                    )}
+                    <span className="text-slate-600"> (achat {st.tjm_achat} · vente {st.tjm_vente} €/j)</span>
+                  </span>
+                </div>
+              )}
+              {/* [A] Décision du client (si un retour a été enregistré via le lien public). */}
+              {st.client_decision && (() => {
+                const DECISIONS = {
+                  interesse: { tone: TONE.green, label: 'Intéressé', Icon: ThumbsUp },
+                  refuse: { tone: TONE.red, label: 'Pas retenu', Icon: ThumbsDown },
+                  a_revoir: { tone: TONE.amber, label: 'À revoir', Icon: AlertCircle },
+                }
+                const d = DECISIONS[st.client_decision]
+                if (!d) return null
+                const Icon = d.Icon
+                return (
+                  <div className="mt-2 sm:pl-9">
+                    <span className={PILL} style={d.tone}>
+                      <Icon size={12} /> Client : {d.label}
+                    </span>
+                    {st.client_decision_note && (
+                      <div className="mt-1 text-[11px] flex items-start gap-1.5" style={{ color: 'var(--text-muted)' }}>
+                        <MessageSquareWarning size={11} className="text-slate-500 mt-0.5 shrink-0" />
+                        <span><span className="text-slate-500">Note du client :</span> {st.client_decision_note}</span>
+                      </div>
+                    )}
+                  </div>
+                )
+              })()}
               {/* Points forts / éléments différenciants : déplacés dans l'onglet
                   « Matching CV » (carte du CV reçu), demande Sullyvan. */}
             </div>
@@ -2531,6 +2750,21 @@ function ValidationTab({ aoId, submissions, clientId, scores }) {
           sub={refusalSub}
           onClose={() => setRefusalSub(null)}
           onConfirm={confirmRefusal}
+        />
+      )}
+      {dealWonSub && (
+        <DealWonModal
+          sub={dealWonSub}
+          onClose={() => setDealWonSub(null)}
+          onConfirm={confirmDealWon}
+        />
+      )}
+      {reviewLink && (
+        <ClientReviewLinkModal
+          link={reviewLink}
+          aoId={aoId}
+          onClose={() => setReviewLink(null)}
+          onRevoked={() => setReviewLink(null)}
         />
       )}
     </div>

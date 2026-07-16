@@ -1012,7 +1012,7 @@ async def business_kpis(user: dict = Depends(require_admin)):
     aos = []
     try:
         aos = supabase.table("appels_offres").select(
-            "id, notified_at, created_at, ao_outcome, outcome_at, status, archived"
+            "id, notified_at, created_at, ao_outcome, outcome_at, status, archived, budget_max"
         ).execute().data or []
     except Exception:
         aos = []
@@ -1183,11 +1183,99 @@ async def business_kpis(user: dict = Depends(require_admin)):
     except Exception:
         pass
 
+    # --- 5) Marge (STAFF-ONLY) : vente - achat sur affaires gagnées ------------
+    # Colonnes tjm_achat/tjm_vente issues de la migration 0007 (ao_consultant_state).
+    # Repli plafond : achat -> consultants.tjm ; vente -> appels_offres.budget_max.
+    # Tout le bloc est best-effort : colonne absente ou table indisponible ->
+    # agrégat vide ({}) plutôt qu'un 500. La marge NÉGATIVE est réelle : conservée.
+    marge: dict = {}
+    try:
+        # États avec les colonnes marge (repli sans elles -> agrégat vide)
+        try:
+            marge_states = supabase.table("ao_consultant_state").select(
+                "ao_id, consultant_id, deal_status, sent_to_client_at, tjm_achat, tjm_vente"
+            ).execute().data or []
+        except Exception:
+            marge_states = []
+
+        # TJM d'achat de repli (coût consultant) si tjm_achat non renseigné
+        tjm_by_consultant: dict = {}
+        try:
+            for c in supabase.table("consultants").select("id, tjm").execute().data or []:
+                tjm_by_consultant[c.get("id")] = c.get("tjm")
+        except Exception:
+            tjm_by_consultant = {}
+
+        n = 0
+        n_gagnees = 0
+        sold_total = 0
+        bought_total = 0
+        margin_total = 0
+        by_month: dict = {}
+        for st in marge_states:
+            if st.get("deal_status") != "gagnee":
+                continue
+            ao = ao_by_id.get(st.get("ao_id")) or {}
+            # Deal requalifié perdu (AO non pourvu / sans suite) -> hors marge
+            if ao.get("ao_outcome") in ("non_pourvu", "sans_suite"):
+                continue
+            n_gagnees += 1
+
+            bought = st.get("tjm_achat")
+            if bought is None:
+                bought = tjm_by_consultant.get(st.get("consultant_id"))
+            sold = st.get("tjm_vente")
+            if sold is None:
+                sold = ao.get("budget_max")
+            if bought is None or sold is None:
+                continue
+            try:
+                bought = int(bought)
+                sold = int(sold)
+            except (TypeError, ValueError):
+                continue
+
+            margin = sold - bought  # peut être négatif : on garde
+            n += 1
+            sold_total += sold
+            bought_total += bought
+            margin_total += margin
+
+            mdt = _parse_dt(st.get("sent_to_client_at")) or _parse_dt(ao.get("outcome_at"))
+            mk = mdt.strftime("%Y-%m") if mdt else None
+            if mk:
+                b = by_month.setdefault(
+                    mk, {"month": mk, "n": 0, "sold": 0, "bought": 0, "margin": 0})
+                b["n"] += 1
+                b["sold"] += sold
+                b["bought"] += bought
+                b["margin"] += margin
+
+        by_month_list = []
+        for mk in sorted(by_month.keys()):
+            b = by_month[mk]
+            b["margin_pct"] = round(b["margin"] / b["sold"] * 100) if b["sold"] > 0 else None
+            by_month_list.append(b)
+
+        marge = {
+            "n": n,
+            "n_gagnees": n_gagnees,
+            "sold_total": sold_total,
+            "bought_total": bought_total,
+            "margin_total": margin_total,
+            "avg_margin_pct": round(margin_total / sold_total * 100) if sold_total > 0 else None,
+            "avg_margin_per_deal": round(margin_total / n, 1) if n > 0 else None,
+            "by_month": by_month_list,
+        }
+    except Exception:
+        marge = {}
+
     return {
         "time_to_fill": time_to_fill,
         "funnel": funnel,
         "partners": partners,
         "pourvu": pourvu,
+        "marge": marge,
     }
 
 

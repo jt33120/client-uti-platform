@@ -10,6 +10,12 @@ const api = axios.create({
   timeout: 120000,
 })
 
+// Instance PUBLIQUE — sans intercepteurs : aucune attache d'Authorization et
+// aucune redirection sur 401. À utiliser pour les pages non authentifiées
+// (ex : /client-review/:token), afin de ne jamais fuiter le jeton du staff
+// vers une route publique ni renvoyer un visiteur anonyme vers /login.
+export const publicApi = axios.create({ baseURL: '/api' })
+
 // Attach JWT token automatically
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem('token')
@@ -29,7 +35,7 @@ api.interceptors.response.use(
       // récupération Supabase qui 401 légitimement — sans ce garde-fou,
       // l'utilisateur serait renvoyé vers /login avant de pouvoir changer
       // son mot de passe.
-      const authPaths = ['/login', '/reset-password', '/forgot-password', '/register']
+      const authPaths = ['/login', '/reset-password', '/forgot-password', '/register', '/client-review']
       const onAuthPage = authPaths.some((p) => window.location.pathname.startsWith(p))
       if (!onAuthPage) {
         localStorage.removeItem('token')

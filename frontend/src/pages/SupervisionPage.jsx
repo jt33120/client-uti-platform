@@ -1049,6 +1049,7 @@ function BusinessKpis() {
   const funnel = (d.funnel && d.funnel.stages) || []
   const partners = d.partners || []
   const pv = d.pourvu || {}
+  const mg = d.marge || {} // absent si backend pas encore déployé -> tuile '—'
 
   const diffuses = funnel.find(s => s.label === 'Diffusés')?.count || 0
   const gagnes = funnel.find(s => s.label === 'Gagnés')?.count || 0
@@ -1078,11 +1079,12 @@ function BusinessKpis() {
       </p>
 
       {/* Tuiles clés */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
         <Stat label="Délai de placement médian" value={dash(ttf.median_days)} sub={ttf.median_days != null ? ' j' : null} tone="var(--accent-text)" />
         <Stat label="Taux de pourvu" value={pv.pourvu_rate == null ? '—' : `${pv.pourvu_rate}%`} tone="#10b981" />
         <Stat label="Gagnés" value={gagnes} />
         <Stat label="Taux de transfo global" value={transfoGlobal == null ? '—' : `${transfoGlobal}%`} sub={diffuses ? ' gagnés/diffusés' : null} />
+        <Stat label="Marge moy." value={mg.avg_margin_pct == null ? '—' : `${mg.avg_margin_pct}%`} sub={mg.n ? ` sur ${mg.n}/${mg.n_gagnees} affaires` : null} tone="#10b981" />
       </div>
 
       {/* Funnel de transformation */}
@@ -1142,6 +1144,43 @@ function BusinessKpis() {
           </div>
         </div>
       )}
+
+      {/* Marge par mois */}
+      {Array.isArray(mg.by_month) && mg.by_month.length > 0 && (() => {
+        const rows = mg.by_month
+        const maxPct = Math.max(1, ...rows.map(m => Number(m.margin_pct) || 0))
+        const fmtMonth = (ym) => {
+          if (!ym || typeof ym !== 'string') return ym
+          const [y, mo] = ym.split('-')
+          const names = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.']
+          const idx = (Number(mo) || 0) - 1
+          return names[idx] ? `${names[idx]} ${String(y).slice(2)}` : ym
+        }
+        return (
+          <div className="card p-4 mt-2">
+            <p className="text-[11px] font-semibold uppercase tracking-wide mb-1" style={{ color: 'var(--text-faint)' }}>Marge par mois</p>
+            <p className="text-[10px] mb-3" style={{ color: 'var(--text-faint)' }} title="La marge est estimée sur le plafond client à défaut du TJM vendu saisi.">
+              Marge estimée sur le plafond client à défaut du TJM vendu.
+            </p>
+            <div className="space-y-2.5">
+              {rows.map((m) => (
+                <div key={m.month}>
+                  <div className="flex justify-between items-baseline text-[12px] mb-1">
+                    <span style={{ color: 'var(--text)' }}>{fmtMonth(m.month)}</span>
+                    <span className="flex items-center gap-2">
+                      <span className="tabular text-[11px]" style={{ color: 'var(--text-faint)' }}>{fmtInt(m.n)} affaire{(Number(m.n) || 0) > 1 ? 's' : ''}</span>
+                      <span className="tabular font-semibold" style={{ color: '#10b981' }}>{m.margin_pct == null ? '—' : `${m.margin_pct}%`}</span>
+                    </span>
+                  </div>
+                  <div className="h-2 rounded-full overflow-hidden" style={{ background: 'var(--surface-2)' }}>
+                    <div className="h-full rounded-full" style={{ width: `${Math.max(2, ((Number(m.margin_pct) || 0) / maxPct) * 100)}%`, background: '#10b981' }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )
+      })()}
     </div>
   )
 }

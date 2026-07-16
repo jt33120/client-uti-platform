@@ -1,16 +1,22 @@
 import { useState, useEffect, useMemo } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import api from '../lib/api'
 import {
   Users, FileText, Plus, ArrowRight, Building2, UserPlus, Sparkles,
   Briefcase, Layers, Zap, Award, BarChart3, CalendarClock, AlertTriangle,
+  Megaphone, Inbox, Hourglass,
 } from 'lucide-react'
 import InviteModal from '../components/InviteModal'
 import UTILoader, { ChartLoader } from '../components/UTILoader'
 import { ChartCard, EmptyHint, Donut, Legend, VBars, HBars, BRAND, NEUTRAL } from '../components/charts'
 
 const parseSkills = (s) => (s || '').split(/[,;/]+/).map(x => x.trim()).filter(Boolean)
+
+// File staff « À traiter » — kinds actionnables du feed /notifications/feed.
+// Doit rester aligné sur les kinds servis par le backend (notifications.py).
+const TASK_KINDS = ['ao_undiffused', 'cv_untreated', 'stale_presentation']
+const TASK_ICON = { ao_undiffused: Megaphone, cv_untreated: Inbox, stale_presentation: Hourglass }
 
 // KPI — frameless. A number, a quiet label, a monochrome glyph. Separation
 // comes from a hairline divider on wide screens, not a box around each one.
@@ -93,7 +99,9 @@ function AoPipelineSummary() {
 
 export default function DashboardPage() {
   const { user, isAdmin, isCommerce, isStaff } = useAuth()
+  const navigate = useNavigate()
   const [inviteOpen, setInviteOpen] = useState(false)
+  const [staffTasks, setStaffTasks] = useState([])
   const [consultants, setConsultants] = useState([])
   const [aos, setAos] = useState([])
   const [clients, setClients] = useState([])
@@ -127,6 +135,17 @@ export default function DashboardPage() {
       setLoading(false)
     }
     run()
+  }, [isStaff, reloadKey])
+
+  // File staff « À traiter » — items actionnables du feed. Best-effort : si
+  // l'endpoint n'est pas déployé ou échoue, la liste reste vide (section masquée).
+  useEffect(() => {
+    if (!isStaff) { setStaffTasks([]); return }
+    let c = false
+    api.get('/notifications/feed')
+      .then(r => { if (!c) setStaffTasks((r.data?.items || []).filter(it => TASK_KINDS.includes(it.kind))) })
+      .catch(() => { if (!c) setStaffTasks([]) })
+    return () => { c = true }
   }, [isStaff, reloadKey])
 
   const d = useMemo(() => {
@@ -236,6 +255,39 @@ export default function DashboardPage() {
               +{urgentAos.length - 5} autre{urgentAos.length - 5 > 1 ? 's' : ''} → voir tous les AO
             </Link>
           )}
+        </div>
+      )}
+
+      {/* File staff « À traiter » — items actionnables (AO non diffusés, CV en
+          attente, présentations dormantes). Masquée si vide ou en erreur. */}
+      {isStaff && !loading && staffTasks.length > 0 && (
+        <div className="mb-8 rounded-xl overflow-hidden"
+             style={{ border: '1px solid rgba(245,158,11,0.35)', background: 'rgba(245,158,11,0.06)' }}>
+          <div className="flex items-center gap-2 px-4 py-2.5" style={{ borderBottom: '1px solid rgba(245,158,11,0.20)' }}>
+            <Inbox size={15} className="text-amber-400 shrink-0" />
+            <span className="text-[13px] font-semibold" style={{ color: 'var(--text)' }}>
+              {staffTasks.length} élément{staffTasks.length > 1 ? 's' : ''} à traiter
+            </span>
+          </div>
+          <ul className="divide-y" style={{ borderColor: 'var(--border)' }}>
+            {staffTasks.map(it => {
+              const Icon = TASK_ICON[it.kind] || AlertTriangle
+              return (
+                <li key={it.id}>
+                  <button
+                    onClick={() => { if (it.link) navigate(it.link) }}
+                    className="w-full text-left flex items-center gap-3 px-4 py-2.5 hover:bg-[var(--surface-2)] transition-colors">
+                    <Icon size={14} className="text-amber-400 shrink-0" />
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-[13px] font-medium truncate" style={{ color: 'var(--text)' }}>{it.title}</span>
+                      {it.subtitle && <span className="block text-[11px] truncate" style={{ color: 'var(--text-muted)' }}>{it.subtitle}</span>}
+                    </span>
+                    <ArrowRight size={13} className="text-slate-600 shrink-0" />
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
         </div>
       )}
 

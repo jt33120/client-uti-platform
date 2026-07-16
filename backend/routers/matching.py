@@ -1,4 +1,5 @@
-from datetime import datetime, timezone
+import secrets
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Response
 from pydantic import BaseModel
@@ -7,6 +8,7 @@ from services.matching_runner import run_submission_matching
 from services import storage, audit
 from routers.auth import get_current_user, require_staff
 from services.ratelimit import rate_limit
+from config import settings
 
 router = APIRouter(prefix="/matching", tags=["matching"])
 
@@ -15,6 +17,20 @@ VALID_CONTACT_STATUS = ("none", "contacted", "proposed")
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _is_expired_iso(ts: Optional[str]) -> bool:
+    """True si l'horodatage ISO est renseigné ET déjà passé (UTC-aware).
+    None/absent → non expiré (pas de date limite)."""
+    if not ts:
+        return False
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except Exception:
+        return False
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt < datetime.now(timezone.utc)
 
 
 def _looks_like_missing_col(err: Exception, col: str) -> bool:
@@ -276,6 +292,13 @@ async def get_matching_results(ao_id: str, user: dict = Depends(get_current_user
                 r["sent_to_client_at"] = st.get("sent_to_client_at")
                 r["commercial_exchange"] = bool(st.get("commercial_exchange"))
                 r["deal_status"] = st.get("deal_status")
+                # Retour client + marge (STAFF-ONLY : jamais exposés au partenaire).
+                r["client_decision"] = st.get("client_decision")
+                r["client_decision_note"] = st.get("client_decision_note")
+                _achat, _vente = st.get("tjm_achat"), st.get("tjm_vente")
+                r["tjm_achat"] = _achat
+                r["tjm_vente"] = _vente
+                r["marge"] = (_vente - _achat) if (_achat is not None and _vente is not None) else None
                 # Conflit de présentation multi-partenaires (advisory, staff only).
                 r["presentation_conflict"] = conflicts.get(r.get("consultant_id"))
 
@@ -412,6 +435,11 @@ async def set_contact_status(ao_id: str, body: ContactRequest, user: dict = Depe
 VALID_VALIDATION = ("retenu", "non_retenu", "none")
 VALID_DEAL = ("gagnee", "perdue", "none")
 
+# Colonnes récentes de `ao_consultant_state` susceptibles de ne pas être encore
+# migrées (front déployé avant backend avant migration) : on les retire de
+# l'upsert en dernier recours plutôt que de bloquer toute la validation.
+_MIGRATABLE_STATE_COLS = ("refusal_reason", "tjm_achat", "tjm_vente")
+
 
 class ValidationRequest(BaseModel):
     consultant_id: str
@@ -423,6 +451,8 @@ class ValidationRequest(BaseModel):
     eval_points_forts: Optional[str] = None     # commentaire libre « Points forts »
     eval_differenciants: Optional[str] = None   # commentaire libre « Éléments différenciants »
     refusal_reason: Optional[str] = None        # motif de refus (visible partenaire) si « non retenu »
+    tjm_achat: Optional[int] = None             # €/j coût d'achat consultant (STAFF-ONLY)
+    tjm_vente: Optional[int] = None             # €/j prix vendu au client (STAFF-ONLY)
     notify: bool = False                        # True → notifie le partenaire par email
 
 
@@ -482,6 +512,15 @@ async def set_cv_validation(ao_id: str, body: ValidationRequest, background_task
         payload["deal_status"] = None if body.deal_status == "none" else body.deal_status
         changed["deal_status"] = payload["deal_status"]
 
+    # Marge (STAFF-ONLY) : coût d'achat / prix de vente en €/j. int >= 0 ou None
+    # (un TJM négatif n'a pas de sens → remis à NULL). JAMAIS notifié au partenaire.
+    if body.tjm_achat is not None:
+        payload["tjm_achat"] = body.tjm_achat if body.tjm_achat >= 0 else None
+        changed["tjm_achat"] = payload["tjm_achat"]
+    if body.tjm_vente is not None:
+        payload["tjm_vente"] = body.tjm_vente if body.tjm_vente >= 0 else None
+        changed["tjm_vente"] = payload["tjm_vente"]
+
     # Commentaires d'évaluation libres (aucune notification).
     if body.eval_points_forts is not None:
         payload["eval_points_forts"] = body.eval_points_forts.strip() or None
@@ -493,24 +532,25 @@ async def set_cv_validation(ao_id: str, body: ValidationRequest, background_task
     if not changed:
         raise HTTPException(status_code=422, detail="Aucun champ à mettre à jour.")
 
-    try:
-        row = supabase.table("ao_consultant_state").upsert(
-            payload, on_conflict="ao_id,consultant_id"
-        ).execute().data[0]
-    except Exception as e:
-        # Repli si la colonne `refusal_reason` n'est pas encore migrée : on ré-essaie
-        # sans elle plutôt que de bloquer toute la validation (DB en retard sur le code).
-        if "refusal_reason" in payload and _looks_like_missing_col(e, "refusal_reason"):
-            payload.pop("refusal_reason", None)
-            changed.pop("refusal_reason", None)
-            try:
-                row = supabase.table("ao_consultant_state").upsert(
-                    payload, on_conflict="ao_id,consultant_id"
-                ).execute().data[0]
-            except Exception as e2:
-                raise HTTPException(status_code=500, detail=f"Erreur mise à jour validation: {e2}")
-        else:
-            raise HTTPException(status_code=500, detail=f"Erreur mise à jour validation: {e}")
+    # Upsert avec repli : si l'une des colonnes récentes (refusal_reason, tjm_achat,
+    # tjm_vente) n'est pas encore migrée, on la retire et on ré-essaie plutôt que de
+    # bloquer toute la validation (DB en retard sur le code). Boucle bornée : chaque
+    # tour retire au moins une colonne, sinon on remonte l'erreur.
+    row = None
+    while row is None:
+        try:
+            row = supabase.table("ao_consultant_state").upsert(
+                payload, on_conflict="ao_id,consultant_id"
+            ).execute().data[0]
+        except Exception as e:
+            dropped = next(
+                (c for c in _MIGRATABLE_STATE_COLS if c in payload and _looks_like_missing_col(e, c)),
+                None,
+            )
+            if dropped is None:
+                raise HTTPException(status_code=500, detail=f"Erreur mise à jour validation: {e}")
+            payload.pop(dropped, None)
+            changed.pop(dropped, None)
 
     try:
         audit.log_event(
@@ -606,26 +646,126 @@ async def send_cv_to_client(ao_id: str, body: SendCvClientRequest, user: dict = 
     return {**row, "sent": True}
 
 
+@router.post("/{ao_id}/client-review-link")
+async def create_client_review_link(ao_id: str, user: dict = Depends(require_staff)):
+    """Crée (ou réutilise) un lien de RETOUR CLIENT pour cet AO : le client donne
+    son avis sur les profils présentés via une page publique (sans compte). Le lien
+    porte un token unguessable, révocable et expirant à 30 jours (table client_reviews).
+    Un lien encore valide (non révoqué, non expiré) est réutilisé plutôt que recréé.
+    Staff only. Le périmètre du lien = l'AO + son client (dérivé serveur)."""
+    # client_id de l'AO (scope du lien). AO introuvable → 404.
+    ao = (supabase.table("appels_offres").select("id, client_id").eq("id", ao_id).limit(1).execute().data or [None])[0]
+    if not ao:
+        raise HTTPException(status_code=404, detail="AO introuvable")
+    client_id = ao.get("client_id")
+
+    now = datetime.now(timezone.utc)
+
+    # Réutiliser un lien encore valide (non révoqué, non expiré) pour cet AO.
+    # Best-effort : table absente / erreur de lecture → on tentera d'en créer un.
+    review = None
+    try:
+        existing = supabase.table("client_reviews").select("*").eq("ao_id", ao_id).is_(
+            "revoked_at", "null"
+        ).order("created_at", desc=True).execute().data or []
+        review = next((r for r in existing if not _is_expired_iso(r.get("expires_at"))), None)
+    except Exception:
+        review = None
+
+    if review is None:
+        record = {
+            "token": secrets.token_urlsafe(32),
+            "ao_id": ao_id,
+            "client_id": client_id,
+            "created_by": user["sub"],
+            "expires_at": (now + timedelta(days=30)).isoformat(),
+        }
+        try:
+            review = supabase.table("client_reviews").insert(record).execute().data[0]
+        except Exception as e:
+            # Migration 0007 non appliquée (table absente) : dégrader proprement
+            # (503, pas de 500) plutôt que de fabriquer un lien mort non persisté.
+            if _looks_like_missing_col(e, "client_reviews"):
+                raise HTTPException(status_code=503, detail="Retour client indisponible : migration en attente.")
+            raise HTTPException(status_code=500, detail=f"Erreur création du lien de retour client: {e}")
+
+    # Nb de profils présentés au client (sent_to_client_at renseigné). Best-effort.
+    sent_count = 0
+    try:
+        rows = supabase.table("ao_consultant_state").select(
+            "consultant_id, sent_to_client_at"
+        ).eq("ao_id", ao_id).execute().data or []
+        sent_count = sum(1 for r in rows if r.get("sent_to_client_at"))
+    except Exception:
+        sent_count = 0
+
+    token = review["token"]
+    audit.log_event(
+        "client_review_link", audit.new_run_id(), ao_id=ao_id, actor_id=user["sub"],
+        payload={"client_id": client_id, "sent_count": sent_count},
+    )
+    return {
+        "url": f"{settings.frontend_url}/client-review/{token}",
+        "token": token,
+        "expires_at": review.get("expires_at"),
+        "sent_count": sent_count,
+    }
+
+
+@router.post("/{ao_id}/client-review-link/revoke")
+async def revoke_client_review_link(ao_id: str, user: dict = Depends(require_staff)):
+    """Révoque le(s) lien(s) de retour client de cet AO : pose revoked_at → la page
+    publique renvoie aussitôt 404 (fuite du lien, demande RGPD art. 17/18, clôture).
+    Un futur appel à /client-review-link régénérera un token neuf. Staff only.
+    Best-effort : table non migrée → 503 (jamais 500)."""
+    now_iso = _now_iso()
+    try:
+        rows = supabase.table("client_reviews").update({"revoked_at": now_iso}).eq(
+            "ao_id", ao_id
+        ).is_("revoked_at", "null").execute().data or []
+    except Exception as e:
+        if _looks_like_missing_col(e, "client_reviews"):
+            raise HTTPException(status_code=503, detail="Retour client indisponible : migration en attente.")
+        raise HTTPException(status_code=500, detail=f"Erreur révocation du lien de retour client: {e}")
+    audit.log_event(
+        "client_review_revoke", audit.new_run_id(), ao_id=ao_id, actor_id=user["sub"],
+        payload={"revoked": len(rows)},
+    )
+    return {"revoked": len(rows)}
+
+
+# Colonnes de base (toujours présentes) et colonnes récentes possiblement pas
+# encore migrées (front avant backend avant migration). On lit avec les nouvelles
+# et on retombe sur les colonnes de base si l'une d'elles manque.
+_STATE_BASE_COLS = (
+    "consultant_id, human_rank, contact_status, validation, "
+    "sent_to_client_at, commercial_exchange, deal_status, "
+    "eval_points_forts, eval_differenciants"
+)
+_STATE_NEW_COLS = (
+    "refusal_reason", "client_decision", "client_decision_note", "tjm_achat", "tjm_vente"
+)
+
+
 @router.get("/{ao_id}/states")
 async def get_ao_states(ao_id: str, user: dict = Depends(require_staff)):
-    """État par consultant pour un AO (classement humain, contact et cycle de
-    vie « Validation CV »). Renvoie une map consultant_id → état pour que l'onglet
-    Validation CV puisse afficher tous les CV reçus avec leur statut."""
-    cols = (
-        "consultant_id, human_rank, contact_status, validation, "
-        "sent_to_client_at, commercial_exchange, deal_status, "
-        "eval_points_forts, eval_differenciants, refusal_reason"
-    )
-    try:
-        rows = supabase.table("ao_consultant_state").select(cols).eq("ao_id", ao_id).execute().data or []
-    except Exception as e:
-        # Repli si `refusal_reason` pas encore migrée : on relit sans elle.
-        if _looks_like_missing_col(e, "refusal_reason"):
-            rows = supabase.table("ao_consultant_state").select(
-                cols.replace(", refusal_reason", "")
-            ).eq("ao_id", ao_id).execute().data or []
-        else:
-            raise
+    """État par consultant pour un AO (classement humain, contact, cycle de vie
+    « Validation CV », retour client et marge — staff only). Renvoie une map
+    consultant_id → état pour que l'onglet Validation CV affiche tous les CV reçus
+    avec leur statut."""
+    optional = list(_STATE_NEW_COLS)
+    while True:
+        cols = _STATE_BASE_COLS + (", " + ", ".join(optional) if optional else "")
+        try:
+            rows = supabase.table("ao_consultant_state").select(cols).eq("ao_id", ao_id).execute().data or []
+            break
+        except Exception as e:
+            # On retire les colonnes récentes que l'erreur signale comme absentes
+            # et on ré-essaie ; toute autre erreur est remontée telle quelle.
+            missing = [c for c in optional if _looks_like_missing_col(e, c)]
+            if not missing:
+                raise
+            optional = [c for c in optional if c not in missing]
     return {"states": {r["consultant_id"]: r for r in rows if r.get("consultant_id")}}
 
 

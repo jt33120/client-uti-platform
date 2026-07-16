@@ -23,6 +23,7 @@ import PartnersPage from './pages/PartnersPage'
 import PartnerDetailPage from './pages/PartnerDetailPage'
 import CookieBanner from './components/CookieBanner'
 import ContactPage from './pages/ContactPage'
+import ClientReviewPage from './pages/ClientReviewPage'
 import { MentionsLegales, Confidentialite, CGU } from './pages/LegalPages'
 
 // Auto-récupération des « chunks » lazy : après un nouveau déploiement, un onglet
@@ -102,6 +103,9 @@ export default function App() {
         <Route path="/legal/mentions" element={<MentionsLegales />} />
         <Route path="/legal/confidentialite" element={<Confidentialite />} />
         <Route path="/legal/cgu" element={<CGU />} />
+
+        {/* Retour client — page PUBLIQUE (lien tokenisé, sans auth ni Layout) */}
+        <Route path="/client-review/:token" element={<ClientReviewPage />} />
 
         <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
           <Route path="/dashboard" element={<DashboardPage />} />

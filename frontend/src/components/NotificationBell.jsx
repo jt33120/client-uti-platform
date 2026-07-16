@@ -1,14 +1,17 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import api from '../lib/api'
-import { Bell, AlertTriangle, Clock, Mail, X, PencilLine, CheckCircle2 } from 'lucide-react'
+import { Bell, AlertTriangle, Clock, Mail, X, PencilLine, CheckCircle2, Megaphone, Inbox, Hourglass } from 'lucide-react'
 
 const SEV = {
   urgent:  { color: '#ef4444', ring: 'rgba(239,68,68,0.15)' },
   warning: { color: '#f59e0b', ring: 'rgba(245,158,11,0.15)' },
   info:    { color: '#3b82f6', ring: 'rgba(59,130,246,0.12)' },
 }
-const KIND_ICON = { ao_urgent: Clock, email: Mail, missing_info: PencilLine, status: CheckCircle2 }
+const KIND_ICON = {
+  ao_urgent: Clock, email: Mail, missing_info: PencilLine, status: CheckCircle2,
+  ao_undiffused: Megaphone, cv_untreated: Inbox, stale_presentation: Hourglass,
+}
 
 // Cloche de notifications (staff) : AO urgents (échéance ≤ 3 j) + miroir des
 // e-mails partenaires. Le badge rouge compte les AO urgents (le signal qui

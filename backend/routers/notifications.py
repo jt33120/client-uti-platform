@@ -14,6 +14,11 @@ _URGENT_DAYS = 3
 # Fenêtre des « bonnes nouvelles » candidat (retenu / présenté / gagné) : 14 jours,
 # pour ne pas re-notifier indéfiniment une décision ancienne.
 _STATUS_WINDOW_DAYS = 14
+# File « À traiter » du staff — seuils d'ancienneté (en jours) avant qu'un dossier
+# n'y remonte, pour ne pas polluer le feed avec des dossiers tout frais.
+_UNDIFF_DAYS = 1         # AO ouvert jamais diffusé aux partenaires (notified_at NULL)
+_CV_STALE_DAYS = 2       # CV soumis mais pas encore trié (validation absente)
+_PRESENT_STALE_DAYS = 5  # profil présenté au client, toujours sans réponse
 _EMAIL_KIND_LABEL = {
     "list_1": "Diffusion liste 1",
     "list_2": "Diffusion liste 2",
@@ -237,6 +242,180 @@ def _missing_info_items(role, uid):
     return out
 
 
+def _undiffused_ao_items(today):
+    """AO ouverts jamais diffusés aux partenaires (notified_at NULL) et déjà âgés de
+    ≥ _UNDIFF_DAYS. « À diffuser. » Staff. Best-effort (colonnes récentes → repli)."""
+    out = []
+    try:
+        base = supabase.table("appels_offres").select(
+            "id, title, created_at, clients(name)"
+        ).eq("status", "open").is_("notified_at", "null")
+        try:
+            rows = base.eq("archived", False).eq("is_draft", False).execute().data or []
+        except Exception:
+            rows = base.execute().data or []
+        for a in rows:
+            created = _parse_date(a.get("created_at"))
+            if not created or (today - created).days < _UNDIFF_DAYS:
+                continue
+            cl = (a.get("clients") or {}).get("name")
+            out.append({
+                "id": f"undiff-{a['id']}", "kind": "ao_undiffused", "severity": "warning",
+                "title": a.get("title") or "Appel d'offres",
+                "subtitle": (f"{cl} · " if cl else "") + "À diffuser aux partenaires",
+                "link": f"/aos/{a['id']}", "date": a.get("created_at"),
+            })
+    except Exception:
+        pass
+    return out
+
+
+def _untreated_cv_items(today):
+    """CV soumis mais jamais triés (aucune validation retenu/non_retenu) sur des AO
+    encore ouverts et non archivés, âgés de ≥ _CV_STALE_DAYS. Agrégé par AO (un item
+    « <n> CV en attente de tri »). Staff. Best-effort."""
+    out = []
+    try:
+        subs = supabase.table("submissions").select(
+            "id, ao_id, consultant_id, submitted_at, consultants(name), "
+            "appels_offres(title, status, archived)"
+        ).order("submitted_at", desc=True).limit(200).execute().data or []
+    except Exception:
+        return out
+    # AO ouverts, non archivés, et CV déjà âgés.
+    kept = []
+    for s in subs:
+        if not s.get("ao_id") or not s.get("consultant_id"):
+            continue
+        ao = s.get("appels_offres") or {}
+        if (ao.get("status") or "") != "open" or ao.get("archived"):
+            continue
+        sub_date = _parse_date(s.get("submitted_at"))
+        if not sub_date or (today - sub_date).days < _CV_STALE_DAYS:
+            continue
+        kept.append(s)
+    if not kept:
+        return out
+    ao_ids = list({s["ao_id"] for s in kept})
+    cids = list({s["consultant_id"] for s in kept})
+    # Paires réellement soumises : le double .in_() ci-dessous renvoie le produit
+    # cartésien (ao ∈ ao_ids × consultant ∈ cids) ; on re-filtre sur les vraies paires
+    # pour ne jamais considérer « traitée » une paire (ao, consultant) inexistante.
+    real_pairs = {(s["ao_id"], s["consultant_id"]) for s in kept}
+    treated = set()
+    try:
+        states = supabase.table("ao_consultant_state").select(
+            "ao_id, consultant_id, validation"
+        ).in_("ao_id", ao_ids).in_("consultant_id", cids).execute().data or []
+        for st in states:
+            pair = (st.get("ao_id"), st.get("consultant_id"))
+            if pair in real_pairs and st.get("validation") in ("retenu", "non_retenu"):
+                treated.add(pair)
+    except Exception:
+        treated = set()
+    # Agréger les CV non triés par AO (une paire = un CV, on ne double-compte pas
+    # une même paire (ao, consultant) soumise plusieurs fois).
+    pending, titles, oldest, seen = {}, {}, {}, set()
+    for s in kept:
+        aid, pair = s["ao_id"], (s["ao_id"], s["consultant_id"])
+        if pair in treated or pair in seen:
+            continue
+        seen.add(pair)
+        pending[aid] = pending.get(aid, 0) + 1
+        titles.setdefault(aid, (s.get("appels_offres") or {}).get("title"))
+        sa = s.get("submitted_at")
+        if sa and (aid not in oldest or str(sa) < str(oldest[aid])):
+            oldest[aid] = sa
+    for aid, n in pending.items():
+        t = titles.get(aid)
+        out.append({
+            "id": f"cvtri-{aid}", "kind": "cv_untreated", "severity": "warning",
+            "title": f"{n} CV en attente de tri",
+            "subtitle": t or "Appel d'offres",
+            "link": f"/aos/{aid}", "date": oldest.get(aid),
+        })
+    return out
+
+
+def _stale_presentation_items(today):
+    """Profils présentés au client mais toujours sans réponse (deal_status NULL) depuis
+    ≥ _PRESENT_STALE_DAYS, sur des AO non clôturés (ao_outcome NULL). « À relancer. »
+    Staff. Best-effort."""
+    out = []
+    try:
+        rows = supabase.table("ao_consultant_state").select(
+            "ao_id, consultant_id, sent_to_client_at, deal_status, validation, updated_at"
+        ).not_.is_("sent_to_client_at", "null").is_("deal_status", "null").execute().data or []
+    except Exception:
+        return out
+    kept = []
+    for r in rows:
+        if not r.get("ao_id") or not r.get("consultant_id"):
+            continue
+        if (r.get("validation") or "") == "non_retenu":
+            continue
+        pres = _parse_date(r.get("sent_to_client_at"))
+        if not pres or (today - pres).days < _PRESENT_STALE_DAYS:
+            continue
+        kept.append(r)
+    if not kept:
+        return out
+    ao_ids = list({r["ao_id"] for r in kept})
+    cids = list({r["consultant_id"] for r in kept})
+    # Titres d'AO, en écartant les AO déjà clôturés (ao_outcome NOT NULL). Repli sans
+    # ao_outcome si la colonne n'est pas encore migrée (aucun AO n'est alors « clôturé »).
+    titles, closed = {}, set()
+    try:
+        try:
+            aos = supabase.table("appels_offres").select(
+                "id, title, ao_outcome"
+            ).in_("id", ao_ids).execute().data or []
+        except Exception:
+            aos = supabase.table("appels_offres").select(
+                "id, title"
+            ).in_("id", ao_ids).execute().data or []
+        for a in aos:
+            titles[a["id"]] = a.get("title")
+            if a.get("ao_outcome"):
+                closed.add(a["id"])
+    except Exception:
+        pass
+    names = {}
+    try:
+        for c in supabase.table("consultants").select("id, name").in_("id", cids).execute().data or []:
+            names[c["id"]] = c.get("name")
+    except Exception:
+        pass
+    for r in kept:
+        aid = r["ao_id"]
+        if aid in closed:
+            continue
+        nm = names.get(r["consultant_id"]) or "Un profil"
+        t = titles.get(aid)
+        pres = _parse_date(r.get("sent_to_client_at"))
+        days = (today - pres).days if pres else None
+        when = f"depuis {days} jours" if days is not None else "depuis un moment"
+        out.append({
+            "id": f"stalep-{aid}-{r['consultant_id']}", "kind": "stale_presentation",
+            "severity": "warning",
+            "title": "Présentation client sans réponse",
+            "subtitle": f"{nm}{(' · ' + t) if t else ''} — {when}",
+            "link": f"/aos/{aid}", "date": r.get("sent_to_client_at"),
+        })
+    return out
+
+
+def _staff_todo_items(today):
+    """File « À traiter » du staff : AO à diffuser, CV en attente de tri, présentations
+    client sans réponse. Chaque signal est isolé dans son propre try/except (best-effort,
+    jamais 500) : un signal en échec ne prive pas des autres."""
+    out = []
+    out += _undiffused_ao_items(today)
+    out += _untreated_cv_items(today)
+    out += _stale_presentation_items(today)
+    return out
+
+
 @router.get("/feed")
 async def notifications_feed(user: dict = Depends(get_current_user)):
     """Fil d'alertes de la cloche du header, selon le rôle :
@@ -253,6 +432,7 @@ async def notifications_feed(user: dict = Depends(get_current_user)):
     if is_staff:
         items += _urgent_ao_items(today, horizon)
         items += _email_items()
+        items += _staff_todo_items(today)
     elif role == "ao":
         # Partenaire : AO éligibles urgents non répondus + progression de SES candidats.
         items += _partner_urgent_ao_items(uid, today, horizon)
@@ -260,7 +440,10 @@ async def notifications_feed(user: dict = Depends(get_current_user)):
     items += _missing_info_items(role, uid)
 
     urgent_count = sum(1 for i in items if i["kind"] == "ao_urgent")
-    action_count = sum(1 for i in items if i["kind"] in ("ao_urgent", "missing_info"))
+    action_count = sum(1 for i in items if i["kind"] in (
+        "ao_urgent", "missing_info",
+        "ao_undiffused", "cv_untreated", "stale_presentation",
+    ))
     return {"items": items, "urgent_count": urgent_count, "action_count": action_count, "count": len(items)}
 
 

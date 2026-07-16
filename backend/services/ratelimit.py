@@ -19,10 +19,17 @@ _MAX_KEYS = 10_000
 
 
 def _client_ip(request: Request) -> str:
-    # nginx pose X-Forwarded-For ; on prend la 1re IP (client réel)
+    # X-Real-IP est posé par NOTRE nginx (= $remote_addr) et n'est PAS falsifiable
+    # par le client → on le privilégie (même choix que routers.auth._client_ip).
+    # X-Forwarded-For est déclaratif/forgeable (sa valeur la plus à gauche est
+    # contrôlée par le client) : on ne s'y fie qu'en dernier recours, en prenant
+    # la valeur la plus à DROITE (celle ajoutée par notre proxy), pas celle de gauche.
+    real = request.headers.get("x-real-ip")
+    if real:
+        return real.strip()
     xff = request.headers.get("x-forwarded-for")
     if xff:
-        return xff.split(",")[0].strip()
+        return xff.split(",")[-1].strip()
     return request.client.host if request.client else "unknown"
 
 

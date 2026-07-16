@@ -107,6 +107,24 @@ AO_TYPES = [
     "Autre",
 ]
 
+# Champs affichés sur la carte AO (AOCard, front) : requis pour PUBLIER (pas
+# pour un brouillon) — sinon les cartes affichent une information partielle et
+# des hauteurs différentes selon les AO. Un brouillon reste volontairement
+# incomplet le temps d'être complété ; rien ne doit rester à moitié rempli une
+# fois publié (visible des partenaires).
+_PUBLISH_REQUIRED_FIELDS = {
+    "reference": "Référence",
+    "ao_type": "Type d'AO",
+    "deadline": "Date limite de réponse",
+    "budget_max": "Budget max",
+    "location": "Localisation",
+    "duration": "Durée",
+}
+
+
+def _missing_publish_fields(record: dict) -> list[str]:
+    return [label for key, label in _PUBLISH_REQUIRED_FIELDS.items() if not record.get(key)]
+
 
 class AOCreate(BaseModel):
     client_id: str
@@ -298,6 +316,13 @@ async def draft_ao(
 
 @router.post("")
 async def create_ao(body: AOCreate, background_tasks: BackgroundTasks, user: dict = Depends(require_staff)):
+    if not body.is_draft:
+        missing = _missing_publish_fields(body.model_dump())
+        if missing:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Champ(s) requis pour publier : {', '.join(missing)}. Enregistrez en brouillon pour les compléter plus tard.",
+            )
     try:
         record = {
             "client_id": body.client_id,
@@ -940,6 +965,24 @@ async def publish_ao(ao_id: str, background_tasks: BackgroundTasks, user: dict =
     """Publie un brouillon (is_draft -> false) : il devient visible des partenaires
     habilités et déclenche le matching. Sens unique (pas de dé-publication)."""
     try:
+        draft = supabase.table("appels_offres").select(
+            "id, is_draft, reference, ao_type, deadline, budget_max, location, duration"
+        ).eq("id", ao_id).eq("is_draft", True).maybe_single().execute().data
+    except Exception as e:  # noqa: BLE001
+        if _looks_like_missing_draft(e):
+            raise HTTPException(status_code=501,
+                                detail="Publication indisponible : appliquez migrations/0005_ao_draft.sql.")
+        raise
+    if not draft:
+        # Aucun brouillon avec cet id (déjà publié, ou introuvable).
+        raise HTTPException(status_code=404, detail="Brouillon introuvable (déjà publié ?)")
+    missing = _missing_publish_fields(draft)
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Champ(s) requis pour publier : {', '.join(missing)}. Modifiez le brouillon pour les compléter.",
+        )
+    try:
         row = supabase.table("appels_offres").update({"is_draft": False}).eq(
             "id", ao_id).eq("is_draft", True).execute().data
     except Exception as e:  # noqa: BLE001
@@ -948,7 +991,7 @@ async def publish_ao(ao_id: str, background_tasks: BackgroundTasks, user: dict =
                                 detail="Publication indisponible : appliquez migrations/0005_ao_draft.sql.")
         raise
     if not row:
-        # Aucun brouillon avec cet id (déjà publié, ou introuvable).
+        # Publié entre-temps par un autre onglet/utilisateur.
         raise HTTPException(status_code=404, detail="Brouillon introuvable (déjà publié ?)")
     # Publier = lancer le matching (recommandations vivier), comme à la création.
     background_tasks.add_task(run_vivier_matching, ao_id, user["sub"])

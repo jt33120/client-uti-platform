@@ -284,7 +284,7 @@ function AOCard({ ao, isStaff, onEdit, onDelete, onArchive, onPublish, archivedV
               )}
             </div>
           )}
-          <h3 className="text-sm font-semibold text-white group-hover:text-brand-300 transition-colors line-clamp-2">
+          <h3 className="text-sm font-semibold text-white group-hover:text-brand-300 transition-colors line-clamp-2 min-h-[2.5rem]">
             {ao.title}
           </h3>
         </div>
@@ -352,14 +352,13 @@ function AOCard({ ao, isStaff, onEdit, onDelete, onArchive, onPublish, archivedV
         )}
         {isStaff ? (
           <>
-            {/* Simple présence de CV déposés (le signal de matching « CV trouvé »
-                est porté par le post-it en coin). */}
+            {/* Nombre de CV déposés (le signal de matching « CV trouvé » est
+                porté par le post-it en coin) — le chiffre est l'info utile,
+                pas la simple présence/absence. */}
             <span className="flex items-center gap-1 ml-auto text-slate-500"
                   title={`${ao.submission_count ?? 0} CV déposé(s)`}>
               <Users size={10} />
-              {(ao.submission_count ?? 0) > 0
-                ? `CV déposé${(ao.submission_count ?? 0) > 1 ? 's' : ''}`
-                : 'Aucun CV'}
+              {ao.submission_count ?? 0} CV
             </span>
             {draftView && (
               <button

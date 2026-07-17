@@ -416,28 +416,50 @@ def _staff_todo_items(today):
     return out
 
 
+def _notif_prefs(uid):
+    """Préférences de la cloche (migration 0009). Best-effort : colonnes absentes
+    ou lecture en échec → tout activé (comportement historique conservé)."""
+    prefs = {"notif_deadline_alerts": True, "notif_missing_info": True}
+    try:
+        row = supabase.table("profiles").select(
+            "notif_deadline_alerts, notif_missing_info"
+        ).eq("id", uid).single().execute().data or {}
+        for k in prefs:
+            if row.get(k) is not None:
+                prefs[k] = bool(row[k])
+    except Exception:
+        pass
+    return prefs
+
+
 @router.get("/feed")
 async def notifications_feed(user: dict = Depends(get_current_user)):
     """Fil d'alertes de la cloche du header, selon le rôle :
       • staff      : AO urgents (échéance ≤ 3 j) + miroir e-mail + infos manquantes ;
       • partenaire : invitations à compléter les infos importantes de SES consultants.
+    Chaque utilisateur peut masquer les catégories « échéance » et « infos
+    manquantes » depuis son profil (préférences).
     Dégrade proprement (jamais 500) ; chaque bloc est isolé."""
     role = user.get("role")
     uid = user.get("sub")
     is_staff = role in ("admin", "commerce")
     today = datetime.now(timezone.utc).date()
     horizon = today + timedelta(days=_URGENT_DAYS)
+    prefs = _notif_prefs(uid)
 
     items = []
     if is_staff:
-        items += _urgent_ao_items(today, horizon)
+        if prefs["notif_deadline_alerts"]:
+            items += _urgent_ao_items(today, horizon)
         items += _email_items()
         items += _staff_todo_items(today)
     elif role == "ao":
         # Partenaire : AO éligibles urgents non répondus + progression de SES candidats.
-        items += _partner_urgent_ao_items(uid, today, horizon)
+        if prefs["notif_deadline_alerts"]:
+            items += _partner_urgent_ao_items(uid, today, horizon)
         items += _partner_status_items(uid, today - timedelta(days=_STATUS_WINDOW_DAYS))
-    items += _missing_info_items(role, uid)
+    if prefs["notif_missing_info"]:
+        items += _missing_info_items(role, uid)
 
     urgent_count = sum(1 for i in items if i["kind"] == "ao_urgent")
     action_count = sum(1 for i in items if i["kind"] in (

@@ -5,18 +5,18 @@ import api from '../lib/api'
 import {
   Users, FileText, Plus, ArrowRight, Building2, UserPlus, Sparkles,
   Briefcase, Layers, Zap, Award, BarChart3, CalendarClock, AlertTriangle,
-  Megaphone, Inbox, Hourglass,
+  Inbox,
 } from 'lucide-react'
 import InviteModal from '../components/InviteModal'
 import UTILoader, { ChartLoader } from '../components/UTILoader'
 import { ChartCard, EmptyHint, Donut, Legend, VBars, HBars, BRAND, NEUTRAL } from '../components/charts'
+import { TASK_KINDS, TASK_ICON, TASK_FALLBACK_ICON } from '../lib/staffTasks'
 
 const parseSkills = (s) => (s || '').split(/[,;/]+/).map(x => x.trim()).filter(Boolean)
 
-// File staff « À traiter » — kinds actionnables du feed /notifications/feed.
-// Doit rester aligné sur les kinds servis par le backend (notifications.py).
-const TASK_KINDS = ['ao_undiffused', 'cv_untreated', 'stale_presentation']
-const TASK_ICON = { ao_undiffused: Megaphone, cv_untreated: Inbox, stale_presentation: Hourglass }
+// Aperçu de la file « à traiter » sur le dashboard : au-delà, on renvoie vers la
+// page dédiée /a-traiter (la liste complète peut être longue).
+const STAFF_TASKS_PREVIEW = 5
 
 // KPI — frameless. A number, a quiet label, a monochrome glyph. Separation
 // comes from a hairline divider on wide screens, not a box around each one.
@@ -270,8 +270,8 @@ export default function DashboardPage() {
             </span>
           </div>
           <ul className="divide-y" style={{ borderColor: 'var(--border)' }}>
-            {staffTasks.map(it => {
-              const Icon = TASK_ICON[it.kind] || AlertTriangle
+            {staffTasks.slice(0, STAFF_TASKS_PREVIEW).map(it => {
+              const Icon = TASK_ICON[it.kind] || TASK_FALLBACK_ICON
               return (
                 <li key={it.id}>
                   <button
@@ -288,6 +288,16 @@ export default function DashboardPage() {
               )
             })}
           </ul>
+          <Link to="/a-traiter"
+            className="flex items-center justify-between px-4 py-2 text-[12px] font-medium hover:bg-[var(--surface-2)] transition-colors"
+            style={{ color: 'var(--accent-text)', borderTop: '1px solid rgba(245,158,11,0.20)' }}>
+            <span>
+              {staffTasks.length > STAFF_TASKS_PREVIEW
+                ? `+${staffTasks.length - STAFF_TASKS_PREVIEW} autre${staffTasks.length - STAFF_TASKS_PREVIEW > 1 ? 's' : ''} · voir tout`
+                : 'Voir tout'}
+            </span>
+            <ArrowRight size={12} strokeWidth={2} />
+          </Link>
         </div>
       )}
 

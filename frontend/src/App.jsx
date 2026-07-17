@@ -9,6 +9,7 @@ import RegisterPage from './pages/RegisterPage'
 import ForgotPasswordPage from './pages/ForgotPasswordPage'
 import ResetPasswordPage from './pages/ResetPasswordPage'
 import DashboardPage from './pages/DashboardPage'
+import TasksPage from './pages/TasksPage'
 import ConsultantsPage from './pages/ConsultantsPage'
 import ConsultantDetailPage from './pages/ConsultantDetailPage'
 import AOSPage from './pages/AOSPage'
@@ -109,6 +110,7 @@ export default function App() {
 
         <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
           <Route path="/dashboard" element={<DashboardPage />} />
+          <Route path="/a-traiter" element={<ProtectedRoute roles={STAFF}><TasksPage /></ProtectedRoute>} />
           <Route path="/clients" element={<ClientsPage />} />
           <Route path="/clients/:id" element={<ClientDetailPage />} />
           <Route path="/consultants" element={<ConsultantsPage />} />

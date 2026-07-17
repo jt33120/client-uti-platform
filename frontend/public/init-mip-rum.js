@@ -19,6 +19,11 @@
     // ajouter requireConsent:true + appeler MIPRum.consent(true) depuis la
     // bannière, puis remettre replay: 0.1.
     replay: 0,
-    frustration: true  // rage clicks / dead clicks
+    frustration: true, // rage clicks / dead clicks
+    // Widget d'avis MIP (CSAT) : alimente le CSAT par fonction dans la
+    // Supervision IA. Aucun script séparé à poser (SDK ≥ 0.4.2 ; ignoré en
+    // silence si la version ne le supporte pas). Objet possible pour
+    // personnaliser : { label, accent }.
+    feedback: true
   });
 })();

@@ -32,6 +32,24 @@ const fmtDay = (iso) => {
 const OP_LABELS = {
   extraction: 'Extraction CV', scoring: 'Scoring (2ᵉ avis)', draft: "Génération d'AO",
   summary: "Résumé d'AO", assistant: 'Assistant', harmonize: 'Harmonisation CV',
+  synthesis: 'Synthèse vivier', refusal: 'Motif de refus', chat: 'Assistant',
+}
+// Libellé d'une fonction IA côté MIP : on pivote d'abord sur `route` (granularité
+// fonctionnelle réelle aujourd'hui), repli sur `operation` puis brut.
+const ROUTE_LABELS = {
+  'matching/extract': 'Extraction CV', 'matching/score': 'Scoring (2ᵉ avis)',
+  'matching/synthesis': 'Synthèse vivier', 'matching/refusal': 'Motif de refus',
+  'cv/vision': 'Extraction CV (vision)', 'cv/harmonize': 'Harmonisation CV',
+  'ao/draft': "Génération d'AO", 'ao/summary': "Résumé d'AO", 'assistant/chat': 'Assistant',
+}
+const fnLabel = (op, route) => ROUTE_LABELS[route] || OP_LABELS[op] || route || op || '—'
+
+// Tonalité d'un signal qualité (fractions 0..1). csat : haut = bon. « bad »
+// (👎 / refus / régén.) : bas = bon. null → gris (non mesurable).
+const qualTone = (kind, v) => {
+  if (v == null) return 'var(--text-faint)'
+  if (kind === 'csat') return v >= 0.8 ? 'var(--success)' : v >= 0.5 ? 'var(--warning)' : 'var(--danger)'
+  return v <= 0.05 ? 'var(--text-muted)' : v <= 0.2 ? 'var(--warning)' : 'var(--danger)'
 }
 const AI_WINDOWS = [{ k: '24h', l: '24 h' }, { k: '7d', l: '7 j' }, { k: '30d', l: '30 j' }, { k: '90d', l: '90 j' }]
 
@@ -210,6 +228,108 @@ function LedgerFilters({ facets, fOp, setFOp, fModel, setFModel, fAccount, setFA
           <X size={12} /> Réinitialiser
         </button>
       )}
+    </div>
+  )
+}
+
+// Combo « appels IA + latence par jour » (MIP ai_series) : barres = appels/jour,
+// ligne = latence p75. Deux échelles implicites (volume vs ms) + axe des dates.
+function AiSeriesChart({ series }) {
+  const pts = (Array.isArray(series) ? series : []).map(s => ({
+    date: s.date, calls: Number(s.calls) || 0,
+    lat: s.p75_latency_ms == null ? null : Number(s.p75_latency_ms),
+  }))
+  if (pts.length < 2) return null
+  const W = 680, H = 168, padL = 8, padR = 8, padT = 12, padB = 8
+  const iw = W - padL - padR, ih = H - padT - padB
+  const maxCalls = Math.max(1, ...pts.map(p => p.calls))
+  const maxLat = Math.max(1, ...pts.filter(p => p.lat != null).map(p => p.lat))
+  const bw = iw / pts.length
+  const X = (i) => padL + i * bw + bw / 2
+  const Yc = (v) => padT + ih - (v / maxCalls) * ih
+  const Yl = (v) => padT + ih - (v / maxLat) * ih
+  const latPts = pts.map((p, i) => (p.lat == null ? null : [X(i), Yl(p.lat), i])).filter(Boolean)
+  const line = latPts.map(([x, y], i) => `${i ? 'L' : 'M'}${x.toFixed(1)},${y.toFixed(1)}`).join(' ')
+  const bwHalf = Math.max(2, bw * 0.32)
+  return (
+    <div className="card p-3 overflow-x-auto">
+      <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{ minWidth: 480 }} role="img" aria-label="Appels IA et latence p75 par jour">
+        {pts.map((p, i) => (
+          <rect key={p.date} x={X(i) - bwHalf} y={Yc(p.calls)} width={bwHalf * 2}
+            height={Math.max(0, padT + ih - Yc(p.calls))} rx="2" fill="var(--viz-2)" opacity="0.5">
+            <title>{`${fmtDay(p.date)} · ${fmtInt(p.calls)} appel(s)${p.lat != null ? ` · p75 ${fmtMs(p.lat)}` : ''}`}</title>
+          </rect>
+        ))}
+        {latPts.length >= 2 && (
+          <path d={line} fill="none" stroke="var(--accent)" strokeWidth="1.75" strokeLinejoin="round" strokeLinecap="round" />
+        )}
+        {latPts.map(([x, y, i]) => (
+          <circle key={i} cx={x} cy={y} r={i === pts.length - 1 ? 3 : 1.6} fill="var(--accent)">
+            <title>{`${fmtDay(pts[i].date)} · p75 ${fmtMs(pts[i].lat)}`}</title>
+          </circle>
+        ))}
+      </svg>
+      <DayAxis dates={pts.map(p => p.date)} />
+      <div className="flex items-center gap-4 mt-2 text-[11px]" style={{ color: 'var(--text-muted)' }}>
+        <span className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm" style={{ background: 'var(--viz-2)', opacity: 0.6 }} /> Appels / jour</span>
+        <span className="inline-flex items-center gap-1.5"><span className="w-3 rounded-full" style={{ height: 2, background: 'var(--accent)' }} /> Latence p75</span>
+      </div>
+    </div>
+  )
+}
+
+// Perf + QUALITÉ IA par fonction (MIP ai_by_operation) — le croisement coût ×
+// satisfaction (« coûte cher ET déçoit »). Fractions 0..1 → %, null → « — ».
+function AiByOperationTable({ rows }) {
+  const list = Array.isArray(rows) ? rows : []
+  if (!list.length) return null
+  const th = 'font-medium px-3 py-2 whitespace-nowrap'
+  const td = 'px-3 py-2 text-right tabular whitespace-nowrap'
+  return (
+    <div className="card overflow-x-auto">
+      <table className="w-full text-[12px]" style={{ minWidth: 820 }}>
+        <thead>
+          <tr className="text-left text-[10.5px] uppercase tracking-wide" style={{ color: 'var(--text-faint)', borderBottom: '1px solid var(--border)' }}>
+            <th className={th}>Fonction</th>
+            <th className={th + ' text-right'}>Appels</th>
+            <th className={th + ' text-right'}>Coût</th>
+            <th className={th + ' text-right'}>Lat. p75</th>
+            <th className={th + ' text-right'} title="Time-to-first-token (streaming)">TTFT p75</th>
+            <th className={th + ' text-right'}>Err.</th>
+            <th className={th + ' text-right'} title="Satisfaction (CSAT) des sessions ayant utilisé la fonction">CSAT</th>
+            <th className={th + ' text-right'} title="Taux de pouce bas">👎</th>
+            <th className={th + ' text-right'} title="Taux de refus modèle">Refus</th>
+            <th className={th + ' text-right'} title="Taux de régénération">Régén.</th>
+          </tr>
+        </thead>
+        <tbody>
+          {list.map((r, i) => (
+            <tr key={i} style={{ borderTop: i ? '1px solid var(--border)' : 'none' }}>
+              <td className="px-3 py-2" style={{ color: 'var(--text)' }}>
+                <div className="flex items-center gap-2">
+                  <span className="truncate max-w-[220px]" title={r.route || r.operation || ''}>{fnLabel(r.operation, r.route)}</span>
+                  {r.anomaly && (
+                    <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full shrink-0"
+                      style={{ background: 'var(--warning-soft)', color: 'var(--warning)' }}
+                      title={`Coût 24 h anormal (z=${r.anomaly_score != null ? Number(r.anomaly_score).toFixed(1) : '?'}) vs la baseline de cette fonction`}>
+                      <AlertTriangle size={9} /> anomalie
+                    </span>
+                  )}
+                </div>
+              </td>
+              <td className={td} style={{ color: 'var(--text-muted)' }}>{fmtInt(r.calls)}</td>
+              <td className={td} style={{ color: 'var(--text)' }}>{fmtUsd(r.cost_usd)}</td>
+              <td className={td} style={{ color: toneForMs(r.p75_latency_ms) }}>{fmtMs(r.p75_latency_ms)}</td>
+              <td className={td} style={{ color: 'var(--text-muted)' }}>{fmtMs(r.ttft_p75_ms)}</td>
+              <td className={td} style={{ color: r.error_rate ? 'var(--danger)' : 'var(--text-faint)' }}>{fmtPct(r.error_rate)}</td>
+              <td className={td} style={{ color: qualTone('csat', r.csat) }}>{fmtPct(r.csat)}</td>
+              <td className={td} style={{ color: qualTone('bad', r.thumbs_down_rate) }}>{fmtPct(r.thumbs_down_rate)}</td>
+              <td className={td} style={{ color: qualTone('bad', r.refusal_rate) }}>{fmtPct(r.refusal_rate)}</td>
+              <td className={td} style={{ color: qualTone('bad', r.regen_rate) }}>{fmtPct(r.regen_rate)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   )
 }
@@ -692,6 +812,29 @@ function AiUsageTab() {
                     </div>
                   ))}
                 </div>
+                {/* Appels IA & latence par jour (MIP ai_series) — volume + ressenti temps. */}
+                {Array.isArray(rd.ai_series) && rd.ai_series.length >= 2 && (
+                  <div className="mt-4">
+                    <p className="text-[11px] mb-2 flex items-center gap-1.5" style={{ color: 'var(--text-faint)' }}>
+                      <TrendingUp size={12} /> Appels IA &amp; latence par jour <span style={{ color: 'var(--text-faint)' }}>· barres = appels · ligne = p75</span>
+                    </p>
+                    <AiSeriesChart series={rd.ai_series} />
+                  </div>
+                )}
+
+                {/* Perf + qualité par fonction (MIP ai_by_operation) — coût × satisfaction. */}
+                {Array.isArray(rd.ai_by_operation) && rd.ai_by_operation.length > 0 && (
+                  <div className="mt-4">
+                    <p className="text-[11px] mb-2 flex items-center gap-1.5 flex-wrap" style={{ color: 'var(--text-faint)' }}>
+                      <Layers size={12} /> Perf &amp; qualité IA par fonction
+                      <span className="normal-case tracking-normal font-normal" style={{ color: 'var(--text-faint)' }}>
+                        · coût, latence et satisfaction côte à côte — repérer « coûte cher ET déçoit »
+                      </span>
+                    </p>
+                    <AiByOperationTable rows={rd.ai_by_operation} />
+                  </div>
+                )}
+
                 {Array.isArray(rd.ai_by_model) && rd.ai_by_model.length > 0 && (
                   <div className="mt-4">
                     <p className="text-[11px] mb-2 flex items-center gap-1.5" style={{ color: 'var(--text-faint)' }}>

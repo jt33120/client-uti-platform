@@ -153,7 +153,7 @@ def _candidate_brief(features: dict, consultant: dict) -> str:
 async def _call_scoring(c: AsyncOpenAI, model: str, user: str, maxes: dict) -> tuple[Optional[dict], float]:
     """Appel de scoring sur un client/modèle donné. Lève en cas d'erreur."""
     _prov = "mistral" if "mistral" in str(getattr(c, "base_url", "")) else "openrouter"
-    with record_ai_call(provider=_prov, model=model, operation="chat", route="matching/score") as _call:
+    with record_ai_call(provider=_prov, model=model, operation="scoring", route="matching/score") as _call:
         resp = await c.chat.completions.create(
             model=model,
             messages=[

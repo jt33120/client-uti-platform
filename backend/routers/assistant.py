@@ -743,7 +743,7 @@ async def chat(body: ChatRequest, request: Request, user: dict = Depends(get_cur
     convo += [{"role": m.role, "content": m.content} for m in body.messages[-10:]]
 
     try:
-        with record_ai_call(provider="openrouter", model=MODEL, route="assistant/chat", session_id=session_id) as _call:
+        with record_ai_call(provider="openrouter", model=MODEL, operation="assistant", route="assistant/chat", session_id=session_id) as _call:
             resp = await _client.chat.completions.create(model=MODEL, messages=convo, temperature=0.3, max_tokens=900,
                                                          extra_body=ai_ledger.OR_USAGE)
             _u = getattr(resp, "usage", None)

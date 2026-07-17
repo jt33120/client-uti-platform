@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import api from '../lib/api'
 import { trackAiRegenerate } from '../lib/rum'
+import AiFeedback from './AiFeedback'
 import { X, Loader2, Printer, RefreshCw, FileText } from 'lucide-react'
 
 // Rendu du CV harmonisé (format Groupement-IT) en HTML autonome — utilisé pour
@@ -118,6 +119,12 @@ export default function HarmonizedCvModal({ submissionId, consultantId, name, on
             <div dangerouslySetInnerHTML={{ __html: `<style>${PRINT_CSS}</style>${cvToHtml(cv, lang)}` }} />
           ) : null}
         </div>
+
+        {cv && !loading && (
+          <div className="flex justify-end px-5 py-2.5 border-t" style={{ borderColor: 'var(--border)' }}>
+            <AiFeedback operation="harmonize" route="cv/harmonize" label="Ce CV harmonisé vous convient ?" />
+          </div>
+        )}
       </div>
     </div>
   )

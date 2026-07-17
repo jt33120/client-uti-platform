@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import api from '../lib/api'
 import { trackAiRegenerate } from '../lib/rum'
+import { useAuth } from '../contexts/AuthContext'
 import AiFeedback from './AiFeedback'
 import { X, Loader2, Printer, RefreshCw, FileText } from 'lucide-react'
 
@@ -54,7 +55,9 @@ const PRINT_CSS = `
 `
 
 export default function HarmonizedCvModal({ submissionId, consultantId, name, onClose }) {
-  const [lang, setLang] = useState('fr')
+  const { user } = useAuth()
+  // Langue initiale = préférence de l'utilisateur (fallback 'fr').
+  const [lang, setLang] = useState(user?.preferred_language === 'en' ? 'en' : 'fr')
   const [cv, setCv] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')

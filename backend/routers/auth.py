@@ -632,6 +632,87 @@ async def mfa_set_required(user_id: str, body: MfaRequiredRequest, admin: dict =
     return {"ok": True, "user_id": user_id, "mfa_required": body.required}
 
 
+# ── MFA en self-service (depuis une session déjà authentifiée) ──────────────
+# Distinct du flux de connexion : ici l'utilisateur est déjà connecté et gère
+# lui-même son second facteur depuis « Paramètres du profil ». Comme à
+# l'enrôlement au login, le secret n'est stocké qu'à la confirmation.
+
+@router.post("/me/mfa/start")
+async def mfa_self_start(user: dict = Depends(get_current_user)):
+    """Démarre l'activation 2FA : génère un secret + QR. Le secret est embarqué
+    dans un jeton signé court (jamais stocké tant que non confirmé)."""
+    user_id, email = user["sub"], user["email"]
+    _throttle(f"mfa:self-start:{user_id}", 10, 300)
+    secret = pyotp.random_base32()
+    otpauth = pyotp.TOTP(secret).provisioning_uri(name=email, issuer_name=MFA_ISSUER)
+    return {
+        "challenge_token": create_mfa_challenge(user_id, email, user.get("role", ""), "self_enroll", secret=secret),
+        "qr": _qr_data_uri(otpauth),
+        "secret": secret,
+    }
+
+
+class MfaSelfConfirmRequest(BaseModel):
+    challenge_token: str
+    code: str
+
+
+@router.post("/me/mfa/confirm")
+async def mfa_self_confirm(body: MfaSelfConfirmRequest, user: dict = Depends(get_current_user)):
+    """Confirme l'activation 2FA : valide le code TOTP scanné puis active la MFA."""
+    user_id = user["sub"]
+    _throttle(f"mfa:self-confirm:{user_id}", 5, 300)
+    payload = _decode_mfa_challenge(body.challenge_token, "self_enroll")
+    if payload.get("sub") != user_id:
+        raise HTTPException(status_code=403, detail="Jeton d'activation invalide.")
+    secret = payload.get("mfa_secret")
+    if not secret:
+        raise HTTPException(status_code=400, detail="Session d'activation invalide. Relancez l'activation.")
+    if not pyotp.TOTP(secret).verify(_clean_code(body.code), valid_window=1):
+        raise HTTPException(status_code=401, detail="Code invalide. Vérifiez l'heure de votre téléphone et réessayez.")
+    try:
+        supabase.table("profiles").update({"mfa_secret": secret, "mfa_enabled": True}).eq("id", user_id).execute()
+    except Exception as e:
+        print(f"[AUTH] activation MFA self-service échouée pour {user_id}: {e}")
+        raise HTTPException(status_code=500, detail="Impossible d'activer la double authentification (colonnes MFA migrées ?).")
+    return {"mfa_enabled": True}
+
+
+class MfaSelfDisableRequest(BaseModel):
+    current_password: str
+
+
+@router.post("/me/mfa/disable")
+async def mfa_self_disable(body: MfaSelfDisableRequest, user: dict = Depends(get_current_user)):
+    """Désactive la 2FA. Re-authentification par mot de passe requise : une
+    session volée ne doit pas pouvoir retirer le second facteur en silence."""
+    user_id, email = user["sub"], user["email"]
+    _throttle(f"mfa:self-disable:{user_id}", 5, 300)
+    if not body.current_password:
+        raise HTTPException(status_code=422, detail="Mot de passe actuel requis pour désactiver la double authentification.")
+    try:
+        verified = _verify_credentials(email, body.current_password)
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=500, detail="Erreur de vérification du mot de passe.")
+    if not verified:
+        raise HTTPException(status_code=401, detail="Mot de passe actuel incorrect.")
+    # 2FA obligatoire (défaut) : la désactivation serait illusoire — ré-enrôlement
+    # forcé à la prochaine connexion. On refuse proprement et on renvoie vers l'admin.
+    try:
+        prof = supabase.table("profiles").select("mfa_required").eq("id", user_id).single().execute().data or {}
+    except Exception:
+        prof = {}
+    if prof.get("mfa_required", True):
+        raise HTTPException(status_code=403, detail="La double authentification est obligatoire sur votre compte. Un administrateur doit l'exonérer avant que vous puissiez la désactiver.")
+    try:
+        supabase.table("profiles").update({"mfa_enabled": False, "mfa_secret": None}).eq("id", user_id).execute()
+    except Exception:
+        raise HTTPException(status_code=500, detail="Impossible de désactiver la double authentification.")
+    return {"mfa_enabled": False}
+
+
 @router.get("/me")
 async def me(user: dict = Depends(get_current_user)):
     try:
@@ -760,6 +841,13 @@ class UpdateProfileRequest(BaseModel):
     email: Optional[EmailStr] = None
     current_password: Optional[str] = None
     new_password: Optional[str] = None
+    # Champs profil (migration 0009) — tous facultatifs : on ne met à jour que
+    # ce qui est présent dans la requête.
+    title: Optional[str] = None            # fonction / poste
+    phone: Optional[str] = None
+    preferred_language: Optional[str] = None  # 'fr' | 'en'
+    notif_deadline_alerts: Optional[bool] = None
+    notif_missing_info: Optional[bool] = None
 
 
 @router.patch("/me")
@@ -809,9 +897,35 @@ async def update_profile(body: UpdateProfileRequest, user: dict = Depends(get_cu
         profile_update["name"] = body.name.strip()
     if body.email:
         profile_update["email"] = body.email
+    # Champs profil (migration 0009). `is not None` : distingue « champ absent »
+    # de « champ vidé » (chaîne vide → NULL) et gère le bool False.
+    if body.title is not None:
+        t = body.title.strip()
+        profile_update["title"] = t or None
+    if body.phone is not None:
+        p = body.phone.strip()
+        profile_update["phone"] = p or None
+    if body.preferred_language is not None:
+        lang = body.preferred_language.strip().lower()
+        if lang not in ("fr", "en"):
+            raise HTTPException(status_code=422, detail="Langue non supportée (fr ou en).")
+        profile_update["preferred_language"] = lang
+    if body.notif_deadline_alerts is not None:
+        profile_update["notif_deadline_alerts"] = bool(body.notif_deadline_alerts)
+    if body.notif_missing_info is not None:
+        profile_update["notif_missing_info"] = bool(body.notif_missing_info)
 
     if profile_update:
-        supabase.table("profiles").update(profile_update).eq("id", user_id).execute()
+        try:
+            supabase.table("profiles").update(profile_update).eq("id", user_id).execute()
+        except Exception as e:
+            # Colonnes 0009 non encore migrées : ne bloque pas la mise à jour des
+            # champs historiques (name/email), retente sans les nouveaux champs.
+            legacy = {k: v for k, v in profile_update.items() if k in ("name", "email")}
+            if legacy and legacy != profile_update:
+                supabase.table("profiles").update(legacy).eq("id", user_id).execute()
+                raise HTTPException(status_code=501, detail="Certains champs de profil ne sont pas encore disponibles : appliquez la migration 0009_profile_fields.sql.")
+            raise HTTPException(status_code=500, detail=f"Mise à jour du profil impossible : {e}")
 
     profile = supabase.table("profiles").select("*").eq("id", user_id).single().execute()
     data = dict(profile.data or {})

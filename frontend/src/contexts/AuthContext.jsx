@@ -125,13 +125,38 @@ export function AuthProvider({ children }) {
     setUser(newUser)
   }
 
+  // ── 2FA en self-service (depuis « Paramètres du profil ») ──────────────────
+  // startMfa : génère un secret + QR à scanner (secret non stocké tant que non
+  // confirmé). confirmMfa : valide un code TOTP → active. disableMfa : nécessite
+  // le mot de passe actuel (re-auth). On garde user.mfa_enabled en phase.
+  const startMfa = async () => {
+    const { data } = await api.post('/auth/me/mfa/start')
+    return data // { challenge_token, qr, secret }
+  }
+
+  const setMfaEnabled = (enabled) => {
+    const newUser = { ...user, mfa_enabled: enabled }
+    localStorage.setItem('user', JSON.stringify(newUser))
+    setUser(newUser)
+  }
+
+  const confirmMfa = async (challenge, code) => {
+    await api.post('/auth/me/mfa/confirm', { challenge_token: challenge, code })
+    setMfaEnabled(true)
+  }
+
+  const disableMfa = async (currentPassword) => {
+    await api.post('/auth/me/mfa/disable', { current_password: currentPassword })
+    setMfaEnabled(false)
+  }
+
   const isAdmin = user?.role === 'admin'
   const isCommerce = user?.role === 'commerce'
   const isStaff = isAdmin || isCommerce // équipe UTI (admin + commercial)
   const isAO = user?.role === 'ao'
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, verifyMfa, enrollMfa, register, logout, isAdmin, isCommerce, isStaff, isAO, updateProfile, uploadAvatar, deleteAvatar }}>
+    <AuthContext.Provider value={{ user, loading, login, verifyMfa, enrollMfa, register, logout, isAdmin, isCommerce, isStaff, isAO, updateProfile, uploadAvatar, deleteAvatar, startMfa, confirmMfa, disableMfa }}>
       {children}
     </AuthContext.Provider>
   )

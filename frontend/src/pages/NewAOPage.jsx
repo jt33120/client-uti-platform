@@ -7,6 +7,7 @@ import {
   Sparkles, UploadCloud, X, Target
 } from 'lucide-react'
 import ScoringPriorities, { DEFAULT_STARS } from '../components/ScoringPriorities'
+import AiFeedback from '../components/AiFeedback'
 import { formatDateFR } from '../lib/date'
 
 // Minuscule, sans accents, ponctuation (tirets, slashs…) ramenée à des espaces —
@@ -283,9 +284,12 @@ export default function NewAOPage() {
 
         {aiError && <p className="text-xs text-red-400 mt-3">{aiError}</p>}
         {aiDone && !aiError && (
-          <p className="text-xs text-emerald-400 mt-3 flex items-center gap-1.5">
-            <CheckCircle size={12} /> Champs pré-remplis : vérifiez et ajustez ci-dessous avant d'enregistrer.
-          </p>
+          <div className="mt-3 flex items-center justify-between gap-3 flex-wrap">
+            <p className="text-xs text-emerald-400 flex items-center gap-1.5">
+              <CheckCircle size={12} /> Champs pré-remplis : vérifiez et ajustez ci-dessous avant d'enregistrer.
+            </p>
+            <AiFeedback operation="draft" route="ao/draft" label="La génération est-elle pertinente ?" />
+          </div>
         )}
         {aiDone && aiModel && (
           <p className="text-[10px] mt-1" style={{ color: aiModel.fallback ? '#f59e0b' : 'var(--text-faint)' }}>

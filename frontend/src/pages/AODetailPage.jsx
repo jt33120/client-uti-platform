@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useMemo } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import api from '../lib/api'
 import { trackAiRegenerate } from '../lib/rum'
+import AiFeedback from '../components/AiFeedback'
 // pdfjs (~400 Ko) chargé à la demande, seulement quand la vue « CV analysé » s'ouvre.
 const loadPdfLib = () => import('../lib/pdfHighlight')
 import { useAuth } from '../contexts/AuthContext'
@@ -646,6 +647,12 @@ function PoolSynthesis({ aoId, results }) {
         <p className="text-[10px] mt-2" style={{ color: 'var(--text-faint)' }}>
           Synthèse calculée à partir des scores (avis IA momentanément indisponible).
         </p>
+      )}
+      {/* Avis 👍/👎 — uniquement sur un vrai avis IA (pas la synthèse déterministe). */}
+      {data && data.source !== 'deterministic' && (
+        <div className="mt-3 pt-3 border-t border-white/5">
+          <AiFeedback operation="synthesis" route="matching/synthesis" label="Cette synthèse vous aide ?" />
+        </div>
       )}
     </div>
   )
@@ -2949,7 +2956,12 @@ function AOEditModal({ ao, onClose, onSaved }) {
             </button>
           </div>
           {aiError && <p className="text-xs text-red-400 mt-2">{aiError}</p>}
-          {aiDone && !aiError && <p className="text-xs text-emerald-400 mt-2 flex items-center gap-1.5"><CheckCircle size={12} /> Champs régénérés : vérifiez avant d'enregistrer.</p>}
+          {aiDone && !aiError && (
+            <div className="mt-2 flex items-center justify-between gap-3 flex-wrap">
+              <p className="text-xs text-emerald-400 flex items-center gap-1.5"><CheckCircle size={12} /> Champs régénérés : vérifiez avant d'enregistrer.</p>
+              <AiFeedback operation="draft" route="ao/draft" label="La régénération est-elle pertinente ?" />
+            </div>
+          )}
         </div>
 
         <form onSubmit={submit} className="space-y-4">

@@ -30,7 +30,7 @@ from pydantic import BaseModel
 from openai import AsyncOpenAI
 
 from config import settings
-from mip_rum_ai import record_ai_call, session_id_from_tracestate
+from mip_rum_ai import record_ai_call, session_id_from_tracestate, flag_refusal
 from services import ai_ledger
 from services.supabase_client import supabase
 from services.ratelimit import rate_limit
@@ -751,6 +751,7 @@ async def chat(body: ChatRequest, request: Request, user: dict = Depends(get_cur
                 _call.usage(input_tokens=getattr(_u, "prompt_tokens", None),
                             output_tokens=getattr(_u, "completion_tokens", None),
                             cost=getattr(_u, "cost", None))
+            flag_refusal(_call, resp)  # refus modèle → refusal_rate (MIP)
         ai_ledger.record(provider="openrouter", model=MODEL, operation="assistant", resp=resp,
                          user_id=user.get("sub"), user_email=user.get("email"),
                          entity_type="assistant")

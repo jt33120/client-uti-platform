@@ -13,7 +13,7 @@ son avis de matching, jamais par son nom.
 """
 from openai import AsyncOpenAI
 from config import settings
-from mip_rum_ai import record_ai_call
+from mip_rum_ai import record_ai_call, flag_refusal
 from services import ai_ledger
 from services.ai_matching import _LLM_TIMEOUT
 from services.error_log import record as _record_err
@@ -125,6 +125,7 @@ async def _call(c: AsyncOpenAI, model: str, user: str) -> dict:
         _c.usage(input_tokens=getattr(_u, "prompt_tokens", None),
                  output_tokens=getattr(_u, "completion_tokens", None),
                  cost=getattr(_u, "cost", None))
+        flag_refusal(_c, resp)  # refus modèle → refusal_rate (MIP)
     ai_ledger.record(provider=_prov, model=model, operation="refusal", resp=resp)
     content = (resp.choices[0].message.content or "").strip()
     data = _extract_json(content) if content else None

@@ -22,7 +22,7 @@ from typing import Optional
 
 from openai import AsyncOpenAI
 from config import settings
-from mip_rum_ai import record_ai_call
+from mip_rum_ai import record_ai_call, flag_refusal
 from services import ai_ledger
 from services.ai_matching import calculate_cost, _LLM_TIMEOUT
 from services.error_log import record as _record_err
@@ -169,6 +169,7 @@ async def _call_scoring(c: AsyncOpenAI, model: str, user: str, maxes: dict) -> t
         _call.usage(input_tokens=getattr(_u, "prompt_tokens", None),
                     output_tokens=getattr(_u, "completion_tokens", None),
                     cost=getattr(_u, "cost", None))
+        flag_refusal(_call, resp)  # refus modèle → refusal_rate (MIP)
     ai_ledger.record(provider=_prov, model=model, operation="scoring", resp=resp)
     choice = resp.choices[0]
     if getattr(choice, "finish_reason", None) == "length":

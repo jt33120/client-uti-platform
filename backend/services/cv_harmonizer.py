@@ -10,7 +10,7 @@ import re
 from typing import Optional
 from openai import AsyncOpenAI
 from config import settings
-from mip_rum_ai import record_ai_call
+from mip_rum_ai import record_ai_call, flag_refusal
 from services import ai_ledger
 
 _client: Optional[AsyncOpenAI] = (
@@ -152,6 +152,7 @@ async def harmonize_cv(cv_text: str, lang: str = "fr") -> Optional[dict]:
                     _call.usage(input_tokens=getattr(_u, "prompt_tokens", None),
                                 output_tokens=getattr(_u, "completion_tokens", None),
                                 cost=getattr(_u, "cost", None))
+                flag_refusal(_call, resp)  # refus modèle → refusal_rate (MIP)
             ai_ledger.record(provider=provider.lower(), model=model, operation="harmonize",
                              resp=resp, entity_type="consultant")
             data = _extract_json(resp.choices[0].message.content or "")

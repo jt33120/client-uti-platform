@@ -75,6 +75,17 @@ class _Call:
     def __init__(self):
         self._attrs: dict = {}
         self._err: Optional[str] = None
+        self._refusal: Optional[str] = None
+
+    def refusal(self, kind: str = "content_filter"):
+        """Marque l'appel comme REFUS modèle (filtre de contenu / garde-fou).
+
+        Distinct d'une exception : on renseigne ``error.type`` avec un motif que
+        MIP reconnaît (refus|content_filter|guardrail|safety|moderation → alimente
+        ``refusal_rate``) SANS passer le span en statut erreur — un refus est un
+        comportement du modèle, pas une panne infra (ne gonfle pas le taux
+        d'erreur technique)."""
+        self._refusal = str(kind or "content_filter")
 
     def usage(self, input_tokens=None, output_tokens=None, cost=None):
         if input_tokens is not None:
@@ -141,6 +152,44 @@ def record_ai_call(*, provider: str, model: str, operation: str = "chat",
             if call._err:
                 span["attributes"].append(_kv("error.type", call._err))
                 span["status"] = {"code": 2, "message": call._err}  # STATUS_CODE_ERROR
+            elif call._refusal:
+                # Refus modèle : error.type reconnu par MIP (refusal_rate), statut OK.
+                span["attributes"].append(_kv("error.type", call._refusal))
             _emit(span)
         except Exception:
             pass
+
+
+def refusal_kind(resp) -> Optional[str]:
+    """Détecte un REFUS modèle dans une réponse type OpenAI/OpenRouter (SDK).
+
+    Renvoie un motif reconnu par MIP (``content_filter`` | ``refusal``) ou None :
+    - ``finish_reason == 'content_filter'`` → filtre de contenu du fournisseur ;
+    - ``message.refusal`` non vide → refus structuré (format OpenAI).
+    Best-effort et défensif : toute forme inattendue → None (jamais d'exception)."""
+    try:
+        choice = (getattr(resp, "choices", None) or [None])[0]
+        if choice is None:
+            return None
+        fr = str(getattr(choice, "finish_reason", "") or "").lower().replace("-", "_")
+        if fr == "content_filter":
+            return "content_filter"
+        msg = getattr(choice, "message", None)
+        ref = getattr(msg, "refusal", None) if msg is not None else None
+        if ref and str(ref).strip():
+            return "refusal"
+    except Exception:
+        return None
+    return None
+
+
+def flag_refusal(call, resp) -> Optional[str]:
+    """Marque ``call`` comme refus si ``resp`` en est un. Renvoie le motif ou None.
+    À appeler dans le bloc ``with record_ai_call(...) as call`` après la réponse."""
+    kind = refusal_kind(resp)
+    if kind and call is not None:
+        try:
+            call.refusal(kind)
+        except Exception:
+            pass
+    return kind

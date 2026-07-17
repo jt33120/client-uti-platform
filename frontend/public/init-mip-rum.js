@@ -22,8 +22,17 @@
     frustration: true, // rage clicks / dead clicks
     // Widget d'avis MIP (CSAT) : alimente le CSAT par fonction dans la
     // Supervision IA. Aucun script séparé à poser (SDK ≥ 0.4.2 ; ignoré en
-    // silence si la version ne le supporte pas). Objet possible pour
-    // personnaliser : { label, accent }.
-    feedback: true
+    // silence si la version ne le supporte pas).
+    // Cantonné aux SECTIONS AUTHENTIFIÉES (onlyPaths = préfixes des routes sous
+    // ProtectedRoute) : on ne sollicite JAMAIS d'avis sur la page publique de
+    // retour client (/client-review/:token), le login ou les pages légales.
+    // Le widget se masque/réapparaît tout seul à la navigation (SPA comprise).
+    feedback: {
+      onlyPaths: [
+        '/dashboard', '/clients', '/consultants', '/aos', '/partners',
+        '/graph', '/carte', '/pacs', '/emails', '/notifications',
+        '/admin', '/supervision', '/tickets'
+      ]
+    }
   });
 })();

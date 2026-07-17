@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import api from '../lib/api'
+import { trackAiRegenerate } from '../lib/rum'
 import { X, Loader2, Printer, RefreshCw, FileText } from 'lucide-react'
 
 // Rendu du CV harmonisé (format Groupement-IT) en HTML autonome — utilisé pour
@@ -95,7 +96,7 @@ export default function HarmonizedCvModal({ submissionId, consultantId, name, on
                 </button>
               ))}
             </div>
-            <button onClick={() => load(lang)} disabled={loading} className="btn-ghost p-2" title="Régénérer">
+            <button onClick={() => { trackAiRegenerate('harmonize', 'cv/harmonize'); load(lang) }} disabled={loading} className="btn-ghost p-2" title="Régénérer">
               <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
             </button>
             <button onClick={print} disabled={!cv} className="btn-primary text-xs"><Printer size={13} /> PDF</button>

@@ -134,7 +134,7 @@ _EMPTY_FEATURES = {"skills": [], "experience_years": None, "sectors": [], "langu
 async def _call_extraction(c: AsyncOpenAI, model: str, cv_text: str) -> tuple[dict, float]:
     """Appel d'extraction sur un client/modèle donné. Lève en cas d'erreur."""
     _prov = "mistral" if "mistral" in str(getattr(c, "base_url", "")) else "openrouter"
-    with record_ai_call(provider=_prov, model=model, operation="chat", route="matching/extract") as _call:
+    with record_ai_call(provider=_prov, model=model, operation="extraction", route="matching/extract") as _call:
         response = await c.chat.completions.create(
             model=model,
             messages=[

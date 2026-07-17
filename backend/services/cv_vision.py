@@ -169,7 +169,7 @@ async def extract_structured_vision(images: list[bytes], lang: str = "fr") -> Op
         content.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}})
 
     try:
-        with record_ai_call(provider="openrouter", model=VISION_MODEL, operation="chat", route="cv/vision") as _call:
+        with record_ai_call(provider="openrouter", model=VISION_MODEL, operation="extraction", route="cv/vision") as _call:
             resp = await _client.chat.completions.create(
                 model=VISION_MODEL,
                 temperature=0,  # reproductible + limite l'invention sur images ambiguës

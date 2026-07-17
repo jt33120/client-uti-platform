@@ -187,7 +187,7 @@ def _deterministic(results: list[dict], weights: dict) -> dict:
 
 async def _call(c: AsyncOpenAI, model: str, user: str) -> dict:
     _prov = "mistral" if "mistral" in str(getattr(c, "base_url", "")) else "openrouter"
-    with record_ai_call(provider=_prov, model=model, operation="chat", route="matching/synthesis") as _call:
+    with record_ai_call(provider=_prov, model=model, operation="synthesis", route="matching/synthesis") as _call:
         resp = await c.chat.completions.create(
             model=model,
             messages=[{"role": "system", "content": _SYSTEM}, {"role": "user", "content": user}],

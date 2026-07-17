@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import api from '../lib/api'
+import { trackAiRegenerate } from '../lib/rum'
 // pdfjs (~400 Ko) chargé à la demande, seulement quand la vue « CV analysé » s'ouvre.
 const loadPdfLib = () => import('../lib/pdfHighlight')
 import { useAuth } from '../contexts/AuthContext'
@@ -2824,6 +2825,7 @@ function AOEditModal({ ao, onClose, onSaved }) {
     if (!aiText.trim() && aiFiles.length === 0) {
       setAiError("Collez un email ou ajoutez un fichier (PDF, DOCX, XLSX)."); return
     }
+    trackAiRegenerate('draft', 'ao/draft')  // régénération IA (alimente regen_rate MIP)
     setAiLoading(true)
     try {
       const fd = new FormData()

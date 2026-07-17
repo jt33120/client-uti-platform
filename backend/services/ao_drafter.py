@@ -224,7 +224,7 @@ async def draft_ao_fields(source: str, ao_types: list[str]) -> Optional[dict]:
     last_err: Optional[Exception] = None
     for c, model, provider in candidates:
         try:
-            with record_ai_call(provider=provider.lower(), model=model, route="ao/draft") as _call:
+            with record_ai_call(provider=provider.lower(), model=model, operation="draft", route="ao/draft") as _call:
                 resp = await c.chat.completions.create(
                     model=model,
                     messages=[
@@ -278,7 +278,7 @@ async def summarize_ao(ao: dict) -> Optional[str]:
         return None
     for c, model, provider in candidates:
         try:
-            with record_ai_call(provider=provider.lower(), model=model, route="ao/summary") as _call:
+            with record_ai_call(provider=provider.lower(), model=model, operation="summary", route="ao/summary") as _call:
                 resp = await c.chat.completions.create(
                     model=model,
                     messages=[

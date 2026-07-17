@@ -137,7 +137,7 @@ async def harmonize_cv(cv_text: str, lang: str = "fr") -> Optional[dict]:
     last_err = None
     for client, model, provider in candidates:
         try:
-            with record_ai_call(provider=provider.lower(), model=model, route="cv/harmonize") as _call:
+            with record_ai_call(provider=provider.lower(), model=model, operation="harmonize", route="cv/harmonize") as _call:
                 resp = await client.chat.completions.create(
                     model=model,
                     temperature=0.2,

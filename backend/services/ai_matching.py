@@ -11,7 +11,7 @@ import json
 from typing import Optional
 from openai import AsyncOpenAI
 from config import settings
-from mip_rum_ai import record_ai_call
+from mip_rum_ai import record_ai_call, flag_refusal
 from services import ai_ledger
 from services.error_log import record as _record_err
 from services.cv_harmonizer import _extract_json  # parse JSON tolérant (fences/prose)
@@ -150,6 +150,7 @@ async def _call_extraction(c: AsyncOpenAI, model: str, cv_text: str) -> tuple[di
         _call.usage(input_tokens=getattr(_u, "prompt_tokens", None),
                     output_tokens=getattr(_u, "completion_tokens", None),
                     cost=getattr(_u, "cost", None))
+        flag_refusal(_call, response)  # refus modèle → refusal_rate (MIP)
     ai_ledger.record(provider=_prov, model=model, operation="extraction", resp=response)
     choice = response.choices[0]
     # Sortie coupée par max_tokens = JSON invalide ou incomplet : on lève pour

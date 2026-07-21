@@ -79,6 +79,13 @@ class Settings(BaseSettings):
     mip_rum_endpoint: Optional[str] = None
     mip_rum_app_id: Optional[str] = None
     mip_rum_api_key: Optional[str] = None
+    # ── xSOM AI Guard — ingestion des spans gen_ai (observabilité IA) ────
+    # Dual-emit : les mêmes spans gen_ai partent aussi vers xSOM (en plus de
+    # MIP RUM), qui devient la source des métriques IA (sens 2). Auth par un
+    # gateway token xSOM (xsg_…) dans l'en-tête X-Gateway-Token. Inactif tant
+    # que l'URL ou le token ne sont pas renseignés (aucun envoi xSOM).
+    xsom_ai_url: Optional[str] = None          # base incluant /v1, ex. https://xsom…up.railway.app/v1
+    xsom_gateway_token: Optional[str] = None   # xsg_… (jamais exposé au navigateur)
     # ── MIP RUM — API de LECTURE (supervision côté UTI) ──────────────
     # Base de l'API propriétaire MIP RUM + token d'accès UTI. Le backend UTI
     # proxifie cette API (le token reste serveur, jamais exposé au navigateur).

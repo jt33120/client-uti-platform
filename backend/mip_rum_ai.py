@@ -19,9 +19,11 @@ Usage :
 from __future__ import annotations
 
 import contextlib
+import json
 import secrets
 import threading
 import time
+import urllib.request
 from typing import Optional
 
 from config import settings
@@ -33,6 +35,12 @@ _ENDPOINT = settings.mip_rum_endpoint
 _APP_ID = settings.mip_rum_app_id
 _API_KEY = settings.mip_rum_api_key
 _ENABLED = bool(_ENDPOINT and _APP_ID)
+
+# xSOM AI Guard — deuxième destination (dual-emit). Auth par en-tête, donc pas de
+# mip.api_key dans la ressource. Inactif tant que l'URL/token/app_id manquent.
+_XSOM_URL = settings.xsom_ai_url
+_XSOM_TOKEN = settings.xsom_gateway_token
+_XSOM_ENABLED = bool(_XSOM_URL and _XSOM_TOKEN and _APP_ID)
 
 
 def session_id_from_tracestate(tracestate: Optional[str]) -> Optional[str]:
@@ -58,13 +66,49 @@ def _otlp(span: dict) -> dict:
     }
 
 
+def _otlp_xsom(span: dict) -> dict:
+    # xSOM s'authentifie par en-tête (X-Gateway-Token) → pas de mip.api_key ici.
+    res = [_kv("service.name", "fastapi-ai"), _kv("mip.app_id", _APP_ID)]
+    return {
+        "resourceSpans": [{
+            "resource": {"attributes": res},
+            "scopeSpans": [{
+                "scope": {"name": "mip-rum-ai", "version": VERSION},
+                "spans": [span],
+            }],
+        }]
+    }
+
+
+def _post_xsom(payload: dict) -> None:
+    """POST OTLP vers xSOM /v1/ai-traces, auth par en-tête (bloquant, hors loop)."""
+    req = urllib.request.Request(
+        _XSOM_URL.rstrip("/") + "/ai-traces",
+        data=json.dumps(payload).encode(),
+        headers={"content-type": "application/json", "X-Gateway-Token": _XSOM_TOKEN},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=3) as resp:  # noqa: S310 - fixed https endpoint
+        resp.read()
+
+
 def _emit(span: dict) -> None:
-    """Envoi fire-and-forget (thread daemon) : ne bloque jamais l'appel métier."""
+    """Envoi fire-and-forget (thread daemon) : ne bloque jamais l'appel métier.
+
+    Dual-emit best-effort : MIP RUM et/ou xSOM selon ce qui est configuré. Chaque
+    destination est isolée — l'échec de l'une n'empêche pas l'autre.
+    """
     def _run():
-        try:
-            _post(_ENDPOINT, _otlp(span))
-        except Exception:
-            pass
+        if _ENABLED:
+            try:
+                _post(_ENDPOINT, _otlp(span))
+            except Exception:
+                pass
+        if _XSOM_ENABLED:
+            try:
+                _post_xsom(_otlp_xsom(span))
+            except Exception:
+                pass
     try:
         threading.Thread(target=_run, daemon=True).start()
     except Exception:
@@ -116,7 +160,7 @@ def record_ai_call(*, provider: str, model: str, operation: str = "chat",
                    route: Optional[str] = None, session_id: Optional[str] = None):
     """Chronomètre un appel LLM et émet un span ``gen_ai`` à la sortie du bloc."""
     call = _Call()
-    if not _ENABLED:
+    if not (_ENABLED or _XSOM_ENABLED):
         yield call
         return
 

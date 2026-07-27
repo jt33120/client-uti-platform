@@ -8,6 +8,7 @@ from services.supabase_client import supabase
 from services import storage
 from services.email import send_email, render_email_html
 from services import email_templates
+from services.client_ip import public_client_ip
 from config import settings
 import io
 import base64
@@ -184,9 +185,13 @@ def _clean_code(code: str) -> str:
 
 
 def _client_ip(request: Optional[Request]) -> Optional[str]:
-    """IP publique de l'appelant. On privilégie X-Real-IP, posé par NOTRE nginx
-    (non falsifiable de l'extérieur), puis X-Forwarded-For en repli — sa
-    première IP est déclarative et peut être forgée par le client."""
+    """IP DE CONFIANCE de l'appelant — anti-abus (throttling) uniquement.
+
+    On privilégie X-Real-IP, posé par NOTRE nginx (= $remote_addr, non
+    falsifiable de l'extérieur), puis X-Forwarded-For en repli. À ne PAS
+    utiliser pour afficher « d'où s'est connecté l'utilisateur » : derrière la
+    réécriture Vercel, cette valeur est l'IP de sortie de Vercel, identique pour
+    tous les utilisateurs (cf. services.client_ip.public_client_ip)."""
     if request is None:
         return None
     real_ip = request.headers.get("x-real-ip")
@@ -547,7 +552,7 @@ async def login(body: LoginRequest, request: Request):
     # s'exécute, c'est que la migration MFA manque (2e facteur silencieusement absent).
     from services.error_log import record as _record_err
     _record_err("auth", "Connexion SANS MFA : colonnes MFA absentes de profiles (migration non appliquée)", level="warning")
-    return _finalize_login(user_id, body.email, profile, _client_ip(request))
+    return _finalize_login(user_id, body.email, profile, public_client_ip(request))
 
 
 class MfaCodeRequest(BaseModel):
@@ -573,7 +578,7 @@ async def mfa_verify(body: MfaCodeRequest, request: Request):
         raise HTTPException(status_code=400, detail="MFA non configurée pour ce compte.")
     if not pyotp.TOTP(secret).verify(_clean_code(body.code), valid_window=1):
         raise HTTPException(status_code=401, detail="Code de vérification invalide.")
-    return _finalize_login(user_id, email, profile, _client_ip(request))
+    return _finalize_login(user_id, email, profile, public_client_ip(request))
 
 
 @router.post("/mfa/enroll")
@@ -596,7 +601,7 @@ async def mfa_enroll(body: MfaCodeRequest, request: Request):
         profile = supabase.table("profiles").select("*").eq("id", user_id).single().execute().data
     except Exception:
         raise HTTPException(status_code=404, detail="Profil introuvable")
-    return _finalize_login(user_id, email, profile, _client_ip(request))
+    return _finalize_login(user_id, email, profile, public_client_ip(request))
 
 
 @router.post("/mfa/reset/{user_id}")

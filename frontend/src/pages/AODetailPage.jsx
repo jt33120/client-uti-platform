@@ -142,13 +142,16 @@ function BreakdownBar({ label, value, max }) {
 // Catégories de score : libellé, clé du breakdown déterministe, clé côté LLM, poids par défaut.
 // v2 : deux axes qualitatifs notés par l'IA (points forts / différenciation),
 // placés sous Contexte. Le TJM peut être désactivé (poids 0) côté réglages.
+// `dflt` = poids par défaut de la grille v2.2 (miroir de services.scoring).
+// TJM à 0 : hors scoring depuis v2.2 — l'axe est masqué par `activeCats` tant
+// qu'un AO ne le réactive pas explicitement.
 const SCORE_CATS = [
-  { label: 'Compétences', short: 'Compét.', det: 'competences_techniques', llm: 'competences', wKey: 'w_competences', dflt: 37 },
-  { label: 'Séniorité', short: 'Séniorité', det: 'seniorite', llm: 'seniorite', wKey: 'w_seniorite', dflt: 18 },
-  { label: 'Contexte / domaine', short: 'Contexte', det: 'contexte_domaine', llm: 'contexte', wKey: 'w_contexte', dflt: 18 },
-  { label: 'Points forts du CV', short: 'Atouts', det: 'points_forts_cv', llm: 'points_forts_cv', wKey: 'w_points_forts_cv', dflt: 9 },
-  { label: 'Éléments différenciants', short: 'Différ.', det: 'elements_differenciants', llm: 'elements_differenciants', wKey: 'w_elements_differenciants', dflt: 9 },
-  { label: 'Compatibilité TJM', short: 'TJM', det: 'compatibilite_tjm', llm: 'tjm', wKey: 'w_tjm', dflt: 9 },
+  { label: 'Compétences', short: 'Compét.', det: 'competences_techniques', llm: 'competences', wKey: 'w_competences', dflt: 40 },
+  { label: 'Séniorité', short: 'Séniorité', det: 'seniorite', llm: 'seniorite', wKey: 'w_seniorite', dflt: 20 },
+  { label: 'Contexte / domaine', short: 'Contexte', det: 'contexte_domaine', llm: 'contexte', wKey: 'w_contexte', dflt: 20 },
+  { label: 'Points forts du CV', short: 'Atouts', det: 'points_forts_cv', llm: 'points_forts_cv', wKey: 'w_points_forts_cv', dflt: 10 },
+  { label: 'Éléments différenciants', short: 'Différ.', det: 'elements_differenciants', llm: 'elements_differenciants', wKey: 'w_elements_differenciants', dflt: 10 },
+  { label: 'Compatibilité TJM', short: 'TJM', det: 'compatibilite_tjm', llm: 'tjm', wKey: 'w_tjm', dflt: 0 },
 ]
 
 // Axes réellement pondérés (masque un critère désactivé à 0★ côté réglages).

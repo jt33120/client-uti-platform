@@ -66,3 +66,12 @@ def test_available_with_only_mistral(monkeypatch):
     monkeypatch.setattr(ao_drafter, "_client", None)
     monkeypatch.setattr(ao_drafter, "_mistral_client", _client(lambda: _resp(_GOOD_JSON)))
     assert ao_drafter.is_available() is True
+
+
+def test_ai_suggestion_never_reenables_tjm_scoring():
+    # Grille v2.2 : le TJM est hors scoring. Même si le modèle renvoie une
+    # importance "tjm" (cf. _GOOD_JSON), elle ne doit PAS être reprise —
+    # sinon chaque AO généré par l'IA réactiverait le critère en silence.
+    stars = ao_drafter._stars({"competences": 4, "seniorite": 5, "contexte": 3, "tjm": 3})
+    assert "tjm" not in stars
+    assert stars["competences"] == 4

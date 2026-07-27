@@ -131,11 +131,18 @@ def _sanitize(d: dict, ao_types: list[str]) -> dict:
 
 
 def _stars(imp) -> Optional[dict]:
-    """Normalise la suggestion d'importance (0-5 par critère) renvoyée par le LLM."""
+    """Normalise la suggestion d'importance (0-5 par critère) renvoyée par le LLM.
+
+    Le TJM est ignoré même si le modèle en renvoie un : depuis la grille v2.2 il
+    ne fait plus partie du scoring (le budget est cadré sur l'AO), et une
+    suggestion IA ne doit pas le réactiver dans le dos de l'admin — qui reste
+    libre de le remonter à la main dans les priorités de l'AO."""
     if not isinstance(imp, dict):
         return None
     out = {}
     for c in STAR_CRITERIA:
+        if c == "tjm":
+            continue
         v = imp.get(c)
         try:
             v = int(v)
@@ -215,9 +222,10 @@ async def draft_ao_fields(source: str, ao_types: list[str]) -> Optional[dict]:
         '- "importance": objet notant de 0 (exclu) à 5 (critique) l\'importance '
         'RELATIVE de chaque critère DÉDUITE du texte, avec les clés exactes '
         '"competences", "seniorite", "contexte", "points_forts_cv", '
-        '"elements_differenciants", "tjm". Ex. : un AO qui insiste sur un '
-        '"profil senior expert" met "seniorite" à 5 ; si le TJM est déjà borné '
-        'par un TJM max, "tjm" peut être 0. En l\'absence de signal clair, mets 3.\n\n'
+        '"elements_differenciants". Ex. : un AO qui insiste sur un '
+        '"profil senior expert" met "seniorite" à 5. En l\'absence de signal '
+        'clair, mets 3. NE NOTE PAS le TJM : il est cadré par "budget_max" sur '
+        'l\'AO et ne fait pas partie du scoring des candidats.\n\n'
         f'Contenu source :\n"""\n{source}\n"""'
     )
 

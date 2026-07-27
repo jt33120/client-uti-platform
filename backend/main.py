@@ -1,3 +1,8 @@
+import os
+import subprocess
+from datetime import datetime, timezone
+from pathlib import Path
+
 from fastapi import FastAPI, Request
 from fastapi.responses import Response, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -134,9 +139,44 @@ app.include_router(email_templates.router)
 def root():
     return {"status": "running", "docs": None if IS_PROD else "/docs"}
 
+def _resolve_commit() -> str:
+    """
+    SHA court du build en cours, résolu UNE SEULE FOIS au démarrage.
+
+    `APP_COMMIT` prime si le déploiement l'injecte ; sinon on interroge le dépôt
+    (le backend tourne depuis un checkout git que deploy.sh met à jour par
+    `git pull`). Jamais bloquant : « unknown » si git est indisponible.
+    """
+    env = (os.getenv("APP_COMMIT") or "").strip()
+    if env:
+        return env[:8]
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--short=8", "HEAD"],
+            cwd=Path(__file__).resolve().parent,
+            capture_output=True, text=True, timeout=3, check=True,
+        )
+        return out.stdout.strip() or "unknown"
+    except Exception:  # noqa: BLE001 - git absent, checkout illisible, timeout…
+        return "unknown"
+
+
+APP_COMMIT = _resolve_commit()
+# deploy.sh redémarre le service après chaque `git pull` : l'instant de démarrage
+# du process EST l'instant de mise en production de ce commit.
+STARTED_AT = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    """
+    Sonde de vivacité (nginx, deploy.sh) + identité du build déployé.
+
+    `commit` rend une recette vérifiable en une requête : sans lui, impossible de
+    savoir depuis le front si le backend tourne bien la version qu'on teste.
+    Le dépôt étant public, le SHA ne révèle rien qui ne le soit déjà.
+    """
+    return {"status": "ok", "commit": APP_COMMIT, "deployed_at": STARTED_AT}
 
 
 # ── Contrôle de connexion à la base au démarrage (non bloquant) ───

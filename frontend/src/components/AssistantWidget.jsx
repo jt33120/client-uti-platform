@@ -172,12 +172,18 @@ export default function AssistantWidget() {
   return (
     <>
       {/* Launcher */}
+      {/* Coin bas-droit partagé : le widget d'avis MIP (CSAT) se pose en
+          position:fixed bottom:20px right:20px avec un z-index maximal — on ne
+          peut ni le déplacer ni passer devant. On garde donc NOTRE bouton à
+          bottom-20 (80px) sur toutes les tailles d'écran : au-dessus du widget
+          MIP (qui occupe ~20→60px) sur desktop, et au-dessus de la barre de
+          navigation mobile. Sans ça, les deux pastilles se chevauchent. */}
       {!open && (
         <button
           onClick={() => setOpen(true)}
           aria-label="Ouvrir l'assistant"
           data-tour="assistant"
-          className="fixed bottom-20 right-5 md:bottom-6 md:right-6 z-40 flex items-center gap-2 h-12 px-4 rounded-full transition-transform hover:scale-[1.03]"
+          className="fixed bottom-20 right-5 md:right-6 z-40 flex items-center gap-2 h-12 px-4 rounded-full transition-transform hover:scale-[1.03]"
           style={{
             backgroundColor: 'var(--action-bg)',
             backgroundImage: 'var(--btn-sheen)',
@@ -193,7 +199,7 @@ export default function AssistantWidget() {
       {/* Panel */}
       {open && (
         <div
-          className="fixed bottom-20 right-4 md:bottom-6 md:right-6 z-40 flex flex-col rounded-xl overflow-hidden shadow-2xl"
+          className="fixed bottom-20 right-4 md:right-6 z-40 flex flex-col rounded-xl overflow-hidden shadow-2xl"
           style={{
             width: 'min(380px, calc(100vw - 2rem))',
             height: 'min(600px, calc(100vh - 7rem))',

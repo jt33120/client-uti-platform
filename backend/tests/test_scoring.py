@@ -6,7 +6,7 @@ Pures fonctions, sans réseau : exécutables en CI. Démontrent la reproductibil
 """
 from services.scoring import (
     score_consultant, GRID_VERSION, RECO_FORT_MIN, RECO_MOYEN_MIN,
-    DEFAULTS, NEUTRAL_RATIO,
+    DEFAULTS, NEUTRAL_RATIO, stars_to_weights,
 )
 from services.pseudonymize import strip_pii
 
@@ -14,7 +14,6 @@ from services.pseudonymize import strip_pii
 # s'appuient dessus plutôt que sur des constantes figées, pour rester valides
 # quand la grille évolue.
 W_COMP = DEFAULTS["w_competences"]
-W_TJM = DEFAULTS["w_tjm"]
 
 
 AO = {
@@ -81,20 +80,47 @@ def test_no_skill_match_scores_zero_competences():
 
 
 # ── TJM ────────────────────────────────────────────────────────────
+# Depuis la grille v2.2 le TJM est HORS scoring par défaut (le budget est cadré
+# sur l'AO). Le critère reste implémenté et réactivable par AO : les tests de la
+# formule tournent donc sur une grille où il est explicitement remis à 2★.
 
-def test_tjm_within_budget_is_full():
-    res = score_consultant(_features(), _consultant(tjm=600), AO)
-    assert res["breakdown"]["compatibilite_tjm"] == W_TJM
+# Grille de test avec le TJM réactivé (les autres axes gardent leur défaut).
+STARS_TJM_ON = {"competences": 4, "seniorite": 2, "contexte": 2,
+                "points_forts_cv": 1, "elements_differenciants": 1, "tjm": 2}
+CFG_TJM_ON = {"stars": STARS_TJM_ON}
+W_TJM_ON = stars_to_weights(STARS_TJM_ON)["w_tjm"]
 
 
-def test_tjm_far_over_budget_is_penalised():
-    res = score_consultant(_features(), _consultant(tjm=1200), AO)
-    assert res["breakdown"]["compatibilite_tjm"] < W_TJM
+def test_tjm_is_out_of_the_default_grid():
+    # Le cœur de la décision métier : sur la grille PAR DÉFAUT, un TJM très
+    # au-dessus du budget ne coûte plus rien au candidat.
+    assert DEFAULTS["w_tjm"] == 0
+    res = score_consultant(_features(), _consultant(tjm=5000), AO)
+    assert res["breakdown"]["compatibilite_tjm"] == 0
+    assert not any("TJM" in p for p in res["points_faibles"])
+    # Un TJM hors budget ne doit rien changer au total.
+    assert res["score_total"] == score_consultant(_features(), _consultant(tjm=100), AO)["score_total"]
 
 
-def test_missing_tjm_is_neutral():
-    res = score_consultant(_features(), _consultant(tjm=None), AO)
-    assert res["breakdown"]["compatibilite_tjm"] == round(W_TJM * NEUTRAL_RATIO)
+def test_default_grid_weights_sum_to_100_without_tjm():
+    active = {k: v for k, v in DEFAULTS.items() if k.startswith("w_")}
+    assert sum(active.values()) == 100
+    assert active["w_tjm"] == 0
+
+
+def test_tjm_within_budget_is_full_when_reenabled():
+    res = score_consultant(_features(), _consultant(tjm=600), AO, CFG_TJM_ON)
+    assert res["breakdown"]["compatibilite_tjm"] == W_TJM_ON
+
+
+def test_tjm_far_over_budget_is_penalised_when_reenabled():
+    res = score_consultant(_features(), _consultant(tjm=1200), AO, CFG_TJM_ON)
+    assert res["breakdown"]["compatibilite_tjm"] < W_TJM_ON
+
+
+def test_missing_tjm_is_neutral_when_reenabled():
+    res = score_consultant(_features(), _consultant(tjm=None), AO, CFG_TJM_ON)
+    assert res["breakdown"]["compatibilite_tjm"] == round(W_TJM_ON * NEUTRAL_RATIO)
 
 
 # ── Recommandation ─────────────────────────────────────────────────

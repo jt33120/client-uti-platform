@@ -134,7 +134,7 @@ def _ao_brief(ao: dict) -> str:
     return "\n".join(bits)
 
 
-def _candidate_brief(features: dict, consultant: dict) -> str:
+def _candidate_brief(features: dict, consultant: dict, with_tjm: bool = True) -> str:
     skills = ", ".join(features.get("skills") or []) or (consultant.get("skills") or "—")
     sectors = ", ".join(features.get("sectors") or []) or "—"
     years = features.get("experience_years")
@@ -144,9 +144,14 @@ def _candidate_brief(features: dict, consultant: dict) -> str:
         f"Compétences : {skills}",
         f"Secteurs rencontrés : {sectors}",
         f"Expérience : {years if years is not None else '—'} ans",
-        f"TJM : {consultant.get('tjm') if consultant.get('tjm') is not None else '—'} €/j",
-        f"Résumé : {(features.get('summary') or '—')[:500]}",
     ]
+    # Le TJM n'est transmis que si le critère est ACTIF (barème > 0). Depuis la
+    # grille v2.2 il est désactivé par défaut : le montrer quand même laisserait
+    # le modèle en tenir compte sur les autres axes — exactement ce qu'on veut
+    # éviter (Art. 10 : pas de feature non justifiable dans l'évaluation).
+    if with_tjm:
+        bits.append(f"TJM : {consultant.get('tjm') if consultant.get('tjm') is not None else '—'} €/j")
+    bits.append(f"Résumé : {(features.get('summary') or '—')[:500]}")
     return "\n".join(bits)
 
 
@@ -214,7 +219,8 @@ async def llm_score(
     bareme = "\n".join(f"- MAX_{llm_k.upper()} = {maxes[llm_k]}" for llm_k, _d, _w in _CATS)
     parts = [
         "APPEL D'OFFRES :\n" + _ao_brief(ao),
-        "PROFIL CONSULTANT (anonymisé) :\n" + _candidate_brief(features, consultant),
+        "PROFIL CONSULTANT (anonymisé) :\n"
+        + _candidate_brief(features, consultant, with_tjm=maxes.get("tjm", 0) > 0),
     ]
     # Extrait du CV (déjà pseudonymisé) : permet à l'IA de CITER des éléments
     # concrets (intitulés de poste, missions, technos, chiffres) au lieu de rester

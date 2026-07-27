@@ -15,12 +15,15 @@ export const CRITERIA = [
   { key: 'tjm', label: 'Compatibilité TJM', short: 'TJM' },
 ]
 
-// Étoiles par défaut (grille v2.1). Un critère à 0★ est exclu du score.
+// Étoiles par défaut (grille v2.2 — miroir de services.scoring.DEFAULT_STARS).
+// Un critère à 0★ est exclu du score.
 // Les axes IA (points forts / différenciation) sont à 1★ : sans signal
 // déterministe, un poids trop élevé gelait ~30 % de la note au neutre.
+// Le TJM est à 0★ : le budget est cadré sur l'AO (budget max), il ne sert plus
+// à noter les candidats. Reste remontable à la main si un AO l'exige.
 export const DEFAULT_STARS = {
   competences: 4, seniorite: 2, contexte: 2,
-  points_forts_cv: 1, elements_differenciants: 1, tjm: 1,
+  points_forts_cv: 1, elements_differenciants: 1, tjm: 0,
 }
 
 // Miroir exact de services.scoring.stars_to_weights (somme garantie = 100).

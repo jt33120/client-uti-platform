@@ -5,19 +5,27 @@ Conformité AI Act : le score est calculé ici par une formule **explicite,
 versionnée et reproductible** (Art. 13 transparence, Art. 15 reproductibilité),
 sur des **features justifiables** (Art. 10 — pas de texte brut porteur de biais).
 
-Grille v2.1 (total 100, poids par défaut dérivés des étoiles) :
-  competences_techniques  : ~37 — recouvrement compétences requises ∩ candidat
-                                  (matching par synonymes/alias, cf. _SKILL_ALIASES)
-  seniorite               : ~18 — années d'expérience vs cible
-  contexte_domaine        : ~18 — adéquation secteur/contexte de l'AO
-  points_forts_cv         : ~9  — force des points forts du CV (noté par l'IA)
-  elements_differenciants : ~9  — ce qui distingue le profil (noté par l'IA)
-  compatibilite_tjm       : ~9  — TJM consultant vs budget de l'AO (0★ = exclu)
+Grille v2.2 (total 100, poids par défaut dérivés des étoiles) :
+  competences_techniques  : 40 — recouvrement compétences requises ∩ candidat
+                                 (matching par synonymes/alias, cf. _SKILL_ALIASES)
+  seniorite               : 20 — années d'expérience vs cible
+  contexte_domaine        : 20 — adéquation secteur/contexte de l'AO
+  points_forts_cv         : 10 — force des points forts du CV (noté par l'IA)
+  elements_differenciants : 10 — ce qui distingue le profil (noté par l'IA)
+  compatibilite_tjm       :  0 — DÉSACTIVÉ par défaut depuis v2.2 (cf. ci-dessous)
 
 Les deux axes qualitatifs (points_forts_cv / elements_differenciants) n'ont pas
 de signal déterministe : la grille les pose en NEUTRE et le 2e avis IA
-(services.llm_scoring) les note réellement. Un critère mis à 0★ est retiré du
-score (poids nul), utile p. ex. pour le TJM déjà borné par le TJM max de l'AO.
+(services.llm_scoring) les note réellement.
+
+v2.2 — le TJM ne compte PLUS dans le score (décision métier). Le budget est déjà
+porté par l'AO lui-même (`budget_max`, champ requis à la publication) : il relève
+du cadrage de la mission, pas de l'évaluation d'un candidat. Noter un profil sur
+son TJM revenait à mélanger « ce profil correspond-il au besoin ? » et « tient-il
+dans l'enveloppe ? » — deux questions distinctes, la seconde se tranchant en
+amont. Le critère reste dans la grille et RESTE réactivable (≥ 1★) par AO ou en
+configuration globale : c'est un défaut, pas une suppression. Les 100 points se
+répartissent sur les cinq critères restants.
 
 ⚠️ Les seuils ci-dessous sont des VALEURS PAR DÉFAUT, à valider par le métier
 (cf. compliance/ai-act/phase-3-technique/02-spec-architecture-hybride.md).
@@ -29,10 +37,12 @@ import re
 import unicodedata
 from typing import Optional
 
-GRID_VERSION = "2.1.0"
+GRID_VERSION = "2.2.0"
 
-# Poids de la grille (somme = 100). NB : depuis v2 la forme canonique est
-# « en étoiles » (cf. plus bas) ; ces poids par défaut en sont DÉRIVÉS.
+# Poids historiques de la grille v1 (avant la forme « en étoiles »). Conservés
+# pour la traçabilité de l'audit ; ils ne pilotent plus rien — les poids réels
+# sont DÉRIVÉS de DEFAULT_STARS plus bas (source unique de vérité). Ne pas s'y
+# fier : W_TJM ci-dessous ne reflète plus le défaut (TJM désactivé en v2.2).
 W_COMPETENCES = 40
 W_SENIORITE = 20
 W_CONTEXTE = 20
@@ -82,7 +92,10 @@ STAR_CRITERIA = (
 # par AO/admin (table scoring_config) — c'est un défaut, pas un plafond.
 DEFAULT_STARS = {
     "competences": 4, "seniorite": 2, "contexte": 2,
-    "points_forts_cv": 1, "elements_differenciants": 1, "tjm": 1,
+    "points_forts_cv": 1, "elements_differenciants": 1,
+    # v2.2 : TJM hors scoring par défaut (0★). Le budget est cadré sur l'AO
+    # (budget_max), pas sur le candidat. Réactivable par AO / config globale.
+    "tjm": 0,
 }
 # Correspondance clé étoile → clé du breakdown déterministe (services.scoring)
 # et libellé humain (explicabilité). Ordre = ordre d'affichage.

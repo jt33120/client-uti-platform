@@ -8,9 +8,13 @@ tête du texte transmis à l'IA.
 """
 import io
 
-import openpyxl
+import pytest
 
-from services.cv_parser import extract_text_from_xlsx
+# openpyxl est une dépendance de prod (présente en CI) mais pas toujours dans un
+# bac à sable local : on saute le module au lieu d'interrompre TOUTE la collecte.
+openpyxl = pytest.importorskip("openpyxl")
+
+from services.cv_parser import extract_text_from_xlsx  # noqa: E402
 
 
 def _make_xlsx() -> bytes:

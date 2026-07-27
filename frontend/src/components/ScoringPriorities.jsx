@@ -50,7 +50,14 @@ export function starsToWeights(stars) {
 }
 
 function PriorityRadar({ weights }) {
-  const data = CRITERIA.map(({ key, short }) => ({ axis: short, value: weights[key] }))
+  // Un critère à 0★ ne doit pas laisser d'axe fantôme : afficher « TJM » à 0
+  // juste à côté de « Non pris en compte (0★) » se contredit à l'écran.
+  // Même règle que `activeCats` sur le radar candidat (AODetailPage).
+  // Repli sur tous les axes si la grille est entièrement à zéro : un radar sans
+  // axe ne se dessine pas, et starsToWeights garantit déjà ce cas indésirable.
+  const shown = CRITERIA.filter(({ key }) => (weights[key] ?? 0) > 0)
+  const axes = shown.length ? shown : CRITERIA
+  const data = axes.map(({ key, short }) => ({ axis: short, value: weights[key] }))
   return (
     <ResponsiveContainer width="100%" height={200}>
       <RadarChart data={data} outerRadius="68%">

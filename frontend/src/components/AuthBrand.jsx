@@ -10,7 +10,10 @@ export default function AuthBrand({ subtitle = 'Plateforme Partenaires' }) {
       <img src="/logo.png" alt="Groupement-IT" className="h-14 w-14 object-contain shrink-0" />
       <div className="leading-tight">
         <div className="text-[22px] font-semibold tracking-tightest text-[var(--text)]">Groupement-IT</div>
-        <div className="text-[13px] mt-0.5 text-[var(--text-faint)]">{subtitle}</div>
+        {/* --text-muted, pas --text-faint : #a3a3a3 sur le fond clair tombe à
+            2,4:1, sous le seuil WCAG AA (4,5:1). Agrandir un texte illisible ne
+            le rend pas lisible — c'est le contraste qui manquait, pas la taille. */}
+        <div className="text-[13px] mt-0.5 text-[var(--text-muted)]">{subtitle}</div>
       </div>
     </div>
   )

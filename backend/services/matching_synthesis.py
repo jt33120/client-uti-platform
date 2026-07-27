@@ -73,12 +73,7 @@ Retourne UNIQUEMENT un JSON valide (sans markdown), au format EXACT :
   ],
   "gaps": ["<1 phrase : une exigence de l'AO qu'AUCUN profil (ou presque) ne couvre bien>"],
   "criterion_insights": {
-    "competences_techniques": "<1 phrase : qui mène sur ce critère, est-ce dispersé ?>",
-    "seniorite": "<1 phrase>",
-    "contexte_domaine": "<1 phrase>",
-    "points_forts_cv": "<1 phrase>",
-    "elements_differenciants": "<1 phrase>",
-    "compatibilite_tjm": "<1 phrase>"
+__CRITERION_INSIGHTS__
   },
   "recommendation": "<1 à 2 phrases : combien de profils présenter au client et lesquels (par rang), pourquoi>"
 }
@@ -86,7 +81,10 @@ Retourne UNIQUEMENT un JSON valide (sans markdown), au format EXACT :
 Règles :
 - Désigne les profils par leur RANG (« le profil #1 », « les profils #2 et #3 »). N'invente jamais de nom.
 - 1 à 3 standouts maximum ; 0 à 3 gaps. Si le vivier est homogène, dis-le plutôt que d'inventer un écart.
-- Un critère désactivé (barème 0, non fourni) : ne le commente pas (renvoie une chaîne vide pour sa clé).
+- Les critères listés ci-dessus sont les SEULS retenus pour cette mission. N'en
+  invoque aucun autre — ni dans "criterion_insights", ni dans "recommendation",
+  ni dans les "standouts". Un critère absent de la liste a été délibérément exclu
+  du barème : le citer comme argument de sélection serait une erreur.
 - Reste factuel : appuie-toi sur les scores et les avis fournis, n'invente aucune compétence.
 - Français, concis, orienté décision. Pas de name-dropping, pas de PII.
 """
@@ -185,12 +183,33 @@ def _deterministic(results: list[dict], weights: dict) -> dict:
     }
 
 
-async def _call(c: AsyncOpenAI, model: str, user: str) -> dict:
+# Amorce de la phrase attendue par critère (le 1er porte la consigne complète).
+_INSIGHT_HINT = {
+    "competences_techniques": "<1 phrase : qui mène sur ce critère, est-ce dispersé ?>",
+}
+
+
+def _system(active_keys: list[str]) -> str:
+    """
+    Système paramétré par les critères RÉELLEMENT actifs sur cette mission.
+
+    Un critère à 0★ ne doit pas apparaître du tout : la seule présence de sa clé
+    dans le schéma le gardait saillant pour le modèle, qui le ressortait ensuite
+    en argument libre dans `recommendation` (« ... avec un TJM compatible »)
+    alors même qu'aucune donnée TJM ne lui était transmise.
+    """
+    lines = ",\n".join(
+        f'    "{k}": "{_INSIGHT_HINT.get(k, "<1 phrase>")}"' for k in active_keys
+    )
+    return _SYSTEM.replace("__CRITERION_INSIGHTS__", lines)
+
+
+async def _call(c: AsyncOpenAI, model: str, user: str, active_keys: list[str]) -> dict:
     _prov = "mistral" if "mistral" in str(getattr(c, "base_url", "")) else "openrouter"
     with record_ai_call(provider=_prov, model=model, operation="synthesis", route="matching/synthesis") as _call:
         resp = await c.chat.completions.create(
             model=model,
-            messages=[{"role": "system", "content": _SYSTEM}, {"role": "user", "content": user}],
+            messages=[{"role": "system", "content": _system(active_keys)}, {"role": "user", "content": user}],
             response_format={"type": "json_object"},
             temperature=0.2,
             max_tokens=1400,
@@ -275,7 +294,7 @@ async def synthesize_pool(ao: dict, results: list[dict], weights: dict) -> dict:
 
     for c, model, provider in candidates:
         try:
-            data = await _call(c, model, user)
+            data = await _call(c, model, user, active_keys)
             out = _sanitize(data, active_keys, len(results))
             out["profiles"] = len(results)
             return out

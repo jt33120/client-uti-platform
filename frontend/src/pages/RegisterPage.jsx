@@ -83,7 +83,7 @@ export default function RegisterPage() {
           </div>
         ) : (
           <>
-            <h1 className="text-[22px] font-semibold tracking-tightest text-[var(--text)] mb-1">Créer un compte</h1>
+            <h1 className="text-[26px] font-semibold tracking-tightest text-[var(--text)] mb-1">Créer un compte</h1>
             <p className="text-[13px] text-[var(--text-muted)] mb-6">
               Vous avez été invité à rejoindre la plateforme
             </p>

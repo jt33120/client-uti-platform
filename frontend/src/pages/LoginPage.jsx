@@ -36,7 +36,7 @@ function MfaStep({ mfa, onSubmit, onBack, error }) {
     <>
       <div className="flex items-center gap-2 mb-1">
         <ShieldCheck size={18} style={{ color: 'var(--accent-text)' }} />
-        <h1 className="text-[22px] font-semibold tracking-tightest text-[var(--text)]">
+        <h1 className="text-[26px] font-semibold tracking-tightest text-[var(--text)]">
           {enroll ? 'Sécurisez votre compte' : 'Vérification en deux étapes'}
         </h1>
       </div>
@@ -162,7 +162,7 @@ export default function LoginPage() {
                 </span>
               </div>
             )}
-            <h1 className="text-[22px] font-semibold tracking-tightest text-[var(--text)] mb-1">Se connecter</h1>
+            <h1 className="text-[26px] font-semibold tracking-tightest text-[var(--text)] mb-1">Se connecter</h1>
             <p className="text-[13px] text-[var(--text-muted)] mb-6">
               Accédez à votre espace partenaire
             </p>

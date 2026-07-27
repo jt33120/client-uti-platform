@@ -42,7 +42,7 @@ export default function ContactPage() {
           </div>
         ) : (
           <>
-            <h1 className="text-[22px] font-semibold tracking-tightest text-[var(--text)] mb-1">Nous contacter</h1>
+            <h1 className="text-[26px] font-semibold tracking-tightest text-[var(--text)] mb-1">Nous contacter</h1>
             <p className="text-[13px] text-[var(--text-muted)] mb-6">
               Vous souhaitez devenir partenaire du Groupement-IT ? Laissez-nous vos coordonnées.
             </p>

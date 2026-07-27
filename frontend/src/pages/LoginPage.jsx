@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { Eye, EyeOff, ArrowRight, ShieldCheck, ArrowLeft, Loader2, Clock, CheckCircle } from 'lucide-react'
+import AuthBrand from '../components/AuthBrand'
 
 function CodeInput({ value, onChange, autoFocus }) {
   return (
@@ -135,14 +136,7 @@ export default function LoginPage() {
   return (
     <div className="min-h-screen flex items-center justify-center p-4" style={{ background: 'var(--bg)' }}>
       <div className="w-full max-w-[360px]">
-        {/* Brand */}
-        <div className="flex items-center gap-2.5 mb-8">
-          <img src="/logo.png" alt="Groupement-IT" className="h-8 w-8 object-contain" />
-          <div className="leading-tight">
-            <div className="text-[14px] font-semibold tracking-tightest text-[var(--text)]">Groupement-IT</div>
-            <div className="text-[11px] text-[var(--text-faint)]">Plateforme Partenaires</div>
-          </div>
-        </div>
+        <AuthBrand />
 
         {mfa ? (
           <MfaStep mfa={mfa} onSubmit={submitCode} onBack={backToLogin} error={error} />

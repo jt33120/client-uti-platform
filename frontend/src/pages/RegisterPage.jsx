@@ -3,6 +3,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { Eye, EyeOff, AlertCircle, MailQuestion } from 'lucide-react'
 import api from '../lib/api'
+import AuthBrand from '../components/AuthBrand'
 
 // Account creation is invitation-only: without a valid invite token there is
 // no form at all — the role always comes from the invitation server-side.
@@ -47,13 +48,7 @@ export default function RegisterPage() {
   return (
     <div className="min-h-screen flex items-center justify-center p-4" style={{ background: 'var(--bg)' }}>
       <div className="w-full max-w-[380px]">
-        <div className="flex items-center gap-2.5 mb-8">
-          <img src="/logo.png" alt="Groupement-IT" className="h-8 w-8 object-contain" />
-          <div className="leading-tight">
-            <div className="text-[14px] font-semibold tracking-tightest text-[var(--text)]">Groupement-IT</div>
-            <div className="text-[11px] text-[var(--text-faint)]">Plateforme Partenaires</div>
-          </div>
-        </div>
+        <AuthBrand />
 
         {user ? (
           // Session déjà active : un lien d'invitation ne redirige plus en

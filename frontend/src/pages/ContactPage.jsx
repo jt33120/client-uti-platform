@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import api from '../lib/api'
 import { ArrowLeft, Send, Loader2, CheckCircle } from 'lucide-react'
+import AuthBrand from '../components/AuthBrand'
 
 const EMPTY = { nom: '', prenom: '', email: '', phone: '', company: '', siret: '', message: '' }
 
@@ -28,14 +29,7 @@ export default function ContactPage() {
   return (
     <div className="min-h-screen flex items-center justify-center p-4" style={{ background: 'var(--bg)' }}>
       <div className="w-full max-w-[460px]">
-        {/* Brand */}
-        <div className="flex items-center gap-2.5 mb-8">
-          <img src="/logo.png" alt="Groupement-IT" className="h-8 w-8 object-contain" />
-          <div className="leading-tight">
-            <div className="text-[14px] font-semibold tracking-tightest text-[var(--text)]">Groupement-IT</div>
-            <div className="text-[11px] text-[var(--text-faint)]">Devenir partenaire</div>
-          </div>
-        </div>
+        <AuthBrand subtitle="Devenir partenaire" />
 
         {sent ? (
           <div className="card p-8 text-center">

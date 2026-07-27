@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import api from '../lib/api'
 import { ArrowLeft, Mail } from 'lucide-react'
+import AuthBrand from '../components/AuthBrand'
 
 export default function ForgotPasswordPage() {
   const [email, setEmail] = useState('')
@@ -26,13 +27,7 @@ export default function ForgotPasswordPage() {
   return (
     <div className="min-h-screen flex items-center justify-center p-4" style={{ background: 'var(--bg)' }}>
       <div className="w-full max-w-[360px]">
-        <div className="flex items-center gap-2.5 mb-8">
-          <img src="/logo.png" alt="Groupement-IT" className="h-8 w-8 object-contain" />
-          <div className="leading-tight">
-            <div className="text-[14px] font-semibold tracking-tightest text-[var(--text)]">Groupement-IT</div>
-            <div className="text-[11px] text-[var(--text-faint)]">Plateforme Partenaires</div>
-          </div>
-        </div>
+        <AuthBrand />
 
         <h1 className="text-[22px] font-semibold tracking-tightest text-[var(--text)] mb-1">
           Mot de passe oublié

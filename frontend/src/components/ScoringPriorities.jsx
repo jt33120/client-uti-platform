@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Radar, RadarChart, PolarGrid, PolarAngleAxis, ResponsiveContainer } from 'recharts'
-import { ChevronDown, SlidersHorizontal, RotateCcw } from 'lucide-react'
+import { ChevronDown, SlidersHorizontal, RotateCcw, Info } from 'lucide-react'
 import StarRating from './StarRating'
 
 // Les 6 axes du scoring, libellés non-techs + libellé court pour le radar.
@@ -96,6 +96,11 @@ export default function ScoringPriorities({ stars, onStarsChange, thresholds, on
   const setStar = (key) => (n) => onStarsChange({ ...stars, [key]: n })
   const fortError = thresholds && thresholds.reco_fort_min <= thresholds.reco_moyen_min
 
+  // Critères sortis du barème, repris dans une note explicite sous la grille :
+  // le réglage est volontaire, il doit être énoncé et pas seulement déductible
+  // d'un « 0 % » qu'on ne lit pas.
+  const excludedLabels = CRITERIA.filter(({ key }) => (weights[key] ?? 0) === 0).map((c) => c.label)
+
   // « Déjà aux défauts ? » — pour désactiver le bouton de réinitialisation.
   const isDefault = CRITERIA.every(({ key }) => {
     const v = parseInt(stars?.[key], 10)
@@ -122,29 +127,59 @@ export default function ScoringPriorities({ stars, onStarsChange, thresholds, on
       )}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4 items-center">
         <div className="space-y-3.5">
-          {CRITERIA.map(({ key, label, ai }) => (
-            <div key={key} className="flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <div className="text-[13px] flex items-center gap-1.5" style={{ color: 'var(--text)' }}>
-                  {label}
-                  {ai && (
-                    <span className="text-[9px] font-semibold px-1 py-px rounded"
-                          style={{ color: 'var(--accent-text)', background: 'var(--surface-2)' }}
-                          title="Critère évalué par l'IA (2e avis)">IA</span>
-                  )}
+          {CRITERIA.map(({ key, label, ai }) => {
+            // 0★ = critère retiré du barème. Il doit se VOIR : jusqu'ici seule une
+            // ligne d'aide en petit corps le disait, dans la même graisse que
+            // « X % du score » — un critère exclu ressemblait à un critère actif.
+            const excluded = (weights[key] ?? 0) === 0
+            return (
+              <div key={key} className="flex items-center justify-between gap-3">
+                {/* L'atténuation ne porte QUE sur le texte : les étoiles restent
+                    pleinement lisibles, c'est par elles qu'on réactive le critère. */}
+                <div className="min-w-0" style={{ opacity: excluded ? 0.65 : 1 }}>
+                  <div className="text-[13px] flex items-center gap-1.5"
+                       style={{ color: excluded ? 'var(--text-faint)' : 'var(--text)' }}>
+                    {label}
+                    {ai && (
+                      <span className="text-[9px] font-semibold px-1 py-px rounded"
+                            style={{ color: 'var(--accent-text)', background: 'var(--surface-2)' }}
+                            title="Critère évalué par l'IA (2e avis)">IA</span>
+                    )}
+                    {excluded && (
+                      <span className="text-[9px] font-semibold px-1 py-px rounded border"
+                            style={{ color: 'var(--text-faint)', borderColor: 'var(--border)' }}
+                            title="Ce critère ne rentre pas en compte dans la notation. Remontez-le à 1★ ou plus pour le réactiver.">
+                        EXCLU
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-[11px] tabular" style={{ color: 'var(--text-faint)' }}>
+                    {excluded ? 'Ne rentre pas dans la notation' : `${weights[key]} % du score`}
+                  </div>
                 </div>
-                <div className="text-[11px] tabular" style={{ color: 'var(--text-faint)' }}>
-                  {weights[key] > 0 ? `${weights[key]} % du score` : 'Non pris en compte (0★)'}
-                </div>
+                <StarRating value={stars?.[key] ?? 0} onChange={onStarsChange ? setStar(key) : undefined} />
               </div>
-              <StarRating value={stars?.[key] ?? 0} onChange={onStarsChange ? setStar(key) : undefined} />
-            </div>
-          ))}
+            )
+          })}
         </div>
         <div className="rounded-lg" style={{ background: 'var(--surface-2)' }}>
           <PriorityRadar weights={weights} />
         </div>
       </div>
+
+      {excludedLabels.length > 0 && (
+        <div className="flex items-start gap-2 rounded-lg px-3 py-2 border"
+             style={{ background: 'var(--surface-2)', borderColor: 'var(--border)' }}>
+          <Info size={13} className="shrink-0 mt-px" style={{ color: 'var(--text-muted)' }} />
+          <p className="text-[12px] leading-relaxed" style={{ color: 'var(--text-muted)' }}>
+            {excludedLabels.length === 1
+              ? <><strong style={{ color: 'var(--text)' }}>{excludedLabels[0]}</strong> ne rentre pas en compte dans la notation.</>
+              : <><strong style={{ color: 'var(--text)' }}>{excludedLabels.length} critères</strong> ne rentrent pas en compte dans la notation : {excludedLabels.join(', ')}.</>}
+            {' '}Les candidats ne sont ni comparés ni départagés dessus, et l’axe correspondant disparaît du radar.
+            Remontez-le à 1★ ou plus pour le réintégrer.
+          </p>
+        </div>
+      )}
 
       {thresholds && onThresholdsChange && (
         <div className="border-t pt-3" style={{ borderColor: 'var(--border)' }}>

@@ -14,7 +14,7 @@ moteur d'IA **score et classe** ces consultants par rapport à chaque AO
 (score /100, breakdown, recommandation, rang).
 
 Cette finalité — **évaluer et filtrer des candidats / accès au travail
-indépendant** — relève de l'**Annexe III, point 4** du règlement (UE) 2024/1688
+indépendant** — relève de l'**Annexe III, point 4** du règlement (UE) 2024/1689
 (« AI Act ») : **système d'IA à haut risque**. Cette classification est **actée**
 (décision UTI Group, juin 2026).
 
@@ -30,10 +30,19 @@ Détail : voir [`phase-0-gouvernance/01-roles-et-responsabilites.md`](phase-0-go
 
 ## 3. Échéances
 
-- **Mise en conformité haut risque visée : 2 décembre 2027** (report Omnibus,
-  provisoire jusqu'à publication au JO).
+- **Mise en conformité haut risque visée : 2 décembre 2027** — report **définitif**
+  depuis la publication du règlement (UE) 2026/1744 (« Digital Omnibus on AI »),
+  JO L du 24/07/2026, en vigueur le 27/07/2026. Il décale les **sections 1, 2 et 3
+  du chapitre III** pour les systèmes autonomes de l'Annexe III.
 - **Déjà exigible** : Art. 4 (littératie IA, depuis fév. 2025) et obligations de
   documentation/transparence.
+- **NON reporté, à ne pas confondre** : Art. 50 (transparence) au **2 août 2026**
+  (marquage lisible par machine des contenus de synthèse au 2 décembre 2026 pour les
+  systèmes déjà sur le marché) · Art. 5 (nouvelles interdictions) au 2 décembre 2026 ·
+  Art. 86 (droit à explication), **non modifié** par le règlement 2026/1744 ·
+  **sections 4 et 5 du chapitre III** (art. 40-49 : normes, évaluation de conformité,
+  enregistrement en base UE), hors du champ du report — point contre-intuitif à faire
+  trancher par le conseil juridique.
 
 ## 4. Périmètre & paramètres figés
 

@@ -192,7 +192,9 @@ export default function AssistantWidget() {
           }}
         >
           <Sparkles size={18} strokeWidth={2} />
-          <span className="text-[13px] font-semibold">Assistant</span>
+          {/* AI Act art. 50(1) : la personne doit savoir qu'elle s'adresse à une IA,
+              dès la première interaction. « Assistant » seul ne le dit pas. */}
+          <span className="text-[13px] font-semibold">Assistant IA</span>
         </button>
       )}
 
@@ -219,8 +221,8 @@ export default function AssistantWidget() {
               <Sparkles size={15} strokeWidth={2} />
             </div>
             <div className="flex-1 min-w-0">
-              <div className="text-[13px] font-semibold text-[var(--text)] leading-tight">Assistant</div>
-              <div className="text-[10px] text-[var(--text-faint)] leading-tight">Vous guide · ne valide jamais à votre place</div>
+              <div className="text-[13px] font-semibold text-[var(--text)] leading-tight">Assistant IA</div>
+              <div className="text-[10px] text-[var(--text-faint)] leading-tight">Réponses générées · ne valide jamais à votre place</div>
             </div>
             <button
               onClick={() => setOpen(false)}

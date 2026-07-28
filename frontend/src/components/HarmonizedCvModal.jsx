@@ -3,6 +3,7 @@ import api from '../lib/api'
 import { trackAiRegenerate } from '../lib/rum'
 import { useAuth } from '../contexts/AuthContext'
 import AiFeedback from './AiFeedback'
+import { AiGeneratedBadge } from './badges'
 import { X, Loader2, Printer, RefreshCw, FileText } from 'lucide-react'
 
 // Rendu du CV harmonisé (format Groupement-IT) en HTML autonome — utilisé pour
@@ -90,6 +91,9 @@ export default function HarmonizedCvModal({ submissionId, consultantId, name, on
         <div className="flex items-center justify-between gap-3 p-4 border-b" style={{ borderColor: 'var(--border)' }}>
           <h2 className="text-sm font-semibold text-white flex items-center gap-2">
             <FileText size={15} className="text-brand-400" /> CV au format Groupement-IT{name ? ` — ${name}` : ''}
+            {/* AI Act art. 50 : la mise en forme ET la reformulation sont produites
+                par un modèle à partir du CV source. À relire avant diffusion. */}
+            <AiGeneratedBadge label="Reformaté par IA" />
           </h2>
           <div className="flex items-center gap-2">
             <div className="flex bg-white/5 rounded-lg p-0.5">

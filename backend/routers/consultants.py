@@ -49,7 +49,13 @@ class ConsultantUpdate(BaseModel):
 
 # Colonnes optionnelles susceptibles de ne pas être migrées : on retente sans
 # elles plutôt que d'échouer (géo/ville + disponibilité structurée).
-_OPTIONAL_COLS = ("city", "latitude", "longitude", "availability_status", "available_from", "consent_at")
+#
+# `consent_at` n'en fait PLUS partie (migration 0011) : c'est la preuve du
+# consentement RGPD. La dégrader silencieusement reviendrait à créer un
+# consultant sans consentement tout en renvoyant 200 — exactement le genre de
+# perte qu'un contrôle CNIL cherche. Si la colonne manque, l'insertion doit
+# échouer bruyamment.
+_OPTIONAL_COLS = ("city", "latitude", "longitude", "availability_status", "available_from")
 
 
 def _insert_with_geo_fallback(table: str, record: dict):

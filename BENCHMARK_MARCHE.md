@@ -40,14 +40,21 @@ immédiate), l'article 22 du RGPD, et les contrôles CNIL 2026 dont le recruteme
 est une thématique prioritaire — avec « les cabinets de recrutement » nommément
 cités parmi les cibles.
 
-**Et un défaut interne trouvé en cours de route, plus urgent que tout le reste :**
-`consent_at` — la preuve horodatée du consentement RGPD d'un consultant — est
-traitée comme une *colonne optionnelle* (`routers/consultants.py:52`). Si elle
-n'est pas migrée, l'insert est **silencieusement rejoué sans elle** et le
+**Et un défaut interne trouvé en cours de route** — ✅ **corrigé depuis** (voir R0) :
+`consent_at`, la preuve horodatée du consentement RGPD d'un consultant, était
+traitée comme une *colonne optionnelle* (`routers/consultants.py:52`) : quand
+l'insertion échoue, elle est **silencieusement rejouée sans elle**, et le
 consultant est créé sans trace de consentement, sans qu'aucune erreur ne remonte.
-Or **aucune migration du dépôt ne crée cette colonne**. Même situation pour les
-tables `pacs` / `pac_clients`, utilisées par `routers/pacs.py` sans aucun DDL
-versionné (`backend/migrations/` s'arrête à `0009_profile_fields.sql`).
+Or aucune migration du dépôt ne créait cette colonne — même situation pour les
+tables `pacs` / `pac_clients`, utilisées par `routers/pacs.py` sans DDL versionné.
+
+*Précision apportée après vérification en base :* la production **portait bien ces
+objets** (créés à la main dans l'éditeur SQL Supabase), donc aucun consentement n'a
+été perdu. Le risque était sur toute **reconstruction depuis le dépôt** — staging,
+reprise après incident, nouvel environnement — où le schéma serait parti sans
+`consent_at` et où le repli silencieux aurait masqué la perte. Corrigé par les
+migrations `0010`/`0011`, le retrait de `consent_at` de `_OPTIONAL_COLS` et un
+garde-fou CI (`backend/tests/test_schema_versioned.py`).
 
 ---
 
@@ -129,7 +136,7 @@ partenaire chaînée à l'acte commercial.
 | Position publique écrite sur l'IA | Beamery (PDF public), Teamtailor, Eightfold (ISO/IEC 42001) | **Absent en externe** (le dossier `compliance/ai-act/` est interne) | Moyen-Élevé — demandé au stade de la short-list, coût de production faible |
 | Intégration ATS/ERP partenaire | Turnover-IT (40+ ATS), BoondManager, Magnit API Toolkit | **Absent** — 0 webhook, 0 API publique, OpenAPI désactivé en prod | Moyen-Élevé — premier frein documenté à l'adoption partenaire |
 | SLA de réponse par étape + alerte sur candidature qui refroidit | Beeline, Piter ; corpus praticiens | **Partiel** — file « à traiter », urgences deadline | Moyen |
-| **Migrations versionnées complètes** | Pratique d'audit standard | **Défaut** — voir §0 | Élevé — bloquant pour tout audit, et perte silencieuse d'une preuve RGPD |
+| **Migrations versionnées complètes** | Pratique d'audit standard | **Défaut au moment du scan** — corrigé depuis (R0) | Élevé — bloquant pour tout audit, et perte silencieuse d'une preuve RGPD sur tout environnement reconstruit |
 | Application mobile native | Bullhorn Mobile, myPixid | **Absent** (responsive) | **Non établi** — aucun verbatim demandeur trouvé, mais l'absence de preuve n'est pas une preuve d'absence. Ne pas prioriser sans entretiens. |
 
 ---
@@ -231,14 +238,15 @@ jour une facture partenaire à une mission.
 
 ### Vague « Maintenant » (0-3 mois) — tout est de taille S, sauf R5
 
-**R0. Rattraper les migrations manquantes** · S · **Impact fort**
-Le défaut décrit au §0. Trois migrations : `pacs`/`pac_clients` (DDL absent alors
-que `routers/pacs.py` les utilise), les colonnes `consultants.consent_at`,
-`availability_status`, `available_from`, `city`, `latitude`, `longitude`. Puis
-**retirer `consent_at` de `_OPTIONAL_COLS`** : une preuve RGPD ne doit jamais être
-silencieusement abandonnée par un `except`. Ajouter un contrôle de cohérence de
-schéma en CI. *C'est la seule recommandation qui corrige un défaut actif en
-production.*
+**R0. Rattraper les migrations manquantes** · S · **Impact fort** — ✅ **fait**
+Le défaut décrit au §0. Livré : `backend/migrations/0010_pacs.sql` (DDL de
+`pacs`/`pac_clients`, fidèle au schéma constaté en base, RLS comprise) et
+`0011_consultant_optional_columns.sql` (les six colonnes de `consultants`).
+`consent_at` est sorti de `_OPTIONAL_COLS` — une preuve RGPD ne doit jamais être
+abandonnée par un `except`. Garde-fou CI dans
+`backend/tests/test_schema_versioned.py` : toute table utilisée par le backend doit
+avoir un `CREATE TABLE` dans le dépôt, et `consent_at` ne peut plus revenir dans la
+liste des colonnes dégradables.
 
 **R1. Mesure de la supervision humaine effective** · S/M · **Impact fort**
 Étendre `/admin/decision-insights` : temps écoulé entre affichage du classement et
@@ -264,14 +272,23 @@ catégorie (CV, consultants sans soumission, matchings, logs), job de purge dans
 `services/scheduler.py`, écran d'état dans `AdminPage`. Le schéma mentionne déjà
 l'intention (« les consultants inactifs PEUVENT être purgés ») sans l'implémenter.
 
-**R4. Conformité art. 50 — marquage des contenus générés** · S · **Impact moyen**
-Mention « généré par IA, vérifié par [nom] le [date] » sur `ai_summary`, la synthèse
-de vivier, le CV harmonisé, le motif de refus ; métadonnée dans les PDF/DOCX générés ;
-bandeau sur `AssistantWidget`. Échéance 2 août 2026 pour l'interaction, 2 décembre
-2026 pour le marquage lisible par machine.
-*À calibrer :* l'art. 50 vise l'interaction utilisateur et les contenus diffusés ;
-un score affiché à un commercial interne n'est pas clairement dans le champ. À faire,
-sans en faire un couperet.
+**R4. Conformité art. 50 — marquage des contenus générés** · S · **Impact moyen** — ✅ **fait**
+Composant partagé `AiGeneratedBadge` (`components/badges.jsx`), posé sur le résumé
+d'AO, la synthèse de vivier et le CV harmonisé ; l'assistant conversationnel est
+renommé « Assistant IA » (art. 50(1) : la personne doit savoir dès la première
+interaction qu'elle s'adresse à une IA — une icône ✨ ne vaut pas divulgation).
+
+Deux surfaces **délibérément non marquées**, à faire confirmer par le conseil
+(cf. `compliance/QUESTIONS-CONSEIL-JURIDIQUE.md`, point B3) :
+- le **motif de refus** transmis au partenaire — l'opérateur le choisit ou l'édite
+  puis le valide explicitement : il y a contrôle éditorial humain, et le marquer
+  reviendrait à dire au partenaire « c'est la machine qui a écrit » alors qu'UTI
+  l'assume ;
+- le **CV harmonisé imprimé** envoyé au client — marqué dans l'application pour
+  l'opérateur, mais estampiller un document commercial sortant est une décision
+  business autant que juridique.
+
+Reste à traiter : le marquage lisible par machine (2 décembre 2026).
 
 **R5. Coffre-fort de conformité partenaire — en mode alerte** · M · **Impact fort**
 Table `partner_compliance_docs` (`partner_id`, `doc_type` ∈ {vigilance,

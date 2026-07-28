@@ -20,6 +20,7 @@ import {
 import ScoringPriorities, { DEFAULT_STARS } from '../components/ScoringPriorities'
 import HarmonizedCvModal from '../components/HarmonizedCvModal'
 import OnboardingTour from '../components/OnboardingTour'
+import { AiGeneratedBadge } from '../components/badges'
 import { Radar, RadarChart, PolarGrid, PolarAngleAxis, ResponsiveContainer } from 'recharts'
 
 // Tutoriel « lire & utiliser le matching CV » — lancé par le bouton « ? » de la
@@ -558,6 +559,8 @@ function PoolSynthesis({ aoId, results }) {
           <Sparkles size={13} className="text-[var(--accent-text)]" /> Synthèse du vivier · {results.length} profils
         </p>
         <div className="flex items-center gap-2">
+          {/* AI Act art. 50 — la synthèse du vivier est intégralement rédigée par le modèle. */}
+          {data && <AiGeneratedBadge />}
           {data && <span className={clsx('text-[10.5px] font-semibold px-2 py-0.5 rounded-full border', q.cls)}>{q.label}</span>}
           <button onClick={() => load(true)} disabled={loading}
                   className="btn-ghost text-[11px] px-2 py-1 gap-1" title="Recalculer la synthèse du vivier">
@@ -3577,10 +3580,15 @@ export default function AODetailPage() {
             )}
           </div>
           {summary && (
-            <p className="text-sm text-slate-400 mt-1.5 flex items-start gap-1.5">
-              <Sparkles size={13} className="text-violet-400 shrink-0 mt-0.5" />
-              <span className="italic">{summary}</span>
-            </p>
+            <div className="mt-1.5">
+              <p className="text-sm text-slate-400 flex items-start gap-1.5">
+                <Sparkles size={13} className="text-violet-400 shrink-0 mt-0.5" />
+                <span className="italic">{summary}</span>
+              </p>
+              {/* AI Act art. 50 : le résumé est produit par un modèle, il doit être
+                  annoncé comme tel. L'icône seule ne vaut pas divulgation. */}
+              <AiGeneratedBadge inline label="Résumé généré par IA" className="ml-[18px]" />
+            </div>
           )}
         </div>
         {isAdmin && (

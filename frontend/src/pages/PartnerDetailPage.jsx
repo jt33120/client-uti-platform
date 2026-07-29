@@ -10,6 +10,7 @@ import {
 } from 'lucide-react'
 import clsx from 'clsx'
 import { TierBadge } from '../components/badges'
+import PartnerCompliance from '../components/PartnerCompliance'
 
 const TIER_OPTIONS = [
   { value: '', label: 'Aucun accès', color: 'text-slate-400' },
@@ -245,6 +246,8 @@ export default function PartnerDetailPage() {
           onChange={e => setSearch(e.target.value)}
         />
       </div>
+
+      <PartnerCompliance partnerId={id} />
 
       {/* Clients list */}
       <div className="card p-5 space-y-3">

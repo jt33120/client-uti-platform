@@ -1,7 +1,12 @@
-from fastapi import APIRouter, HTTPException, Depends
+from datetime import date, datetime, timezone
+import uuid
+
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form
+from fastapi.responses import Response
 from pydantic import BaseModel
 from typing import Optional, Literal
 from services.supabase_client import supabase
+from services import storage, partner_compliance
 from routers.auth import get_current_user, require_admin, require_staff
 from config import settings
 import httpx
@@ -255,3 +260,182 @@ async def delete_partner(partner_id: str, user: dict = Depends(require_admin)):
     except Exception:
         # Détail loggé côté serveur ; réponse 500 générique (handler global).
         raise
+
+
+# ── Conformité partenaire (obligation de vigilance, art. L.8222-1) ──────────
+#
+# Mode ALERTE, jamais blocage. L'obligation se rattache au CONTRAT de prestation
+# (≥ 5 000 € HT par opération), pas à la présentation d'une candidature : bloquer
+# l'envoi d'un CV serait juridiquement inutile et commercialement absurde sur une
+# plateforme qui cherche encore du volume. Le blocage viendra avec le bon de
+# commande, quand il existera.
+#
+# Historique conservé : chaque dépôt crée une ligne, jamais de mise à jour en
+# place. L'attestation d'il y a huit mois doit rester consultable pour démontrer
+# qu'on la demandait bien à l'époque.
+
+_COMPLIANCE_BUCKET = "compliance"
+_MAX_DOC_BYTES = 10 * 1024 * 1024
+
+
+def _load_docs(partner_id: str) -> list[dict]:
+    try:
+        return supabase.table("partner_compliance_docs").select("*").eq(
+            "partner_id", partner_id
+        ).order("issued_at", desc=True).execute().data or []
+    except Exception:
+        # Table non migrée : l'écran partenaire doit rester utilisable.
+        return []
+
+
+@router.get("/{partner_id}/compliance")
+async def get_partner_compliance(partner_id: str, user: dict = Depends(require_staff)):
+    """Pièces de conformité d'un partenaire et leur état."""
+    docs = _load_docs(partner_id)
+    return {"docs": docs, **partner_compliance.partner_status(docs)}
+
+
+@router.get("/compliance/overview")
+async def compliance_overview(user: dict = Depends(require_staff)):
+    """État de conformité de TOUS les partenaires actifs, pour la vue d'ensemble.
+
+    Une pièce manquante ne se voit pas en ouvrant les fiches une par une : c'est
+    précisément ce qu'on oublie de faire. D'où une vue agrégée.
+    """
+    try:
+        partners = supabase.table("profiles").select("id, name, email").eq(
+            "role", "ao"
+        ).eq("status", "active").execute().data or []
+    except Exception:
+        partners = []
+    try:
+        all_docs = supabase.table("partner_compliance_docs").select("*").execute().data or []
+    except Exception:
+        all_docs = []
+
+    by_partner: dict[str, list[dict]] = {}
+    for d in all_docs:
+        by_partner.setdefault(d.get("partner_id"), []).append(d)
+
+    rows = []
+    for p in partners:
+        st = partner_compliance.partner_status(by_partner.get(p["id"], []))
+        rows.append({
+            "partner_id": p["id"], "name": p.get("name"), "email": p.get("email"),
+            "overall": st["overall"], "ok": st["ok"],
+            "by_type": {t: v["state"] for t, v in st["by_type"].items()},
+        })
+    order = {"missing": 0, "expired": 1, "unverified": 2, "expiring": 3, "valid": 4}
+    rows.sort(key=lambda r: (order.get(r["overall"], 9), (r["name"] or "").lower()))
+    return {"partners": rows, "at_risk": sum(1 for r in rows if not r["ok"])}
+
+
+@router.post("/{partner_id}/compliance")
+async def upload_compliance_doc(
+    partner_id: str,
+    doc_type: str = Form(...),
+    issued_at: str = Form(...),
+    file: UploadFile = File(None),
+    user: dict = Depends(require_staff),
+):
+    """Dépose une pièce de conformité.
+
+    `issued_at` est la date d'ÉMISSION de la pièce, pas celle du dépôt : c'est
+    elle qui fait courir la validité. Une attestation URSSAF vieille de cinq mois
+    déposée aujourd'hui n'est plus valable qu'un mois.
+    """
+    if doc_type not in partner_compliance.DOC_TYPES:
+        raise HTTPException(status_code=422, detail="Type de pièce inconnu.")
+    try:
+        issued = date.fromisoformat(issued_at)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Date d'émission invalide (AAAA-MM-JJ).")
+    if issued > datetime.now(timezone.utc).date():
+        raise HTTPException(status_code=422, detail="La date d'émission ne peut pas être dans le futur.")
+
+    record = {
+        "partner_id": partner_id,
+        "doc_type": doc_type,
+        "issued_at": issued.isoformat(),
+        "uploaded_by": user["sub"],
+    }
+
+    if file is not None:
+        content = await file.read()
+        if len(content) > _MAX_DOC_BYTES:
+            raise HTTPException(status_code=413, detail="Fichier trop volumineux (10 Mo maximum).")
+        if content:
+            storage.ensure_bucket(_COMPLIANCE_BUCKET, public=False)
+            safe = (file.filename or "piece").replace("/", "_")[-120:]
+            path = f"{partner_id}/{uuid.uuid4().hex}-{safe}"
+            try:
+                url = storage.upload(
+                    _COMPLIANCE_BUCKET, path, content,
+                    file.content_type or "application/octet-stream",
+                )
+            except Exception:
+                raise HTTPException(status_code=500, detail="Dépôt du fichier impossible.")
+            record["file_url"] = url
+            record["filename"] = safe
+
+    try:
+        created = supabase.table("partner_compliance_docs").insert(record).execute().data
+    except Exception:
+        raise HTTPException(status_code=500, detail="Enregistrement de la pièce impossible.")
+    return (created or [{}])[0]
+
+
+class AuthenticityCheck(BaseModel):
+    authenticity_ref: Optional[str] = None
+
+
+@router.post("/{partner_id}/compliance/{doc_id}/verify")
+async def verify_compliance_doc(
+    partner_id: str, doc_id: str,
+    body: AuthenticityCheck,
+    user: dict = Depends(require_staff),
+):
+    """Consigne la vérification d'authenticité auprès de l'URSSAF.
+
+    Détenir l'attestation ne suffit pas : le texte impose de s'assurer de son
+    authenticité. Tant que cette vérification n'est pas consignée, la pièce est
+    comptée « non vérifiée » et le partenaire n'est pas en règle.
+    """
+    patch = {
+        "authenticity_checked_at": datetime.now(timezone.utc).isoformat(),
+        "checked_by": user["sub"],
+    }
+    if body.authenticity_ref:
+        patch["authenticity_ref"] = body.authenticity_ref.strip()[:64]
+    try:
+        supabase.table("partner_compliance_docs").update(patch).eq(
+            "id", doc_id
+        ).eq("partner_id", partner_id).execute()
+    except Exception:
+        raise HTTPException(status_code=500, detail="Enregistrement de la vérification impossible.")
+    return {"ok": True, **patch}
+
+
+@router.get("/{partner_id}/compliance/{doc_id}/file")
+async def get_compliance_file(partner_id: str, doc_id: str, user: dict = Depends(require_staff)):
+    """Octets de la pièce, servis par le backend (bucket privé)."""
+    try:
+        doc = supabase.table("partner_compliance_docs").select(
+            "file_url, filename"
+        ).eq("id", doc_id).eq("partner_id", partner_id).single().execute().data
+    except Exception:
+        doc = None
+    stored = (doc or {}).get("file_url")
+    if not stored:
+        raise HTTPException(status_code=404, detail="Pièce introuvable.")
+    try:
+        data = storage.download(_COMPLIANCE_BUCKET, storage._object_path(_COMPLIANCE_BUCKET, stored))
+    except Exception:
+        raise HTTPException(status_code=404, detail="Pièce indisponible.")
+    fname = (doc or {}).get("filename") or "piece"
+    media = "application/pdf" if fname.lower().endswith(".pdf") else "application/octet-stream"
+    return Response(
+        content=bytes(data),
+        media_type=media,
+        headers={"Content-Disposition": f'inline; filename="{fname}"'},
+    )

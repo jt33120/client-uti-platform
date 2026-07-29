@@ -5,7 +5,7 @@ import { useConfirm } from '../contexts/ConfirmContext'
 import {
   Gauge, Users, FileText, Sparkles, UserPlus, X, Loader2,
   Shield, Briefcase, BadgePercent, Coins, Pencil, PauseCircle, Ban, KeyRound,
-  ShieldCheck, ShieldOff,
+  ShieldCheck, ShieldOff, GraduationCap,
 } from 'lucide-react'
 import InviteModal from '../components/InviteModal'
 import AccountEditModal from '../components/AccountEditModal'
@@ -68,6 +68,91 @@ function StatusBadge({ status }) {
     <span className="badge ml-1.5" style={{ background: 'var(--surface-2)', color: meta.color }}>
       <Icon size={10} strokeWidth={2} /> {meta.label}
     </span>
+  )
+}
+
+// Registre de littératie IA — AI Act art. 4.
+//
+// L'obligation est de MOYENS : ce qui se démontre en contrôle, c'est la trace.
+// D'où un registre EXHAUSTIF (tous les comptes actifs, y compris ceux qui n'ont
+// jamais attesté) et non une simple liste d'attestations — une liste ne dit rien
+// de ceux qui manquent, qui sont précisément le sujet.
+//
+// Autonome : charge son propre état, disparaît en silence s'il est indisponible
+// (colonnes non migrées) plutôt que de casser la page Administration.
+const LIT_STATE = {
+  never: { label: 'Jamais fait', tone: 'var(--danger)' },
+  outdated: { label: 'Contenu mis à jour', tone: 'var(--warning, #d97706)' },
+  expired: { label: 'À renouveler', tone: 'var(--warning, #d97706)' },
+  ok: { label: 'À jour', tone: 'var(--success)' },
+}
+
+function AiLiteracyRegister() {
+  const [reg, setReg] = useState(null)
+  useEffect(() => {
+    api.get('/admin/ai-literacy').then(r => setReg(r.data)).catch(() => setReg(false))
+  }, [])
+  if (!reg) return null
+
+  return (
+    <div className="pt-7" style={{ borderTop: '1px solid var(--border)' }}>
+      <h2 className="text-[11px] uppercase tracking-[0.08em] font-semibold mb-3 flex items-center gap-1.5"
+          style={{ color: 'var(--text-faint)' }}>
+        <GraduationCap size={13} strokeWidth={2} /> Sensibilisation IA — registre (AI Act art. 4)
+      </h2>
+
+      <div className="card p-4 mb-3 flex items-center justify-between gap-4 flex-wrap">
+        <div>
+          <p className="text-[13px]" style={{ color: 'var(--text)' }}>
+            <strong>{reg.done}/{reg.total}</strong> personne{reg.total > 1 ? 's' : ''} à jour
+            {reg.coverage_pct != null && <span style={{ color: 'var(--text-muted)' }}> · {reg.coverage_pct} %</span>}
+          </p>
+          <p className="text-[11px] mt-0.5" style={{ color: 'var(--text-faint)' }}>
+            Contenu en version {reg.current_version} · attestation valable {reg.validity_days} jours
+          </p>
+        </div>
+        {reg.pending > 0 && (
+          <span className="badge text-[11px]"
+                style={{ background: 'var(--danger-soft)', color: 'var(--danger)', border: 'none' }}>
+            {reg.pending} à régulariser
+          </span>
+        )}
+      </div>
+
+      <div className="card overflow-hidden">
+        <table className="w-full text-[13px]">
+          <thead>
+            <tr className="text-left text-[11px] uppercase tracking-wide"
+                style={{ color: 'var(--text-faint)', borderBottom: '1px solid var(--border)' }}>
+              <th className="font-medium px-4 py-2.5">Nom</th>
+              <th className="font-medium px-4 py-2.5 hidden md:table-cell">Email</th>
+              <th className="font-medium px-4 py-2.5">État</th>
+              <th className="font-medium px-4 py-2.5 hidden sm:table-cell">Attesté le</th>
+            </tr>
+          </thead>
+          <tbody>
+            {reg.people.map(p => {
+              const st = LIT_STATE[p.state] || LIT_STATE.never
+              return (
+                <tr key={p.id} style={{ borderTop: '1px solid var(--border)' }}>
+                  <td className="px-4 py-2.5" style={{ color: 'var(--text)' }}>{p.name || '—'}</td>
+                  <td className="px-4 py-2.5 hidden md:table-cell" style={{ color: 'var(--text-muted)' }}>{p.email}</td>
+                  <td className="px-4 py-2.5">
+                    <span className="badge text-[10.5px]"
+                          style={{ background: 'var(--surface-2)', color: st.tone, border: '1px solid var(--border)' }}>
+                      {st.label}
+                    </span>
+                  </td>
+                  <td className="px-4 py-2.5 hidden sm:table-cell" style={{ color: 'var(--text-muted)' }}>
+                    {p.ack_at ? fmtDate(p.ack_at) : '—'}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
   )
 }
 
@@ -325,6 +410,8 @@ export default function AdminPage() {
           </div>
         )}
       </div>
+
+      <AiLiteracyRegister />
 
       {/* Le journal d'erreurs + l'usage IA ont leur page dédiée : Supervision. */}
 

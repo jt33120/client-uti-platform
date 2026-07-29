@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import api from '../lib/api'
-import { Bell, Loader2, ShieldCheck } from 'lucide-react'
+import { Bell, Loader2, ShieldCheck, AlertTriangle } from 'lucide-react'
 
 function Toggle({ checked, onChange, label, hint }) {
   return (
@@ -41,10 +41,17 @@ function RetentionCard() {
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [err, setErr] = useState('')
+  // Volume réellement concerné par le délai configuré — que la purge tourne ou
+  // non. Sans ça, « désactivée » est un état silencieux : rien à l'écran ne
+  // distingue « aucune donnée à purger » de « des CV s'accumulent hors délai ».
+  const [state, setState] = useState(null)
   useEffect(() => {
     api.get('/admin/settings')
       .then(r => setCfg(r.data.data_retention || { enabled: false, months: 24 }))
       .catch(() => setCfg(false))
+    api.get('/admin/settings/retention-state')
+      .then(r => setState(r.data))
+      .catch(() => { /* la visibilité ne doit pas casser l'écran de réglages */ })
   }, [])
   if (cfg === false || cfg === null) return null
   const upd = (k, v) => { setCfg(p => ({ ...p, [k]: v })); setSaved(false) }
@@ -74,8 +81,45 @@ function RetentionCard() {
           value={cfg.months} onChange={v => upd('months', v)} />
         <p className="text-[11px]" style={{ color: 'var(--text-faint)' }}>
           La purge retire le fichier et le texte du CV ; la trace de la candidature (statistiques) est
-          conservée, anonymisée. Délai minimum : 6 mois.
+          conservée, anonymisée. Les fiches consultants inactives sont anonymisées selon le même délai.
+          Délai minimum : 6 mois.
         </p>
+
+        {state && (() => {
+          const nb = (state.overdue_submissions ?? 0) + (state.overdue_consultants ?? 0)
+          if (!nb) {
+            return (
+              <p className="text-[11.5px]" style={{ color: 'var(--text-muted)' }}>
+                Aucun enregistrement ne dépasse actuellement le délai de {state.months} mois.
+              </p>
+            )
+          }
+          const detail = [
+            state.overdue_submissions ? `${state.overdue_submissions} CV` : null,
+            state.overdue_consultants ? `${state.overdue_consultants} fiche(s) consultant` : null,
+          ].filter(Boolean).join(' et ')
+          // Purge à l'arrêt ET des données hors délai : c'est le seul cas qui
+          // appelle un avertissement. Activée, c'est un simple état d'avancement.
+          const alert = !state.enabled
+          return (
+            <div className="flex items-start gap-2 rounded-md px-3 py-2 border text-[11.5px] leading-relaxed"
+                 style={{
+                   background: alert ? 'var(--danger-soft)' : 'var(--surface-2)',
+                   borderColor: alert ? 'var(--danger)' : 'var(--border)',
+                   color: 'var(--text-muted)',
+                 }}>
+              <AlertTriangle size={13} className="shrink-0 mt-px"
+                             style={{ color: alert ? 'var(--danger)' : 'var(--text-muted)' }} />
+              <span>
+                <strong style={{ color: 'var(--text)' }}>{detail}</strong> dépasse
+                {' '}le délai de {state.months} mois.{' '}
+                {alert
+                  ? <>La purge étant <strong style={{ color: 'var(--text)' }}>désactivée</strong>, ces données sont conservées indéfiniment.</>
+                  : <>Elles seront traitées par lots au fil des prochains passages du planificateur.</>}
+              </span>
+            </div>
+          )
+        })()}
         {err && <p className="text-[12px]" style={{ color: 'var(--danger)' }}>{err}</p>}
         <div className="flex items-center justify-end gap-3">
           {saved && <span className="text-[12px]" style={{ color: 'var(--success)' }}>Enregistré ✓</span>}

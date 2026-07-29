@@ -795,6 +795,69 @@ async def update_retention_settings(body: RetentionSettings, user: dict = Depend
     return {"data_retention": set_retention_settings(patch)}
 
 
+@router.get("/settings/retention-state")
+async def retention_state(user: dict = Depends(require_admin)):
+    """Ce que la purge RGPD ferait, qu'elle soit active ou non.
+
+    Endpoint séparé de `/settings` à dessein : il coûte deux comptages, alors que
+    les réglages sont lus à chaque ouverture d'écran.
+    """
+    from services.data_retention import retention_state as _state
+    return _state()
+
+
+@router.get("/ai-literacy")
+async def ai_literacy_register(user: dict = Depends(require_admin)):
+    """Registre de littératie IA (AI Act, art. 4).
+
+    L'obligation est de MOYENS : ce qui se démontre en contrôle, c'est la trace —
+    qui a été sensibilisé, à quelle version du contenu, et quand. D'où un registre
+    exhaustif (tous les comptes actifs, y compris ceux qui n'ont jamais attesté)
+    plutôt qu'une simple liste d'attestations.
+    """
+    from services import ai_literacy
+    try:
+        rows = supabase.table("profiles").select(
+            "id, name, email, role, status, ai_literacy_ack_at, ai_literacy_version"
+        ).order("name").execute().data or []
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail="Registre indisponible.") from e
+
+    people = []
+    for r in rows:
+        # Un compte suspendu n'opère plus le système : le compter comme « à faire »
+        # gonflerait artificiellement le retard sans rien dire du risque réel.
+        if (r.get("status") or "active") != "active":
+            continue
+        st = ai_literacy.status(r)
+        people.append({
+            "id": r.get("id"),
+            "name": r.get("name"),
+            "email": r.get("email"),
+            "role": r.get("role"),
+            "state": st["state"],
+            "ok": st["ok"],
+            "ack_at": st["ack_at"],
+            "acked_version": st["acked_version"],
+            "due_at": st["due_at"],
+        })
+
+    # Les personnes à régulariser d'abord.
+    order = {ai_literacy.NEVER: 0, ai_literacy.OUTDATED: 1, ai_literacy.EXPIRED: 2, ai_literacy.OK: 3}
+    people.sort(key=lambda p: (order.get(p["state"], 9), (p["name"] or "").lower()))
+
+    done = sum(1 for p in people if p["ok"])
+    return {
+        "current_version": ai_literacy.VERSION,
+        "validity_days": ai_literacy.VALIDITY_DAYS,
+        "total": len(people),
+        "done": done,
+        "pending": len(people) - done,
+        "coverage_pct": round(done / len(people) * 100) if people else None,
+        "people": people,
+    }
+
+
 @router.put("/settings/notifications")
 async def update_notif_settings(body: NotificationSettings, user: dict = Depends(require_admin)):
     patch = body.model_dump(exclude_none=True)

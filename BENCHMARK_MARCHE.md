@@ -266,11 +266,23 @@ nouveau modèle de données.
 *Preuve :* Piter, Mindquest. Un classement sur critères non publiés n'est
 défendable ni juridiquement, ni commercialement.
 
-**R3. Durées de conservation et purge effective** · S · **Impact fort**
-Troisième axe des contrôles CNIL 2026, aujourd'hui non couvert. Politique écrite par
-catégorie (CV, consultants sans soumission, matchings, logs), job de purge dans
-`services/scheduler.py`, écran d'état dans `AdminPage`. Le schéma mentionne déjà
-l'intention (« les consultants inactifs PEUVENT être purgés ») sans l'implémenter.
+**R3. Durées de conservation et purge effective** · S · **Impact fort** — ✅ **fait**
+*Correction du scan :* ce point était classé « non couvert », à tort. L'anonymisation
+des CV hors délai existait déjà (`services/data_retention.py`, branchée dans le
+planificateur). Le vrai défaut était ailleurs, et il est plus insidieux : la purge est
+en **opt-in strict** et **aucun réglage n'existait en production** — le défaut
+`enabled: false` la rendait silencieusement inerte, sans que rien ne le signale.
+
+Livré : politique de conservation écrite par catégorie
+(`compliance/ai-act/rgpd/POLITIQUE-CONSERVATION.md`), anonymisation des fiches
+consultants inactives (migration `0013`, absente jusque-là alors que le schéma
+l'annonçait), et surtout **la visibilité** — l'écran de réglages affiche désormais le
+volume qui dépasse le délai, que la purge tourne ou non, et avertit explicitement
+quand des données s'accumulent alors qu'elle est désactivée.
+
+Anonymisation et non suppression : un `DELETE` sur `consultants` cascade sur
+`matchings` et `ao_consultant_state`, et met à `NULL` le `consultant_id` de
+`human_decision` — la trace de décision humaine (art. 14) serait détruite.
 
 **R4. Conformité art. 50 — marquage des contenus générés** · S · **Impact moyen** — ✅ **fait**
 Composant partagé `AiGeneratedBadge` (`components/badges.jsx`), posé sur le résumé
@@ -309,10 +321,18 @@ Cartographier ce qu'OpenRouter route et où, obtenir le DPA, documenter la réte
 et les garanties de transfert (chapitre V), inscrire le résultat au registre des
 traitements. Décider si un routage restreint aux fournisseurs UE est nécessaire.
 
-**R7. Registre de formation *AI literacy* (art. 4)** · S · **Impact moyen**
-Seule obligation AI Act déjà exigible et non couverte. Module court (lecture du score,
-limites, biais d'automatisation), attestation par utilisateur dans `profiles`, rappel
-annuel. Réutiliser `email_templates` et le planificateur.
+**R7. Registre de formation *AI literacy* (art. 4)** · S · **Impact moyen** — ✅ **fait**
+Seule obligation AI Act déjà exigible et non concernée par le report au 2 décembre 2027.
+Module de sensibilisation (`AiLiteracyModal` : ce que le score mesure et ne mesure pas,
+limites du modèle, **biais d'automatisation**, responsabilité de l'opérateur),
+attestation horodatée et **versionnée** dans `profiles` (migration `0012`), rappel
+annuel, et registre exhaustif côté admin — tous les comptes actifs, y compris ceux qui
+n'ont jamais attesté : une liste d'attestations ne dit rien de ceux qui manquent, qui
+sont précisément le sujet en contrôle.
+
+Rappel **non bloquant** : l'art. 4 est une obligation de moyens. Verrouiller l'outil
+punirait l'utilisateur pour une obligation qui incombe à l'entreprise. On rappelle, on
+trace, et le registre montre le reste à faire.
 
 ### Vague « Ensuite » (3-9 mois)
 

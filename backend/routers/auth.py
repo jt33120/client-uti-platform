@@ -730,6 +730,44 @@ async def me(user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="Profil introuvable")
 
 
+@router.get("/me/ai-literacy")
+async def get_ai_literacy(user: dict = Depends(get_current_user)):
+    """État de sensibilisation IA de l'utilisateur courant (AI Act, art. 4)."""
+    from services import ai_literacy
+    try:
+        row = supabase.table("profiles").select(
+            "ai_literacy_ack_at, ai_literacy_version"
+        ).eq("id", user["sub"]).single().execute().data or {}
+    except Exception:  # noqa: BLE001 - colonnes non migrées, base injoignable…
+        # Ne jamais bloquer l'app sur une sonde de conformité : on répond
+        # « jamais attesté », l'utilisateur pourra régulariser.
+        row = {}
+    return ai_literacy.status(row)
+
+
+@router.post("/me/ai-literacy")
+async def ack_ai_literacy(user: dict = Depends(get_current_user)):
+    """Enregistre l'attestation de lecture du module de sensibilisation IA.
+
+    Volontairement sans corps de requête : l'utilisateur atteste de la version
+    COURANTE, celle que le serveur connaît. Laisser le client choisir la version
+    permettrait d'attester d'un contenu qu'il n'a pas vu.
+    """
+    from services import ai_literacy
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        supabase.table("profiles").update({
+            "ai_literacy_ack_at": now,
+            "ai_literacy_version": ai_literacy.VERSION,
+        }).eq("id", user["sub"]).execute()
+    except Exception:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail="Enregistrement de l'attestation impossible.")
+    return ai_literacy.status({
+        "ai_literacy_ack_at": now,
+        "ai_literacy_version": ai_literacy.VERSION,
+    })
+
+
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr
 

@@ -17,7 +17,8 @@ OPT-IN strict : rien n'est purgé tant que l'admin n'a pas activé la rétention
 maximum par tick, jamais d'exception propagée (le planificateur isole déjà, mais
 on double la prudence sur une opération destructive).
 """
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 from services.supabase_client import supabase
 from services.app_settings import get_retention_settings
@@ -61,13 +62,136 @@ def _purge_one(sub: dict, now_iso: str) -> bool:
     return True
 
 
+#: Valeur posée sur `consultants.name` après anonymisation. Un libellé explicite
+#: vaut mieux qu'une chaîne vide : l'écran reste lisible et l'opérateur comprend
+#: qu'il s'agit d'une purge et non d'une donnée manquante.
+ANON_NAME = "Consultant anonymisé"
+
+
+def _purge_consultant(cid: str, now_iso: str) -> bool:
+    """Vide les champs identifiants d'une fiche consultant. La LIGNE est conservée.
+
+    Supprimer la ligne cascaderait sur `matchings` et `ao_consultant_state`, et
+    mettrait à NULL le `consultant_id` de `human_decision` — la trace de décision
+    humaine (AI Act art. 14) serait perdue et les statistiques faussées.
+    On conserve donc les champs non identifiants (TJM, compétences, années d'XP,
+    type d'emploi) qui portent la valeur analytique.
+    """
+    cleared = {
+        "name": ANON_NAME,
+        "email": None, "phone": None, "city": None,
+        "latitude": None, "longitude": None,
+        "cv_url": None, "cv_text": None, "cv_filename": None,
+    }
+    supabase.table("consultants").update({**cleared, "purged_at": now_iso}).eq("id", cid).execute()
+    return True
+
+
+def _process_consultants(now: datetime, cutoff: str) -> int:
+    """Anonymise les consultants dont la dernière activité dépasse le délai.
+
+    Dernière activité = la plus récente entre la création de la fiche et sa
+    dernière soumission. Une fiche jamais soumise se juge donc sur sa seule date
+    de création — c'est le cas que `supabase_schema.sql` annonçait sans
+    l'implémenter.
+    """
+    rows = (
+        supabase.table("consultants")
+        .select("id, created_at")
+        .is_("purged_at", "null")
+        .lt("created_at", cutoff)
+        .order("created_at")
+        .limit(_BATCH)
+        .execute()
+        .data
+        or []
+    )
+    if not rows:
+        return 0
+
+    ids = [r["id"] for r in rows if r.get("id")]
+    # Dernière soumission par consultant, en UNE requête (pas de N+1).
+    last_sub: dict[str, str] = {}
+    try:
+        subs = (
+            supabase.table("submissions")
+            .select("consultant_id, submitted_at")
+            .in_("consultant_id", ids)
+            .execute()
+            .data
+            or []
+        )
+        for s in subs:
+            cid, ts = s.get("consultant_id"), s.get("submitted_at")
+            if cid and ts and ts > last_sub.get(cid, ""):
+                last_sub[cid] = ts
+    except Exception as e:  # noqa: BLE001
+        # Sans cette lecture, impossible de savoir si la fiche est réellement
+        # inactive : on s'abstient plutôt que de purger à l'aveugle.
+        _record_err("retention", "Lecture des soumissions (purge consultants) en échec", exc=e)
+        return 0
+
+    now_iso = now.isoformat()
+    purged = 0
+    for r in rows:
+        cid = r.get("id")
+        if not cid:
+            continue
+        if last_sub.get(cid, "") >= cutoff:
+            continue  # encore actif via une soumission récente
+        try:
+            if _purge_consultant(cid, now_iso):
+                purged += 1
+        except Exception as e:  # noqa: BLE001
+            _record_err("retention", f"Purge consultant {cid} en échec", exc=e, level="warning")
+    return purged
+
+
+def _cutoff(now: datetime, months: int) -> str:
+    return (now - timedelta(days=int(months) * 30)).isoformat()
+
+
+def retention_state(now: Optional[datetime] = None) -> dict:
+    """Ce que la rétention ferait, activée ou non — pour rendre l'inaction VISIBLE.
+
+    La purge est en opt-in strict, et rien n'indiquait à l'admin qu'elle était
+    à l'arrêt : le réglage par défaut (`enabled: false`) la rendait silencieusement
+    inerte. On expose donc le nombre d'enregistrements qui DÉPASSENT déjà le délai
+    configuré, que la purge tourne ou non.
+    """
+    now = now or datetime.now(timezone.utc)
+    cfg = get_retention_settings()
+    cutoff = _cutoff(now, cfg["months"])
+    out = {"enabled": bool(cfg["enabled"]), "months": cfg["months"], "cutoff": cutoff}
+
+    def _count(builder) -> Optional[int]:
+        try:
+            return builder.execute().count
+        except Exception:  # noqa: BLE001 - la visibilité ne doit jamais casser l'écran
+            return None
+
+    out["overdue_submissions"] = _count(
+        supabase.table("submissions").select("id", count="exact")
+        .lt("submitted_at", cutoff)
+        .or_("cv_url.not.is.null,cv_text.not.is.null")
+        .limit(1)
+    )
+    out["overdue_consultants"] = _count(
+        supabase.table("consultants").select("id", count="exact")
+        .is_("purged_at", "null")
+        .lt("created_at", cutoff)
+        .limit(1)
+    )
+    return out
+
+
 async def process_data_retention(now: datetime) -> dict:
     """Purge les CV hors délai si la rétention est activée. Ne lève jamais."""
     cfg = get_retention_settings()
     if not cfg.get("enabled"):
         return {"purged": 0, "status": "disabled"}
 
-    cutoff = (now - timedelta(days=int(cfg["months"]) * 30)).isoformat()
+    cutoff = _cutoff(now, cfg["months"])
     try:
         # Candidats : soumissions anciennes détenant encore un CV. On récupère un
         # lot, puis on filtre en Python celles qui portent réellement du contenu.
@@ -100,10 +224,24 @@ async def process_data_retention(now: datetime) -> dict:
         except Exception as e:  # noqa: BLE001
             _record_err("retention", f"Purge soumission {sub.get('id')} en échec", exc=e, level="warning")
 
-    if purged:
+    # Fiches consultants inactives — isolé du reste : un échec ici ne doit pas
+    # annuler l'anonymisation des CV qui vient d'aboutir.
+    try:
+        purged_consultants = _process_consultants(now, cutoff)
+    except Exception as e:  # noqa: BLE001
+        _record_err("retention", "Purge des consultants inactifs en échec", exc=e)
+        purged_consultants = 0
+
+    if purged or purged_consultants:
         _record_err(
             "retention",
-            f"Purge RGPD : {purged} CV anonymisé(s) (conservation {cfg['months']} mois)",
+            f"Purge RGPD : {purged} CV anonymisé(s), {purged_consultants} fiche(s) "
+            f"consultant anonymisée(s) (conservation {cfg['months']} mois)",
             level="info",
         )
-    return {"purged": purged, "status": "ok", "months": cfg["months"]}
+    return {
+        "purged": purged,
+        "purged_consultants": purged_consultants,
+        "status": "ok",
+        "months": cfg["months"],
+    }

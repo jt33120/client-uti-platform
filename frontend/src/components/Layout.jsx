@@ -5,14 +5,16 @@ import {
   LayoutDashboard, Users, FileText, LogOut, Plus,
   Building2, Network, Sun, Moon, UserPlus, UserCheck, Settings,
   HelpCircle, Mail, Compass, Gauge, Ticket, SlidersHorizontal, ChevronDown, Map,
-  Menu, X, Activity
+  Menu, X, Activity, GraduationCap
 } from 'lucide-react'
 import clsx from 'clsx'
 import InviteModal from './InviteModal'
 import SettingsModal from './SettingsModal'
 import ContactModal from './ContactModal'
 import AssistantWidget from './AssistantWidget'
+import AiLiteracyModal from './AiLiteracyModal'
 import OnboardingTour from './OnboardingTour'
+import api from '../lib/api'
 import NotificationBell from './NotificationBell'
 import Footer from './Footer'
 
@@ -133,6 +135,27 @@ export default function Layout() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const [inviteOpen, setInviteOpen] = useState(false)
   const [profileMenuOpen, setProfileMenuOpen] = useState(false)
+
+  // ── Littératie IA (AI Act art. 4) ────────────────────────────────────────
+  // Bandeau NON bloquant : l'art. 4 est une obligation de moyens, pas un
+  // verrou. Couper l'accès à l'outil tant que le module n'est pas lu punirait
+  // l'utilisateur pour une obligation qui incombe à l'entreprise. On rappelle,
+  // on trace, et le registre admin montre qui reste à sensibiliser.
+  const [aiLit, setAiLit] = useState(null)
+  const [litOpen, setLitOpen] = useState(false)
+  // Masquage pour la session seulement : le rappel revient à la prochaine
+  // connexion tant que l'attestation n'est pas faite.
+  const [litHidden, setLitHidden] = useState(() => sessionStorage.getItem('ailit_hidden') === '1')
+
+  useEffect(() => {
+    let cancelled = false
+    api.get('/auth/me/ai-literacy')
+      .then((r) => { if (!cancelled) setAiLit(r.data) })
+      .catch(() => { /* sonde de conformité : ne doit jamais gêner l'app */ })
+    return () => { cancelled = true }
+  }, [])
+
+  const litDue = aiLit && !aiLit.ok && !litHidden
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [contactOpen, setContactOpen] = useState(false)
   const [contactDefaultType, setContactDefaultType] = useState('question')
@@ -373,6 +396,12 @@ export default function Layout() {
 
       {inviteOpen && <InviteModal onClose={() => setInviteOpen(false)} />}
       {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
+      {litOpen && (
+        <AiLiteracyModal
+          onClose={() => setLitOpen(false)}
+          onAcknowledged={(st) => setAiLit(st)}
+        />
+      )}
       {contactOpen && <ContactModal defaultType={contactDefaultType} onClose={() => setContactOpen(false)} />}
 
       {/* Main */}
@@ -406,6 +435,34 @@ export default function Layout() {
           </div>
         </div>
         <div className="px-4 sm:px-6 py-5 sm:py-6 pb-24 md:pb-6 max-w-6xl mx-auto">
+          {litDue && (
+            <div className="mb-5 flex items-start gap-3 rounded-lg px-4 py-3 border"
+                 style={{ background: 'var(--surface-2)', borderColor: 'var(--border)' }}>
+              <div className="w-7 h-7 rounded-md flex items-center justify-center shrink-0"
+                   style={{ background: 'var(--accent-soft)', color: 'var(--accent-text)' }}>
+                <GraduationCap size={14} />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-[13px] font-semibold" style={{ color: 'var(--text)' }}>
+                  {aiLit.state === 'never'
+                    ? 'Sensibilisation à l’aide au tri par IA'
+                    : 'Votre sensibilisation à l’IA est à renouveler'}
+                </p>
+                <p className="text-[12px] leading-relaxed mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                  {aiLit.state === 'outdated'
+                    ? 'Le fonctionnement du système a évolué depuis votre dernière lecture.'
+                    : 'Cinq minutes pour savoir ce que le score mesure, ses limites, et où s’arrête son rôle.'}
+                </p>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button onClick={() => { setLitHidden(true); sessionStorage.setItem('ailit_hidden', '1') }}
+                        className="btn-ghost text-[11px] px-2 py-1">Plus tard</button>
+                <button onClick={() => setLitOpen(true)} className="btn-primary text-[11px] px-3 py-1.5">
+                  Lire le module
+                </button>
+              </div>
+            </div>
+          )}
           <Outlet />
           <Footer />
         </div>

@@ -10,8 +10,7 @@ from typing import Optional
 from datetime import datetime, timezone
 
 from services.supabase_client import supabase
-from services.email import send_email
-from services import email_templates
+from services import email_templates, email_outbox
 from config import settings
 
 
@@ -53,7 +52,7 @@ def _partner_ids_with_submission(ao_id: str) -> set:
         return set()
 
 
-def _render(ao: dict, client_name: str, kind: str) -> tuple[str, str, str]:
+def _render(ao: dict, client_name: str, kind: str, recipient: dict | None = None) -> tuple[str, str, str]:
     """Construit (subject, html, text) de l'email AO. kind = 'new' | 'relance'.
 
     Sujet et corps proviennent des templates éditables (Administration →
@@ -61,6 +60,9 @@ def _render(ao: dict, client_name: str, kind: str) -> tuple[str, str, str]:
     """
     url = f"{settings.frontend_url.rstrip('/')}/aos/{ao['id']}"
     key = "ao_relance" if kind == "relance" else "ao_new"
+    # Prénom seul : « Bonjour Marc, » sonne juste, « Bonjour Marc Dupont, »
+    # sonne comme un publipostage — ce que c'est, mais autant ne pas l'annoncer.
+    first = ((recipient or {}).get("name") or "").strip().split(" ")[0]
     context = {
         "title": ao.get("title") or "Appel d'offres",
         "client": client_name,
@@ -68,40 +70,56 @@ def _render(ao: dict, client_name: str, kind: str) -> tuple[str, str, str]:
         "location": ao.get("location") or "",
         "deadline": ao.get("deadline") or "",
         "link": url,
+        "partner_name": (recipient or {}).get("name") or "",
+        "greeting": f"Bonjour {first}," if first else "Bonjour,",
     }
     # Source unique de rendu (identique à l'aperçu admin).
     return email_templates.build_email(key, context)
 
 
-def _log_send(ao_id, recipient: dict, kind: str, status: str, error, sent_by) -> None:
-    """Journalise un envoi dans partner_email_log (best-effort)."""
-    try:
-        supabase.table("partner_email_log").insert({
-            "ao_id": ao_id,
-            "recipient_id": recipient.get("id"),
-            "recipient_email": recipient.get("email"),
-            "kind": kind,
-            "status": status,
-            "error": (error or None),
-            "sent_by": sent_by,
-        }).execute()
-    except Exception as e:  # noqa: BLE001
-        print(f"[NOTIF] log non écrit (AO {ao_id}): {e}")
+# `_log_send` a disparu : la file (`email_outbox`) EST désormais le journal.
+# Écrire dans `partner_email_log` en plus produirait deux vérités divergentes —
+# le journal disait « envoyé » au moment de l'appel SMTP, alors que la file
+# connaît le vrai état final (envoyé, en attente de réessai, ou abandonné).
+# Les lignes historiques de `partner_email_log` restent lisibles : l'endpoint
+# de consultation fusionne les deux sources.
 
 
 def _send_to(recipients: list[dict], ao: dict, client_name: str, kind: str, actor_id=None) -> int:
+    """Dépose la campagne en file d'envoi. Retourne le nombre d'emails mis en file.
+
+    Deux changements par rapport à l'envoi direct d'avant :
+
+    Le rendu est fait DANS la boucle, donc par destinataire. Auparavant il était
+    calculé une seule fois avant la boucle et tout le monde recevait le même
+    corps au mot près — impossible de nommer le partenaire.
+
+    Et on dépose au lieu d'envoyer : plus rien ne se perd sur un hoquet SMTP, et
+    l'appelant (souvent une requête HTTP) rend la main immédiatement.
+    """
     if not recipients:
         return 0
-    subject, html, text = _render(ao, client_name, kind)
-    sent = 0
+    key_base = "ao_relance" if kind == "relance" else "ao_new"
+    # Le n° de relance fait partie de la clé : la 2e relance sur le même AO doit
+    # bien partir, alors que le REJEU de la 1re ne doit pas.
+    round_no = ao.get("relance_count") or 0
+    queued = 0
     for r in recipients:
-        ok, err = send_email(r["email"], subject, html, text=text)
-        _log_send(ao.get("id"), r, kind, "sent" if ok else "failed", None if ok else err, actor_id)
-        if ok:
-            sent += 1
-        else:
-            print(f"[NOTIF] échec envoi à {r['email']} (AO {ao['id']}): {err}")
-    return sent
+        subject, html, text = _render(ao, client_name, kind, recipient=r)
+        row = email_outbox.enqueue(
+            to_email=r["email"],
+            to_name=r.get("name"),
+            subject=subject, html=html, text=text,
+            category=f"ao_{kind}",
+            template_key=key_base,
+            ao_id=ao.get("id"),
+            recipient_id=r.get("id"),
+            created_by=actor_id,
+            idempotency_key=f"ao:{ao.get('id')}:{kind}:{r.get('id')}:{round_no}",
+        )
+        if row:
+            queued += 1
+    return queued
 
 
 def notify_tier(ao: dict, tier: str, actor_id=None) -> int:

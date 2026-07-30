@@ -48,8 +48,11 @@ _AO_TITLE_BLOCK = (
     'border-left:3px solid #4f46e5;border-radius:6px;font-size:16px;'
     'font-weight:700;color:#1d1d1f;">{title}</p>'
 )
+# `{greeting}` porte l'accroche nominative (« Bonjour Marc, » ou « Bonjour, » à
+# défaut de nom connu). Le rendu étant désormais fait PAR DESTINATAIRE, la même
+# campagne produit un corps différent pour chacun.
 _DEFAULT_NEW = (
-    '<p style="margin:0 0 12px;">Bonjour,</p>'
+    '<p style="margin:0 0 12px;">{greeting}</p>'
     '<p style="margin:0 0 4px;">Un nouvel appel d\'offres vient d\'être ouvert '
     "pour le client <strong>{client}</strong> :</p>"
     + _AO_TITLE_BLOCK +
@@ -57,7 +60,7 @@ _DEFAULT_NEW = (
     "correspondant directement sur la plateforme.</p>"
 )
 _DEFAULT_RELANCE = (
-    '<p style="margin:0 0 12px;">Bonjour,</p>'
+    '<p style="margin:0 0 12px;">{greeting}</p>'
     '<p style="margin:0 0 4px;">Pour rappel, cet appel d\'offres pour '
     "<strong>{client}</strong> est toujours ouvert :</p>"
     + _AO_TITLE_BLOCK +
@@ -91,7 +94,8 @@ DEFAULTS = {
         "subject": "Nouvel appel d'offres : {title}",
         "body": _DEFAULT_NEW,
         "format": "html",
-        "placeholders": ["title", "client", "reference", "location", "deadline", "link"],
+        "placeholders": ["greeting", "partner_name", "title", "client",
+                         "reference", "location", "deadline", "link"],
         "email_title": "Nouvel appel d'offres",
         "cta_label": "Voir l'appel d'offres",
         "footer": "Vous recevez cet email car vous êtes partenaire référencé sur ce client.",
@@ -101,7 +105,8 @@ DEFAULTS = {
         "subject": "Rappel, appel d'offres : {title}",
         "body": _DEFAULT_RELANCE,
         "format": "html",
-        "placeholders": ["title", "client", "reference", "location", "deadline", "link"],
+        "placeholders": ["greeting", "partner_name", "title", "client",
+                         "reference", "location", "deadline", "link"],
         "email_title": "Appel d'offres toujours ouvert",
         "cta_label": "Proposer un consultant",
         "footer": "Vous recevez cet email car vous êtes partenaire référencé sur ce client.",

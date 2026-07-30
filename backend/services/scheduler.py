@@ -20,6 +20,13 @@ from services.error_log import record as _record_err
 
 TICK_SECONDS = 3600  # 1 h — granularité largement suffisante pour des délais en jours
 
+# La file d'emails a sa PROPRE cadence, bien plus courte. Un lien de
+# réinitialisation de mot de passe déposé juste après un tick horaire
+# attendrait une heure : ce serait pire que l'envoi direct qu'on remplace.
+# 20 s est un compromis — imperceptible pour l'utilisateur, et sans coût quand
+# la file est vide (une requête de lecture qui ne ramène rien).
+OUTBOX_TICK_SECONDS = 20
+
 
 def _parse(ts: Optional[str]) -> Optional[datetime]:
     if not ts:
@@ -182,3 +189,28 @@ async def run_scheduler() -> None:
             print(f"[SCHED] tick en erreur (ignoré): {e}")
             _record_err("scheduler", "Tick du planificateur en erreur", exc=e)
         await asyncio.sleep(TICK_SECONDS)
+
+
+async def run_outbox() -> None:
+    """Boucle d'envoi des emails en file.
+
+    Séparée de `run_scheduler` pour deux raisons. La cadence d'abord : les
+    campagnes AO se raisonnent en jours, un email transactionnel en secondes.
+    L'isolation ensuite : une erreur dans les relances ne doit pas empêcher un
+    lien de réinitialisation de partir, et réciproquement.
+
+    `process_outbox` est bloquant (SMTP synchrone) : on le pousse dans un thread
+    pour ne pas figer la boucle d'événements pendant l'envoi d'un lot — sinon
+    l'API entière se met à répondre lentement pendant les campagnes.
+    """
+    print("[OUTBOX] envoyeur d'emails démarré")
+    from services.email_outbox import process_outbox
+    while True:
+        try:
+            res = await asyncio.to_thread(process_outbox)
+            if res.get("sent") or res.get("failed"):
+                print(f"[OUTBOX] {res['sent']} envoyé(s), {res['failed']} en échec")
+        except Exception as e:  # noqa: BLE001
+            print(f"[OUTBOX] tick en erreur (ignoré): {e}")
+            _record_err("email", "Tick de la file d'envoi en erreur", exc=e)
+        await asyncio.sleep(OUTBOX_TICK_SECONDS)

@@ -62,7 +62,16 @@ def _send_invite_email(to_email: str, partner_name: str, invite_url: str, role: 
     # Sujet + corps + coquille via la source unique (= aperçu admin fidèle).
     context = {"name": first, "role": role_label, "link": invite_url}
     subject, html, text = email_templates.build_email("invite", context)
-    return send_email(to_email, subject, html, text=text)
+    # Via la file : une invitation perdue sur un hoquet SMTP, c'est un partenaire
+    # qui n'arrive jamais et personne qui s'en aperçoit. La file réessaie et
+    # garde la trace, ce que l'envoi direct ne faisait ni l'un ni l'autre.
+    from services import email_outbox
+    row = email_outbox.enqueue(
+        to_email=to_email, to_name=partner_name or None,
+        subject=subject, html=html, text=text,
+        category="invitation", template_key="invite",
+    )
+    return (row is not None), None if row else "Dépôt en file impossible"
 
 
 @router.post("")

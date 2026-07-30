@@ -787,7 +787,16 @@ def _send_reset_email(to_email: str, reset_url: str) -> tuple[bool, Optional[str
     # Sujet + corps + coquille via la source unique (= aperçu admin fidèle).
     context = {"link": reset_url}
     subject, html, text = email_templates.build_email("password_reset", context)
-    return send_email(to_email, subject, html, text=text)
+    # Via la file : un échec SMTP transitoire perdait définitivement le lien, et
+    # l'utilisateur restait bloqué sans recours. La file réessaie, et l'envoyeur
+    # tourne toutes les 20 s — le délai reste sous le seuil de perception d'un
+    # « consultez votre boîte mail ».
+    from services import email_outbox
+    row = email_outbox.enqueue(
+        to_email=to_email, subject=subject, html=html, text=text,
+        category="password_reset", template_key="password_reset",
+    )
+    return (row is not None), None if row else "Dépôt en file impossible"
 
 
 @router.post("/forgot-password")

@@ -204,7 +204,9 @@ async def _check_db_ready() -> None:
 @app.on_event("startup")
 async def _startup():
     import asyncio
-    from services.scheduler import run_scheduler
+    from services.scheduler import run_scheduler, run_outbox
     # Contrôle DB en tâche de fond : ne retarde pas la disponibilité de /health.
     asyncio.create_task(_check_db_ready())
     asyncio.create_task(run_scheduler())
+    # Envoyeur d'emails — boucle séparée, cadence courte (cf. services/scheduler.py).
+    asyncio.create_task(run_outbox())

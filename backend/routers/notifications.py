@@ -472,12 +472,47 @@ async def notifications_feed(user: dict = Depends(get_current_user)):
 @router.get("/log")
 async def email_log(user: dict = Depends(require_staff), limit: int = 200):
     """Derniers envois d'emails aux partenaires, enrichis du titre d'AO et des noms."""
+    cap = min(max(limit, 1), 500)
+
+    # Deux sources : la file d'envoi (source de vérité depuis la migration 0015)
+    # et l'ancien journal, conservé pour l'historique antérieur. On normalise
+    # sur la forme historique pour ne pas casser l'écran.
+    rows: list[dict] = []
     try:
-        rows = supabase.table("partner_email_log").select("*").order(
+        for r in supabase.table("email_outbox").select("*").order(
             "created_at", desc=True
-        ).limit(min(max(limit, 1), 500)).execute().data or []
+        ).limit(cap).execute().data or []:
+            rows.append({
+                "id": r.get("id"),
+                "ao_id": r.get("ao_id"),
+                "recipient_id": r.get("recipient_id"),
+                "recipient_email": r.get("to_email"),
+                # Les campagnes AO sont catégorisées « ao_list_1 », « ao_relance »… :
+                # on retrouve le libellé attendu par l'écran.
+                "kind": (r.get("category") or "").replace("ao_", "", 1) or "manual",
+                "status": r.get("status"),
+                "attempts": r.get("attempts"),
+                "error": r.get("last_error"),
+                "sent_by": r.get("created_by"),
+                "created_at": r.get("created_at"),
+                "sent_at": r.get("sent_at"),
+                "subject": r.get("subject"),
+                "category": r.get("category"),
+            })
     except Exception:
+        pass  # table non migrée : on se rabat sur l'historique seul
+
+    try:
+        rows += supabase.table("partner_email_log").select("*").order(
+            "created_at", desc=True
+        ).limit(cap).execute().data or []
+    except Exception:
+        pass
+
+    if not rows:
         return {"logs": []}
+    rows.sort(key=lambda r: r.get("created_at") or "", reverse=True)
+    rows = rows[:cap]
 
     ao_ids = list({r["ao_id"] for r in rows if r.get("ao_id")})
     person_ids = list({

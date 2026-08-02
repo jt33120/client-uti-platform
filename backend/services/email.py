@@ -124,45 +124,123 @@ def render_email_html(
 
 
 
-def send_email(
+def config_error() -> Optional[str]:
+    """Message d'erreur si la configuration SMTP est incomplète, sinon None."""
+    if not settings.smtp_host:
+        return "SMTP_HOST non configuré"
+    if not settings.smtp_user or not settings.smtp_password:
+        return "Identifiants SMTP (SMTP_USER / SMTP_PASSWORD) non configurés"
+    return None
+
+
+def build_message(
     to_email: str,
     subject: str,
     html: str,
     text: Optional[str] = None,
     reply_to: Optional[str] = None,
-) -> tuple[bool, Optional[str]]:
-    """
-    Send a single HTML email via the configured SMTP server.
-
-    Returns ``(success, error_message)``. Never raises — the caller decides
-    whether a delivery failure is blocking.
-    """
-    if not settings.smtp_host:
-        return False, "SMTP_HOST non configuré"
-    if not settings.smtp_user or not settings.smtp_password:
-        return False, "Identifiants SMTP (SMTP_USER / SMTP_PASSWORD) non configurés"
-
+    to_name: Optional[str] = None,
+) -> EmailMessage:
+    """Construit le message MIME. Source unique, partagée par l'envoi direct et la file."""
     from_email = settings.smtp_from or settings.smtp_user
 
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = formataddr((settings.smtp_from_name, from_email))
-    msg["To"] = to_email
+    # Un destinataire nommé (« Marc Dupont <marc@…> ») plutôt qu'une adresse
+    # nue : mieux affiché par les clients mail, et légèrement mieux noté par les
+    # filtres anti-spam.
+    msg["To"] = formataddr((to_name, to_email)) if to_name else to_email
     if reply_to:
         msg["Reply-To"] = reply_to
 
     # Plain-text fallback first, then HTML as the preferred alternative.
     msg.set_content(text or "Cet email nécessite un client compatible HTML.")
     msg.add_alternative(html, subtype="html")
+    return msg
 
-    try:
+
+class SmtpSession:
+    """Connexion SMTP réutilisable sur tout un lot.
+
+    Envoyer N emails ouvrait jusqu'ici N connexions — connexion, STARTTLS et
+    authentification à chaque message. C'est lent, et les hébergeurs plafonnent
+    le nombre de connexions par heure : à volume, l'envoi se met à échouer sans
+    que rien n'ait changé dans le code.
+
+    La connexion est établie paresseusement (rien ne s'ouvre si le lot est vide)
+    et rouverte une fois si elle tombe en cours de route — ce qui arrive
+    normalement sur un lot long, le serveur fermant les sessions inactives.
+    """
+
+    def __init__(self) -> None:
+        self._server: Optional[smtplib.SMTP] = None
+
+    def __enter__(self) -> "SmtpSession":
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self.close()
+
+    def close(self) -> None:
+        if self._server is not None:
+            try:
+                self._server.quit()
+            except Exception:  # noqa: BLE001 - fermeture best-effort
+                pass
+            self._server = None
+
+    def _connect(self) -> None:
         context = ssl.create_default_context()
-        with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=15) as server:
-            server.starttls(context=context)
-            server.login(settings.smtp_user, settings.smtp_password)
-            server.send_message(msg)
-        return True, None
-    except smtplib.SMTPException as e:
-        return False, f"SMTP: {e}"
-    except Exception as e:
-        return False, str(e)
+        server = smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=15)
+        server.starttls(context=context)
+        server.login(settings.smtp_user, settings.smtp_password)
+        self._server = server
+
+    def send(self, msg: EmailMessage) -> tuple[bool, Optional[str]]:
+        """Envoie un message. Ne lève jamais ; renvoie ``(succès, erreur)``."""
+        for attempt in (1, 2):
+            try:
+                if self._server is None:
+                    self._connect()
+                self._server.send_message(msg)
+                return True, None
+            except (smtplib.SMTPServerDisconnected, smtplib.SMTPConnectError, OSError) as e:
+                # Connexion tombée : on la referme et on retente UNE fois avec
+                # une session neuve. Au-delà, c'est à l'appelant (la file) de
+                # replanifier — inutile d'insister dans la boucle d'envoi.
+                self.close()
+                if attempt == 2:
+                    return False, f"SMTP: {e}"
+            except smtplib.SMTPException as e:
+                return False, f"SMTP: {e}"
+            except Exception as e:  # noqa: BLE001
+                return False, str(e)
+        return False, "SMTP: échec inattendu"
+
+
+def send_email(
+    to_email: str,
+    subject: str,
+    html: str,
+    text: Optional[str] = None,
+    reply_to: Optional[str] = None,
+    to_name: Optional[str] = None,
+) -> tuple[bool, Optional[str]]:
+    """
+    Envoi direct et synchrone d'un email.
+
+    Renvoie ``(succès, erreur)`` et ne lève jamais.
+
+    ⚠️ Préférer `services.email_outbox.enqueue` dans tout code appelé depuis une
+    requête HTTP : l'envoi direct bloque la réponse le temps de la poignée de
+    main SMTP, et un échec transitoire est définitif. Cette fonction reste utile
+    pour l'envoi de test depuis l'écran d'administration, où l'on veut
+    précisément le retour immédiat du serveur.
+    """
+    err = config_error()
+    if err:
+        return False, err
+    msg = build_message(to_email, subject, html, text=text, reply_to=reply_to, to_name=to_name)
+    with SmtpSession() as session:
+        return session.send(msg)

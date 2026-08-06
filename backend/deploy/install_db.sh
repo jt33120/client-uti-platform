@@ -12,9 +12,13 @@
 #   * il n'active PAS le pare-feu : un « ufw enable » mal ordonné coupe la
 #     session SSH en cours et rend le VPS injoignable. Les commandes sont
 #     imprimées à la fin, à exécuter à la main, dans l'ordre ;
-#   * il ne change PAS SUPABASE_URL dans .env : basculer l'URL avant que
-#     l'authentification maison n'existe couperait la connexion des utilisateurs
-#     (routers/auth.py:370 et :485 appellent encore /auth/v1/…).
+#   * il ne TOUCHE PAS au .env tant que SUPABASE_URL désigne Supabase. L'URL et
+#     la clé forment un couple : la clé produite ici est signée par NOTRE
+#     secret, donc Supabase la rejette. Écrire l'une sans l'autre laisse une
+#     production qui fonctionne jusqu'au prochain redémarrage, puis tombe sans
+#     rapport apparent avec ce qui l'a causé. Les deux lignes changent ensemble,
+#     le jour de la bascule (BASCULE.md). La clé attend dans
+#     /etc/postgrest/service_key.txt.
 # =============================================================================
 set -euo pipefail
 
@@ -130,8 +134,14 @@ if dpkg -s "postgresql-${PG_VERSION}" >/dev/null 2>&1; then
   info "postgresql-${PG_VERSION} déjà installé"
 elif apt-cache show "postgresql-${PG_VERSION}" >/dev/null 2>&1; then
   info "postgresql-${PG_VERSION} disponible dans les dépôts de la distribution"
+  info "installation en cours (1 à 3 minutes) — la sortie d'apt suit"
   apt-get update -qq
-  apt-get install -y -qq "postgresql-${PG_VERSION}" "postgresql-client-${PG_VERSION}"
+  # -q et non -qq : c'est l'étape la PLUS LONGUE du script, et -qq la rendait
+  # totalement muette. Plusieurs minutes sans une ligne, pendant lesquelles on
+  # ne peut pas distinguer « ça travaille » de « c'est bloqué sur le verrou
+  # dpkg » — et l'attente pousse à interrompre, ce qui laisse justement dpkg à
+  # moitié configuré. Un peu de bruit vaut mieux qu'un doute.
+  apt-get install -y -q "postgresql-${PG_VERSION}" "postgresql-client-${PG_VERSION}"
 else
   alerte "postgresql-${PG_VERSION} absent des dépôts Ubuntu — ajout du dépôt PGDG"
   apt-get update -qq
@@ -147,7 +157,8 @@ Components: main
 Signed-By: /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
 EOF
   apt-get update -qq
-  apt-get install -y -qq "postgresql-${PG_VERSION}" "postgresql-client-${PG_VERSION}"
+  info "installation en cours (1 à 3 minutes) — la sortie d'apt suit"
+  apt-get install -y -q "postgresql-${PG_VERSION}" "postgresql-client-${PG_VERSION}"
 fi
 info "$(/usr/lib/postgresql/${PG_VERSION}/bin/pg_dump --version)"
 
@@ -463,21 +474,44 @@ KEY="$(cat "${KEY_FILE}")"
 
 ENV_FILE="${APP_DIR}/.env"
 if [ -f "${ENV_FILE}" ]; then
-  cp -a "${ENV_FILE}" "${ENV_FILE}.avant-$(date +%Y%m%d%H%M%S)"
-  # On remplace la CLÉ, pas l'URL : basculer SUPABASE_URL maintenant couperait
-  # la connexion des utilisateurs tant que l'authentification maison n'est pas
-  # déployée. L'URL se change à la bascule, en une seule ligne.
-  ( umask 077; grep -v '^SUPABASE_SERVICE_KEY=' "${ENV_FILE}" > "${ENV_FILE}.tmp"
-    echo "SUPABASE_SERVICE_KEY=${KEY}" >> "${ENV_FILE}.tmp" )
-  mv "${ENV_FILE}.tmp" "${ENV_FILE}"
-  chown "${APP_USER}:$(id -gn "${APP_USER}")" "${ENV_FILE}"; chmod 600 "${ENV_FILE}"
-  info "SUPABASE_SERVICE_KEY remplacée dans ${ENV_FILE} (sauvegarde .avant-*)"
+  # ── L'URL ET LA CLÉ CHANGENT ENSEMBLE, OU AUCUNE DES DEUX ───────────────
+  #
+  # Une version antérieure de ce script écrivait la nouvelle clé dans .env en
+  # laissant SUPABASE_URL pointer sur Supabase, au motif que « basculer l'URL
+  # maintenant couperait la connexion des utilisateurs ». C'était juste, et
+  # incomplet : la clé produite ici est signée par NOTRE secret, donc Supabase
+  # la rejette. Le couple (URL Supabase, clé locale) est aussi cassé que le
+  # couple inverse — simplement plus tard, car pydantic-settings lit le .env
+  # au démarrage. Le processus en cours continuait de tourner avec l'ancienne
+  # valeur en mémoire, et la plateforme ne tombait qu'au redémarrage suivant :
+  # un déploiement, un reboot, un `systemctl restart`. C'est-à-dire au pire
+  # moment, et sans rapport apparent avec ce qui l'avait causé.
+  #
+  # On n'écrit donc dans .env QUE si l'URL désigne déjà la façade locale, ce
+  # qui signifie que la bascule a eu lieu. Sinon on ne touche à rien et on dit
+  # quoi faire. Un script d'installation qui laisse la production dans un état
+  # qui ne se voit qu'au prochain redémarrage n'a pas rendu service.
+  URL_ACTUELLE="$(sed -n 's/^SUPABASE_URL=//p' "${ENV_FILE}" | head -1)"
+  if printf '%s' "${URL_ACTUELLE}" | grep -q "127.0.0.1:${REST_PORT}\|localhost:${REST_PORT}"; then
+    cp -a "${ENV_FILE}" "${ENV_FILE}.avant-$(date +%Y%m%d%H%M%S)"
+    ( umask 077; grep -v '^SUPABASE_SERVICE_KEY=' "${ENV_FILE}" > "${ENV_FILE}.tmp"
+      echo "SUPABASE_SERVICE_KEY=${KEY}" >> "${ENV_FILE}.tmp" )
+    mv "${ENV_FILE}.tmp" "${ENV_FILE}"
+    chown "${APP_USER}:$(id -gn "${APP_USER}")" "${ENV_FILE}"; chmod 600 "${ENV_FILE}"
+    info "SUPABASE_URL désigne déjà la façade locale → clé mise à jour (sauvegarde .avant-*)"
+  else
+    info ".env NON MODIFIÉ — la production pointe encore sur Supabase."
+    info "La clé attend dans ${KEY_FILE}. Au jour de la bascule, changer les DEUX"
+    info "lignes en même temps (voir BASCULE.md) :"
+    info "    SUPABASE_URL=http://127.0.0.1:${REST_PORT}"
+    info "    SUPABASE_SERVICE_KEY=\$(sudo cat ${KEY_FILE})"
+  fi
   # Les deux secrets HS256 de la machine ne doivent JAMAIS coïncider : le jeton
   # de session que le backend délivre à chaque utilisateur contient déjà une
-  # revendication « role » (routers/auth.py:75-83). Secrets identiques = le
-  # navigateur de n'importe quel utilisateur détient un jeton valide pour
-  # PostgREST, et il suffirait qu'un rôle SQL porte le même nom qu'un rôle
-  # applicatif pour transformer cela en accès SQL direct.
+  # revendication « role » (routers/auth.py). Secrets identiques = le navigateur
+  # de n'importe quel utilisateur détient un jeton valide pour PostgREST, et il
+  # suffirait qu'un rôle SQL porte le même nom qu'un rôle applicatif pour
+  # transformer cela en accès SQL direct.
   APP_JWT="$(sed -n 's/^JWT_SECRET=//p' "${ENV_FILE}" | head -1)"
   [ "${APP_JWT}" = "$(cat "${PGRST_ETC}/jwt.secret")" ] &&
     alerte "DANGER : JWT_SECRET est IDENTIQUE au secret PostgREST. En changer un."

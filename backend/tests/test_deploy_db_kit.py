@@ -197,3 +197,61 @@ def test_secret_trop_court_refuse(tmp_path):
     fichier.write_text("trop-court", encoding="utf-8")
     with pytest.raises(SystemExit):
         module.read_secret(fichier)
+
+
+# ── Ajouté après un incident réel ───────────────────────────────────────────
+
+def test_le_script_ne_touche_pas_au_env_dune_prod_encore_sur_supabase():
+    """L'URL et la clé forment un couple : jamais l'une sans l'autre.
+
+    CE QUI S'EST PASSÉ. Une version antérieure écrivait la nouvelle clé de
+    service dans le .env de production en laissant SUPABASE_URL pointer sur
+    Supabase, au motif — juste mais incomplet — que basculer l'URL couperait la
+    connexion des utilisateurs. Or la clé produite ici est signée par NOTRE
+    secret : Supabase la rejette. Le couple (URL Supabase, clé locale) est aussi
+    cassé que l'inverse.
+
+    Et il l'est SILENCIEUSEMENT : pydantic-settings lit le .env au démarrage,
+    donc le processus en cours continuait de tourner avec l'ancienne valeur en
+    mémoire. La plateforme ne serait tombée qu'au redémarrage suivant — un
+    déploiement, un reboot — c'est-à-dire au pire moment et sans lien apparent
+    avec l'installation faite des heures plus tôt.
+
+    Le script doit donc vérifier que l'URL désigne DÉJÀ la façade locale avant
+    d'écrire quoi que ce soit.
+    """
+    src = INSTALL.read_text(encoding="utf-8")
+    code = "\n".join(l for l in src.splitlines() if not l.lstrip().startswith("#"))
+
+    ecrit = [l for l in code.splitlines() if "SUPABASE_SERVICE_KEY=${KEY}" in l]
+    assert ecrit, "Le script n'écrit plus la clé nulle part — vérifier ce test."
+
+    assert "URL_ACTUELLE" in code, (
+        "Le script n'inspecte plus SUPABASE_URL avant d'écrire dans .env. Il "
+        "peut donc de nouveau laisser une production dans un état qui ne se "
+        "voit qu'au prochain redémarrage."
+    )
+    garde = re.search(
+        r'if printf .*URL_ACTUELLE.*grep -q "127\.0\.0\.1:\$\{REST_PORT\}', code
+    )
+    assert garde, (
+        "La garde qui vérifie que l'URL désigne la façade locale a disparu ou "
+        "changé de forme."
+    )
+
+
+def test_letape_la_plus_longue_nest_pas_muette():
+    """apt en -qq sur plusieurs minutes pousse à interrompre l'installation.
+
+    Et une interruption pendant `apt-get install` laisse dpkg à moitié
+    configuré, ce qui coûte bien plus cher que le bruit qu'on économisait.
+    """
+    src = INSTALL.read_text(encoding="utf-8")
+    installs = [l for l in src.splitlines()
+                if "apt-get install" in l and "postgresql-${PG_VERSION}" in l
+                and not l.lstrip().startswith("#")]
+    assert installs, "Plus aucune installation de PostgreSQL dans le script."
+    for ligne in installs:
+        assert "-qq" not in ligne, (
+            f"L'installation de PostgreSQL est repassée en -qq : {ligne.strip()}"
+        )

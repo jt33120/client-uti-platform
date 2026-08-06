@@ -30,7 +30,7 @@ maintenir. Sur une machine tenue par une seule personne, c'est décisif.
 ## 0. Mesurer la machine AVANT toute décision (rien n'est modifié)
 
 ```bash
-ssh julian.talou@164.132.44.212
+ssh -p 1622 julian.talou@164.132.44.212
 
 # Les trois mesures qui déterminent tous les réglages :
 nproc

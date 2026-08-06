@@ -196,14 +196,86 @@ erreurs=$(journalctl -u uti-backend --since "-1 h" --no-pager 2>/dev/null | grep
 
 titre "6. Sauvegarde"
 
-dernier=$(find "$BACKUP_DIR" -name 'uti-*.pgcustom' -mmin -1560 2>/dev/null | sort | tail -1)
+# Ce bloc contrôle les TROIS conditions posées pour supprimer le projet
+# Supabase. Elles ne sont pas interchangeables et aucune ne suffit seule :
+# une sauvegarde locale non chiffrée hors-site, ou hors-site jamais restaurée,
+# ne remplit pas le contrat — elle rassure, ce qui est pire.
+
+# — Condition 0 : elle tourne, et elle a RÉUSSI. Le marqueur .dernier_succes est
+#   écrit à la toute dernière ligne de backup_db.sh : une exécution interrompue
+#   laisse un .pgcustom tout frais mais PAS ce fichier-là.
+if [ -f "$BACKUP_DIR/.dernier_succes" ]; then
+  age_min=$(( ( $(date -u +%s) - $(stat -c%Y "$BACKUP_DIR/.dernier_succes") ) / 60 ))
+  [ "$age_min" -le 180 ] \
+    && ok "dernière sauvegarde RÉUSSIE il y a $age_min min — $(cat "$BACKUP_DIR/.dernier_succes")" \
+    || ko "aucune sauvegarde réussie depuis $((age_min/60)) h — systemctl list-timers uti-backup.timer"
+else
+  ko "aucune sauvegarde n'a jamais RÉUSSI ($BACKUP_DIR/.dernier_succes absent) — systemctl start uti-backup"
+fi
+
+dernier=$(find "$BACKUP_DIR" -name 'uti-*.pgcustom' -mmin -180 2>/dev/null | sort | tail -1)
 if [ -n "$dernier" ]; then
   taille=$(stat -c%s "$dernier")
   [ "$taille" -gt 100000 ] \
-    && ok "sauvegarde de moins de 26 h : $(basename "$dernier") ($((taille/1024)) Ko)" \
-    || ko "la dernière sauvegarde ne fait que $taille octets — dump vide ?"
+    && ok "archive locale récente : $(basename "$dernier") ($((taille/1024)) Ko)" \
+    || ko "la dernière archive ne fait que $taille octets — dump vide ?"
 else
-  ko "aucune sauvegarde de moins de 26 h dans $BACKUP_DIR — systemctl status uti-backup.timer"
+  ko "aucune archive de moins de 3 h dans $BACKUP_DIR — la sauvegarde est horaire"
+fi
+
+# — Condition 1 : elle vit HORS du VPS. Sans ce contrôle, on validerait un
+#   dispositif qu'un seul `rm -rf` (ou un rançongiciel) annule intégralement.
+if [ -f /etc/uti-backup.env ]; then
+  # shellcheck disable=SC1091  # fichier de secrets, absent du dépôt par construction
+  set -a; . /etc/uti-backup.env; set +a
+  recent=$(BACKEND_DIR="$BACKEND" "$BACKEND/venv/bin/python" "$BACKEND/deploy/s3_backup.py" lister "uti/" 2>/dev/null | tail -1)
+  [ -n "$recent" ] \
+    && ok "dépôt hors-site alimenté — dernier objet : $recent" \
+    || ko "le conteneur hors-site est VIDE ou injoignable : les sauvegardes ne survivraient pas au VPS"
+
+  # — Le piège central : la clé posée sur le VPS ne doit PAS pouvoir effacer.
+  #   Une politique qu'on n'a pas essayé de violer n'est qu'une intention.
+  BACKEND_DIR="$BACKEND" "$BACKEND/venv/bin/python" - <<'PY'
+import os, sys, boto3
+from botocore.exceptions import ClientError
+c = boto3.client("s3", endpoint_url=os.environ["BACKUP_S3_ENDPOINT"],
+                 region_name=os.environ.get("BACKUP_S3_REGION", "sbg"),
+                 aws_access_key_id=os.environ["BACKUP_S3_ACCESS_KEY"],
+                 aws_secret_access_key=os.environ["BACKUP_S3_SECRET_KEY"])
+b, k = os.environ["BACKUP_S3_BUCKET"], "uti/_essai_suppression"
+try:
+    c.put_object(Bucket=b, Key=k, Body=b"x")
+except ClientError as e:
+    sys.exit(f"dépôt refusé ({e.response['Error']['Code']}) : la sauvegarde ne peut plus écrire")
+try:
+    c.delete_object(Bucket=b, Key=k)
+except ClientError:
+    sys.exit(0)          # refusé = c'est le but
+sys.exit("SUPPRESSION ACCEPTÉE : la clé du VPS peut effacer l'historique")
+PY
+  [ $? -eq 0 ] \
+    && ok "la clé S3 du VPS ne peut PAS supprimer (politique + verrou d'objet actifs)" \
+    || ko "la clé S3 du VPS PEUT supprimer — une compromission détruirait tout. Voir deploy/backup_s3_policy.README.md"
+else
+  ko "/etc/uti-backup.env absent : aucun dépôt hors-site configuré — bash deploy/setup_backup_offsite.sh"
+fi
+
+# — Condition 2 : le chiffrement. Les archives contiennent des CV et les secrets
+#   TOTP en clair de profiles.mfa_secret ; elles partent chez un tiers.
+grep -q '^Environment=AGE_RECIPIENT=age1' /etc/systemd/system/uti-backup.service 2>/dev/null \
+  && ! grep -qi 'REMPLACER' /etc/systemd/system/uti-backup.service \
+  && ok "chiffrement age actif (clé publique renseignée dans l'unité)" \
+  || ko "AGE_RECIPIENT absent ou encore à sa valeur gabarit : les archives partiraient EN CLAIR (backup_db.sh refuse, donc rien ne part)"
+
+# — Condition 3 : une restauration a été faite POUR DE VRAI, et récemment.
+#   C'est la seule qui transforme un fichier en sauvegarde.
+if [ -f "$BACKUP_DIR/.derniere_repetition" ]; then
+  age_j=$(( ( $(date -u +%s) - $(stat -c%Y "$BACKUP_DIR/.derniere_repetition") ) / 86400 ))
+  [ "$age_j" -le 10 ] \
+    && ok "restauration ÉPROUVÉE il y a $age_j j — $(cat "$BACKUP_DIR/.derniere_repetition")" \
+    || ko "aucune restauration éprouvée depuis $age_j jours — bash $BACKEND/deploy/restore_drill.sh"
+else
+  ko "AUCUNE restauration n'a jamais été éprouvée. Tant que ce point est rouge, on possède un fichier et une croyance, pas une sauvegarde — bash $BACKEND/deploy/restore_drill.sh"
 fi
 
 printf '\n'

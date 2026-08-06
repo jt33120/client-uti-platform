@@ -1,4 +1,4 @@
-# Sauvegarde quotidienne de la base « uti ». Déclenchée par uti-backup.timer.
+# Sauvegarde de la base « uti ». Déclenchée par uti-backup.timer.
 #
 #   sudo cp ~/app/backend/deploy/uti-backup.{service,timer} /etc/systemd/system/
 #   sudo systemctl daemon-reload
@@ -6,11 +6,14 @@
 #   sudo systemctl start uti-backup          # première exécution, tout de suite
 #   journalctl -u uti-backup -n 20 --no-pager
 [Unit]
-Description=Sauvegarde quotidienne de la base UTI
+Description=Sauvegarde chiffrée et hors-site de la base UTI
 # La base doit être debout : sans cette dépendance, un déclenchement au reboot
 # produirait un échec (et donc une alerte) purement dû à l'ordre de démarrage.
-After=postgresql.service
+After=postgresql.service network-online.target
 Requires=postgresql.service
+# Le dépôt hors-site a besoin du réseau. Sans Wants=, After= seul ne garantit
+# rien : network-online.target n'est pas tiré par défaut.
+Wants=network-online.target
 
 [Service]
 Type=oneshot
@@ -22,7 +25,33 @@ Environment=BACKEND_DIR=/home/julian.talou/app/backend
 Environment=BACKUP_DIR=/var/backups/uti
 # PostgreSQL 18 : le binaire de la distribution n'est pas toujours en tête du PATH.
 Environment=PATH=/usr/lib/postgresql/18/bin:/usr/local/bin:/usr/bin:/bin
+
+# Clé PUBLIQUE age. Ce n'est PAS un secret — c'est même tout l'intérêt : elle
+# peut rester ici en clair, et cette machine ne peut RIEN déchiffrer avec elle.
+# Remplacer par la sortie de `age-keygen` (ligne « public key: »).
+Environment=AGE_RECIPIENT=age1REMPLACER_PAR_LA_CLE_PUBLIQUE_PRODUITE_PAR_setup_backup_offsite.sh
+
+# Secrets : conteneur hors-site + URL du chien de garde. Fichier séparé, en 600,
+# hors du dépôt git. Ne JAMAIS mettre ces valeurs dans ce fichier-ci : les unités
+# systemd sont lisibles par tous (`systemctl cat`), le fichier d'environnement non.
+#   BACKUP_S3_ENDPOINT=https://s3.sbg.io.cloud.ovh.net
+#   BACKUP_S3_REGION=sbg
+#   BACKUP_S3_BUCKET=uti-sauvegardes
+#   BACKUP_S3_ACCESS_KEY=…      ← utilisateur DÉDIÉ, sans droit de suppression
+#   BACKUP_S3_SECRET_KEY=…
+#   HEALTHCHECK_URL=https://hc-ping.com/<uuid-de-la-sonde-sauvegarde>
+EnvironmentFile=/etc/uti-backup.env
+
 ExecStart=/usr/local/bin/uti-backup
-# Un dump de 16 Mo prend quelques secondes ; au-delà de 10 min, quelque chose
-# est bloqué et il vaut mieux échouer (donc alerter) que rester suspendu.
+# Un dump de 16 Mo prend quelques secondes ; le chiffrement et l'envoi hors-site
+# quelques dizaines. Au-delà de 10 min, quelque chose est bloqué et il vaut mieux
+# échouer (donc alerter) que rester suspendu — un service « en cours » depuis
+# trois jours ne déclenche aucune alarme, contrairement à un service en échec.
 TimeoutStartSec=600
+
+# Durcissement : ce service lit la base et écrit dans /var/backups. Rien d'autre.
+# ProtectHome=false est OBLIGATOIRE — le venv et le .env vivent dans /home.
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=full
+ReadWritePaths=/var/backups/uti

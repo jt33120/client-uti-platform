@@ -1,0 +1,41 @@
+# Répétition HEBDOMADAIRE de restauration. Déclenchée par uti-restore-drill.timer.
+#
+#   sudo install -m 750 -o julian.talou -g julian.talou \
+#        ~/app/backend/deploy/restore_drill.sh /usr/local/bin/uti-restore-drill
+#   sudo cp ~/app/backend/deploy/uti-restore-drill.{service,timer} /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now uti-restore-drill.timer
+#   sudo systemctl start uti-restore-drill    # première répétition, tout de suite
+[Unit]
+Description=Répétition de restauration de la base UTI dans une base jetable
+After=postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=oneshot
+User=julian.talou
+Group=julian.talou
+Environment=BACKEND_DIR=/home/julian.talou/app/backend
+Environment=BACKUP_DIR=/var/backups/uti
+Environment=PATH=/usr/lib/postgresql/18/bin:/usr/local/bin:/usr/bin:/bin
+# Sonde DISTINCTE de celle de la sauvegarde : « la sauvegarde tourne » et « la
+# sauvegarde est restaurable » sont deux affirmations différentes, et confondre
+# leurs signaux ferait qu'une répétition morte serait masquée par des dumps qui
+# continuent d'arriver.
+#   HEALTHCHECK_URL=https://hc-ping.com/<uuid-de-la-sonde-repetition>
+EnvironmentFile=/etc/uti-restore-drill.env
+
+# AUCUN --hors-site ici, et c'est délibéré : ce mode exige la clé PRIVÉE age.
+# La poser sur le VPS pour automatiser la répétition annulerait la seule
+# propriété qui rend les archives sûres chez un tiers — que cette machine ne
+# sache pas les relire. La répétition hors-site est donc MANUELLE, trimestrielle,
+# depuis un poste qui détient la clé (RUNBOOK.md §10.4).
+ExecStart=/usr/local/bin/uti-restore-drill
+
+# Créer une base, y rejouer 16 Mo, compter 22 tables : quelques dizaines de
+# secondes. 20 min laissent une marge très large avant de conclure au blocage.
+TimeoutStartSec=1200
+
+PrivateTmp=false
+NoNewPrivileges=true
+ProtectSystem=full
+ReadWritePaths=/var/backups/uti

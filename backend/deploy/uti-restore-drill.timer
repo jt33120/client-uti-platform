@@ -1,0 +1,15 @@
+[Unit]
+Description=Déclenche la répétition hebdomadaire de restauration UTI
+
+[Timer]
+# Lundi 04:15 UTC : après la sauvegarde de 03:xx (l'archive du jour existe donc
+# déjà), et avant le début de journée — si la répétition crie, Julian le lit au
+# réveil et a la journée pour agir, plutôt que de le découvrir un vendredi soir.
+OnCalendar=Mon *-*-* 04:15:00
+RandomizedDelaySec=600
+# Un VPS éteint le lundi ne doit pas faire sauter la répétition de la semaine :
+# c'est justement après un incident qu'on veut vérifier que le filet tient.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

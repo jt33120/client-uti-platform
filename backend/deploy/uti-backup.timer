@@ -1,10 +1,16 @@
 [Unit]
-Description=Déclenche la sauvegarde quotidienne de la base UTI
+Description=Déclenche la sauvegarde horaire de la base UTI
 
 [Timer]
-# 03:30, hors des heures d'usage. RandomizedDelaySec évite de tomber exactement
-# à la même seconde que d'autres tâches système.
-OnCalendar=*-*-* 03:30:00
+# HORAIRE, et non quotidien. C'est le choix de conception central : à 16 Mo, un
+# dump complet prend deux secondes et pèse ~2 Mo chiffré. La fréquence coûte donc
+# presque rien, et elle achète exactement ce que le PITR de Supabase facturait
+# 100 $/mois : la réduction de la perte maximale. Quotidien = jusqu'à 24 h
+# perdues. Horaire = jusqu'à 1 h. (Le PITR, lui, descend à la seconde ; ce qu'on
+# n'a pas et ce qu'on assume : voir backup_db.sh, « POURQUOI pg_dump ».)
+OnCalendar=hourly
+# Décale de 0 à 5 min : évite de tomber à la même seconde que les autres tâches
+# système, et surtout d'écraser une exécution précédente encore en cours.
 RandomizedDelaySec=300
 # Rattrape l'exécution manquée si le VPS était éteint à l'heure dite. Sans ça,
 # un reboot nocturne fait sauter une sauvegarde en silence — et le trou ne se

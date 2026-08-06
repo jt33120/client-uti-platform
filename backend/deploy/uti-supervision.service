@@ -1,0 +1,36 @@
+# Supervision minimale (disque, PostgreSQL, PostgREST, âge des sauvegardes).
+#
+#   sudo install -m 750 -o julian.talou -g julian.talou \
+#        ~/app/backend/deploy/supervision.sh /usr/local/bin/uti-supervision
+#   sudo install -d -m 750 -o julian.talou -g julian.talou /var/lib/uti-supervision
+#   sudo cp ~/app/backend/deploy/uti-supervision.{service,timer} /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now uti-supervision.timer
+[Unit]
+Description=Supervision de la plateforme UTI
+After=postgresql.service network-online.target
+
+[Service]
+Type=oneshot
+User=julian.talou
+Group=julian.talou
+Environment=BACKEND_DIR=/home/julian.talou/app/backend
+Environment=BACKUP_DIR=/var/backups/uti
+Environment=ETAT_DIR=/var/lib/uti-supervision
+Environment=PATH=/usr/lib/postgresql/18/bin:/usr/local/bin:/usr/bin:/bin
+# Troisième sonde distincte : celle-ci est le chien de garde de dernier recours.
+# Elle n'est pingée QUE si tous les contrôles sont verts, donc son silence
+# couvre à la fois « le VPS est mort », « la supervision est morte » et « une
+# anomalie dure ». C'est la seule alerte qui survive à la mort de la machine.
+#   HEALTHCHECK_URL=https://hc-ping.com/<uuid-de-la-sonde-supervision>
+EnvironmentFile=/etc/uti-supervision.env
+
+ExecStart=/usr/local/bin/uti-supervision
+# Ce service ÉCHOUE volontairement (exit 1) dès qu'une anomalie est détectée :
+# `systemctl list-units --failed` devient ainsi un tableau de bord, et l'unité
+# en échec reste visible même si l'e-mail n'est jamais parti.
+TimeoutStartSec=120
+SuccessExitStatus=0
+
+NoNewPrivileges=true
+ProtectSystem=full
+ReadWritePaths=/var/lib/uti-supervision /var/backups/uti

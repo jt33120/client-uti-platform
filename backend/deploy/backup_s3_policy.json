@@ -1,0 +1,27 @@
+{
+  "Statement": [
+    {
+      "Sid": "DeposerEtRelireLesSauvegardes",
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject",
+        "s3:GetObject"
+      ],
+      "Resource": [
+        "arn:aws:s3:::NOM_DU_CONTENEUR/uti/*"
+      ]
+    },
+    {
+      "Sid": "ListerPourRetrouverLaDerniereArchive",
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListBucket",
+        "s3:GetBucketLocation"
+      ],
+      "Resource": [
+        "arn:aws:s3:::NOM_DU_CONTENEUR"
+      ]
+    }
+  ]
+}
+

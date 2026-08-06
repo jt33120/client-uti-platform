@@ -152,7 +152,7 @@ le même silence :**
 Contrôle de présence, à rejouer autant de fois qu'on veut :
 
 ```bash
-psql -d uti -f ~/app/backend/migrations/verify_seed.sql
+cd ~/app/backend/migrations && sudo -u postgres psql -d uti < verify_seed.sql
 ```
 
 ---
@@ -186,7 +186,7 @@ se paie un lundi matin.
 | 09:22 | `sudo systemctl start uti-backend` | **Fin de l'indisponibilité technique (22 min).** `journalctl -u uti-backend -n 30 \| grep STARTUP` → « connexion Supabase OK » (le message garde son nom, c'est la base locale qui répond) | restaurer `.env` + `systemctl restart` → **60 secondes**, Supabase intact |
 | 09:25 | `bash scripts/post_bascule_check.sh` | Tous les contrôles verts. Un seul rouge = on ne continue pas | idem 09:22 |
 | 09:30 | `python scripts/bootstrap_admin.py` puis connexion + enrôlement MFA | Le premier admin se connecte. `profiles.mfa_required` vaut `true` par défaut (`schema.sql`) : l'enrôlement TOTP est obligatoire, pour les 11 comptes | idem |
-| 09:45 | `psql -d uti -f migrations/verify_seed.sql` puis l'`UPDATE ai_budget` du §3 | Aucune ligne MANQUANT ni INERTE | `UPDATE` inverse |
+| 09:45 | `sudo -u postgres psql -d uti < migrations/verify_seed.sql` puis l'`UPDATE ai_budget` du §3 | Aucune ligne MANQUANT ni INERTE | `UPDATE` inverse |
 | 10:00 | Ressaisie du référentiel : clients, partenaires, `partner_clients` (**les tiers**) | `select count(*) from partner_clients` > 0, sinon les campagnes partiront à zéro destinataire | Retour possible, mais la saisie est perdue : l'exporter d'abord (`\copy` des 3 tables) |
 | 11:30 | Invitations aux 10 autres comptes, **avec les mêmes UUID** que dans `auth_users.csv` | Chacun reçoit son e-mail (< 40 s, `OUTBOX_TICK_SECONDS=20`) | idem |
 | 12:00 → 17:00 | Check-list fonctionnelle du §5, les 14 contrôles | 14/14 | idem |

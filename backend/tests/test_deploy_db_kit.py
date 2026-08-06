@@ -255,3 +255,49 @@ def test_letape_la_plus_longue_nest_pas_muette():
         assert "-qq" not in ligne, (
             f"L'installation de PostgreSQL est repassée en -qq : {ligne.strip()}"
         )
+
+
+def test_les_regles_ufw_visent_le_port_ssh_reel():
+    """Jamais le profil « OpenSSH », qui vaut 22.
+
+    CE QUI S'EST PASSÉ. Le script imprimait `sudo ufw allow OpenSSH`. Sur ce VPS
+    sshd écoute sur 1622 : la commande a ouvert un port où rien n'écoute et
+    laissé le vrai fermé, avec une politique par défaut « deny ».
+
+    Le piège est que RIEN NE SE VOIT sur le moment. ufw laisse passer les
+    connexions déjà ÉTABLIES, donc la session en cours continue de fonctionner et
+    valide faussement l'opération. C'est à la reconnexion suivante qu'on découvre
+    qu'on est dehors — et comme ufw JETTE les paquets au lieu de les rejeter, le
+    ssh reste suspendu sans message : on soupçonne le réseau bien avant le
+    pare-feu. Sur un VPS distant dont on n'a pas la console, ça se paie en accès
+    perdu.
+
+    Le script doit donc LIRE les ports d'écoute de sshd, pas les supposer.
+    """
+    src = INSTALL.read_text(encoding="utf-8")
+    code = "\n".join(l for l in src.splitlines() if not l.lstrip().startswith("#"))
+
+    assert "ufw allow OpenSSH" not in code, (
+        "Le script imprime de nouveau `ufw allow OpenSSH`, qui ouvre le port 22 "
+        "quel que soit le port réellement en écoute."
+    )
+    assert "SSH_PORTS" in code, (
+        "Le script ne détecte plus le port SSH : il ne peut donc que le supposer."
+    )
+    assert re.search(r"ss -ltnp.*sshd", code), (
+        "La détection par `ss -ltnp` sur sshd a disparu."
+    )
+    assert "sshd_config" in code, (
+        "Le repli par lecture de sshd_config a disparu — `ss` peut manquer sur "
+        "une image minimale, et supposer 22 est précisément le défaut à éviter."
+    )
+
+
+def test_le_script_avertit_que_la_session_en_cours_ne_prouve_rien():
+    """Le garde-fou humain, sans lequel la règle technique ne suffit pas."""
+    src = INSTALL.read_text(encoding="utf-8")
+    assert "SECONDE CONNEXION" in src, (
+        "L'avertissement qui dit d'ouvrir une seconde connexion AVANT de fermer "
+        "l'actuelle a disparu. Sans lui, une règle fausse est validée par une "
+        "session qui survivait de toute façon."
+    )

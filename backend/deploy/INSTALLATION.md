@@ -15,6 +15,20 @@ Compter environ **3 heures**, en une seule séance.
 | Façade | nginx sur `127.0.0.1:8080`, chemin `/rest/v1/` |
 | Exposition | **aucune** — rien n'écoute sur une interface publique |
 
+> **Combinaison éprouvée.** PostgreSQL **18.4** + PostgREST **14.16** +
+> `supabase-py` **2.9.0** : `scripts/verify_postgrest.py` passe **15 cas sur 15**
+> sur le VPS, sur le schéma réel (6 août 2026). Les 367 requêtes `.table()` du
+> backend n'ont pas à changer.
+>
+> Ce n'était pas acquis : la compatibilité avait d'abord été prouvée sur
+> PostgreSQL 16, et le message d'erreur de `.single()` avait déjà changé entre
+> PostgREST 12 et 14. Le point à surveiller lors d'une future montée de version
+> reste le même — `routers/auth.py`, `routers/aos.py` et
+> `services/email_outbox.py` décident en LISANT le texte des erreurs
+> PostgreSQL (`23505`, `42703`, `violates foreign key`). Relancer
+> `verify_postgrest.py` après toute montée de version majeure : c'est
+> exactement ce qu'il vérifie.
+
 PostgreSQL 18 plutôt que 17 : `pg_dump` refuse de sauvegarder un serveur plus
 récent que lui, donc le client installé ici doit être au moins en 17 pour
 pouvoir archiver Supabase (17.6) avant sa fermeture. La 18 satisfait cette

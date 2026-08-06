@@ -1,0 +1,16 @@
+[Unit]
+Description=Déclenche la supervision UTI toutes les 15 minutes
+
+[Timer]
+# 15 minutes : assez fin pour voir un disque se remplir avant qu'il ne soit
+# plein, assez lâche pour que le chien de garde externe (grâce de 30 min) ne
+# crie pas sur un simple reboot. L'anti-répétition de supervision.sh (RAPPEL_MIN)
+# fait que cette fréquence ne se traduit PAS en fréquence d'e-mails.
+OnCalendar=*:0/15
+RandomizedDelaySec=60
+# Pas de Persistent : rattraper des contrôles d'état passés n'a aucun sens —
+# c'est l'état MAINTENANT qui compte, et le suivant arrive dans 15 minutes.
+Persistent=false
+
+[Install]
+WantedBy=timers.target

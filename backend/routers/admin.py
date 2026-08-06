@@ -11,6 +11,7 @@ from typing import Literal, Optional
 import httpx
 
 from services.supabase_client import supabase
+from services import credentials
 from services.app_settings import (
     get_notification_settings, set_notification_settings,
     get_ai_budget_settings, set_ai_budget_settings,
@@ -701,25 +702,25 @@ async def update_account(account_id: str, body: AccountUpdate, user: dict = Depe
     if not profile_update:
         raise HTTPException(status_code=422, detail="Aucune modification fournie.")
 
-    # Propagate an email change to the Supabase Auth user first.
+    # Propager le changement d'adresse à l'adresse de CONNEXION d'abord : c'est
+    # elle que /auth/login interroge. La contrainte UNIQUE sur
+    # user_credentials.email est ce qui refuse une adresse déjà prise (23505),
+    # exactement comme GoTrue le faisait auparavant.
+    ancien_email = None
     if body.email is not None:
         try:
-            with httpx.Client(timeout=10) as client:
-                resp = client.put(
-                    f"{settings.supabase_url}/auth/v1/admin/users/{account_id}",
-                    headers={
-                        "apikey": settings.supabase_service_key,
-                        "Authorization": f"Bearer {settings.supabase_service_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json={"email": body.email, "email_confirm": True},
-                )
-            if resp.status_code >= 400:
-                raise HTTPException(status_code=400, detail="Impossible de mettre à jour l'email (déjà utilisé ?).")
+            existant = credentials.by_user_id(account_id)
+            if existant is None:
+                raise HTTPException(status_code=404, detail="Compte introuvable")
+            ancien_email = existant["email"]
+            credentials.set_email(account_id, body.email)
         except HTTPException:
             raise
-        except Exception:
-            raise HTTPException(status_code=502, detail="Service d'authentification indisponible.")
+        except Exception as e:  # noqa: BLE001
+            if "23505" in str(e) or "duplicate key" in str(e).lower():
+                raise HTTPException(status_code=409, detail="Cette adresse email est déjà utilisée par un autre compte.")
+            print(f"[ADMIN] changement d'email de connexion impossible pour {account_id}: {e}")
+            raise HTTPException(status_code=500, detail="Impossible de mettre à jour l'email.")
 
     try:
         updated = supabase.table("profiles").update(profile_update).eq("id", account_id).execute()
@@ -732,25 +733,32 @@ async def update_account(account_id: str, body: AccountUpdate, user: dict = Depe
         updated = supabase.table("profiles").update(profile_update).eq("id", account_id).execute()
 
     if not updated.data:
+        # Le profil n'existe pas alors que l'adresse de connexion vient d'être
+        # changée : on la remet, sinon le compte garderait une adresse de
+        # connexion que plus rien n'affiche.
+        if ancien_email:
+            try:
+                credentials.set_email(account_id, ancien_email)
+            except Exception as revert_err:  # noqa: BLE001
+                print(f"[ADMIN] retour arrière de l'email impossible pour {account_id}: {revert_err}")
         raise HTTPException(status_code=404, detail="Compte introuvable")
     return updated.data[0]
 
 
 @router.delete("/accounts/{account_id}")
 async def delete_account(account_id: str, user: dict = Depends(require_admin)):
-    """Permanently delete any account (profile + Supabase Auth user)."""
+    """Supprime définitivement un compte (profil + identifiants de connexion).
+
+    Un seul DELETE suffit désormais : `user_credentials.user_id` référence
+    `profiles(id) ON DELETE CASCADE` (migration 0018), donc la ligne
+    d'identifiants part avec le profil. Il n'y a plus d'utilisateur GoTrue à
+    supprimer dans un second appel — et donc plus de risque qu'il survive au
+    profil parce que l'appel HTTP a échoué en silence.
+    """
     if account_id == user["sub"]:
         raise HTTPException(status_code=400, detail="Vous ne pouvez pas supprimer votre propre compte.")
     try:
         supabase.table("profiles").delete().eq("id", account_id).execute()
-        with httpx.Client(timeout=10) as client:
-            client.delete(
-                f"{settings.supabase_url}/auth/v1/admin/users/{account_id}",
-                headers={
-                    "apikey": settings.supabase_service_key,
-                    "Authorization": f"Bearer {settings.supabase_service_key}",
-                },
-            )
         return {"message": "Compte supprimé"}
     except Exception:
         # Détail loggé côté serveur ; réponse 500 générique (handler global).

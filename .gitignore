@@ -16,6 +16,14 @@ package-lock.json
 .DS_Store
 *.log
 
+# Artefacts de paquets Python. Ajouté après qu'un `pip install` lancé depuis la
+# racine y a laissé 27 wheels (3,8 Mo), ramassés par un `git add -A`. Un dépôt
+# ne versionne pas ses dépendances binaires : requirements.txt les décrit.
+*.whl
+*.tar.gz
+*.egg-info/
+build/
+
 # OpenClaw agent context — must never be committed (autonomous-updater guardrail)
 ProjectMemory/
 

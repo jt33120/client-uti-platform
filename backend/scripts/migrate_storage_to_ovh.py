@@ -2,11 +2,15 @@
 """
 Migration des fichiers existants : Supabase Storage → OVH Object Storage (S3).
 
-Copie tous les objets des buckets Supabase ``cvs`` et ``avatars`` vers le
-bucket OVH (en conservant l'arborescence sous les préfixes ``cvs/`` et
-``avatars/``), puis — avec ``--rewrite-db`` — met à jour les URLs stockées en
-base (``submissions.cv_url`` et ``profiles.avatar_url``) pour qu'elles pointent
+Copie tous les objets des CINQ buckets logiques vers le bucket OVH, en
+conservant l'arborescence sous un préfixe par bucket, puis — avec
+``--rewrite-db`` — met à jour les URLs stockées en base
+(``submissions.cv_url`` et ``profiles.avatar_url``) pour qu'elles pointent
 vers OVH.
+
+⚠️ ORDRE : ce script réécrit la base ENCORE SUPABASE. Il doit donc tourner
+AVANT la bascule de ``SUPABASE_URL`` vers le VPS. Lancé après, il réécrirait la
+base neuve — vide — et les CV existants deviendraient introuvables.
 
 ⚠️  À LIRE AVANT DE LANCER :
   - Lance d'abord en simulation : `python scripts/migrate_storage_to_ovh.py --dry-run`
@@ -36,19 +40,26 @@ except ImportError:
 from config import settings  # noqa: E402
 from services.supabase_client import supabase  # noqa: E402
 
-#: Buckets logiques à copier. « ao-sources » manquait : les fichiers sources des
-#: appels d'offres (5 objets en production) seraient restés sur Supabase, et les
-#: liens vers eux auraient cessé de fonctionner le jour où l'on ferme le projet.
-BUCKETS = ["cvs", "avatars", "ao-sources"]
+from services.storage import PUBLIC_BUCKETS  # noqa: E402
 
-#: Buckets qui doivent rester PRIVÉS sur S3. La règle vient du code d'exécution
-#: (services/storage.py:78, « CVs stay private on S3 too — no public-read ACL »)
-#: et elle est reprise ici parce que ce script écrivait, lui, en public-read sans
-#: distinction : une seule exécution aurait rendu les 32 CV lisibles par
-#: quiconque connaît l'URL. Un CV, c'est un nom, un téléphone, un parcours —
-#: exactement ce qu'on ne publie pas. Les deux endroits qui posent une ACL
-#: doivent suivre la même règle, sinon la plus permissive gagne en silence.
-PRIVATE_BUCKETS = {"cvs"}
+#: Les CINQ buckets logiques du code, et pas trois. Deux sont créés à la demande
+#: et se voient donc mal :
+#:   * « compliance »   — routers/partners.py:273, attestations de vigilance
+#:                        URSSAF et KBIS des partenaires ;
+#:   * « email-assets » — routers/email_templates.py:21, images des modèles.
+#: Oubliés, leurs objets resteraient sur Supabase et leurs liens mourraient le
+#: jour de la fermeture du projet — c'est-à-dire APRÈS la bascule, quand plus
+#: personne ne regarde.
+BUCKETS = ["cvs", "avatars", "ao-sources", "compliance", "email-assets"]
+
+#: La règle d'ACL n'est PAS redéfinie ici : elle est IMPORTÉE de
+#: services/storage.py, qui l'applique à l'exécution.
+#:
+#: C'est la correction de fond. Ce script portait sa propre copie de la règle, et
+#: les deux ont divergé : le code d'exécution gardait les CV privés, le script
+#: écrivait « public-read » sur tout. Chacun des deux fichiers était cohérent
+#: avec lui-même — c'est précisément pour ça que l'écart ne se voyait pas.
+#: Une seule source de vérité, et la question ne peut plus se poser.
 
 
 def _s3():
@@ -86,7 +97,7 @@ def migrate_files(dry_run: bool) -> int:
         print(f"\n[{bucket}] {len(paths)} objet(s) à migrer")
         for path in paths:
             key = f"{bucket}/{path}"
-            prive = bucket in PRIVATE_BUCKETS
+            prive = bucket not in PUBLIC_BUCKETS
             if dry_run:
                 print(f"  DRY-RUN copierait → {key}  [{'privé' if prive else 'public'}]")
                 continue

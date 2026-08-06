@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import api from '../lib/api'
 import { useAuth } from '../contexts/AuthContext'
 import { Eye, EyeOff, CheckCircle, ArrowLeft } from 'lucide-react'
@@ -8,7 +8,8 @@ import AuthBrand from '../components/AuthBrand'
 export default function ResetPasswordPage() {
   const navigate = useNavigate()
   const { logout } = useAuth()
-  const [accessToken, setAccessToken] = useState('')
+  const [searchParams] = useSearchParams()
+  const [token, setToken] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
@@ -18,28 +19,34 @@ export default function ResetPasswordPage() {
   const [done, setDone] = useState(false)
   const [error, setError] = useState('')
 
-  // Supabase sends the recovery token in the URL hash:
-  // /reset-password#access_token=XXX&refresh_token=YYY&type=recovery
+  // Le lien envoyé par email porte un jeton OPAQUE en query string :
+  //   /reset-password?token=XXXX
+  // Auparavant Supabase le posait dans le FRAGMENT (#access_token=…&type=recovery)
+  // et cette page le décodait en base64 pour en extraire l'email. Le backend ne
+  // voyait alors jamais le jeton : il ne pouvait ni le limiter à un seul usage,
+  // ni le révoquer. Le nouveau jeton ne se décode pas — c'est 256 bits de hasard
+  // dont seule l'empreinte SHA-256 existe en base.
   useEffect(() => {
     logout() // clear any stale session so we don't land as the wrong user
-    const hash = window.location.hash.substring(1)
-    const params = new URLSearchParams(hash)
-    const token = params.get('access_token')
-    const type = params.get('type')
-    if (token && type === 'recovery') {
-      setAccessToken(token)
-      // Pré-remplir l'email depuis le JWT de récupération (pour que le
-      // gestionnaire de mots de passe associe le nouveau mdp au bon compte).
-      // Décodé localement : le backend /auth/me ne peut pas valider un token
-      // Supabase (clé de signature différente), et le sonder renverrait un 401
-      // qui rebondirait l'utilisateur vers /login.
-      try {
-        const payload = JSON.parse(atob(token.split('.')[1]))
-        setEmail(payload.email || '')
-      } catch { /* pré-remplissage best-effort */ }
-    } else {
-      setError("Lien de réinitialisation invalide. Veuillez refaire une demande.")
+    const recu = searchParams.get('token')
+    if (!recu) {
+      setError('Lien de réinitialisation invalide. Veuillez refaire une demande.')
+      return
     }
+    setToken(recu)
+    // Le jeton sort de la barre d'adresse dès qu'il est en mémoire : sans ça il
+    // resterait dans l'historique du navigateur et partirait en en-tête Referer
+    // vers toute ressource tierce chargée par la page.
+    window.history.replaceState({}, '', '/reset-password')
+    // L'email ne peut plus être lu dans le jeton : on le demande au serveur.
+    // Il ne sert qu'à alimenter le champ « username » masqué, pour que le
+    // trousseau du navigateur rattache le nouveau mot de passe au bon compte.
+    api.post('/auth/reset-password/verify', { token: recu })
+      .then(res => setEmail(res.data.email || ''))
+      .catch(err => {
+        setToken('')
+        setError(err.response?.data?.detail || 'Lien de réinitialisation invalide ou expiré.')
+      })
   }, [])
 
   const handleSubmit = async (e) => {
@@ -51,7 +58,7 @@ export default function ResetPasswordPage() {
     setError('')
     setLoading(true)
     try {
-      await api.post('/auth/reset-password', { access_token: accessToken, new_password: password })
+      await api.post('/auth/reset-password', { token, new_password: password })
       setDone(true)
       setTimeout(() => { logout(); navigate('/login') }, 3000)
     } catch (err) {
@@ -105,7 +112,7 @@ export default function ResetPasswordPage() {
                   required
                   minLength={8}
                   autoFocus
-                  disabled={!accessToken}
+                  disabled={!token}
                 />
                 <button
                   type="button"
@@ -130,7 +137,7 @@ export default function ResetPasswordPage() {
                   onChange={e => setConfirmPassword(e.target.value)}
                   required
                   minLength={8}
-                  disabled={!accessToken}
+                  disabled={!token}
                 />
                 <button
                   type="button"
@@ -153,7 +160,7 @@ export default function ResetPasswordPage() {
 
             <button
               type="submit"
-              disabled={loading || !accessToken}
+              disabled={loading || !token}
               className="btn-primary w-full justify-center !h-10"
             >
               {loading ? 'Enregistrement...' : 'Mettre à jour le mot de passe'}

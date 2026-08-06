@@ -1,0 +1,199 @@
+"""
+Garde-fous du kit de déploiement PostgreSQL + PostgREST.
+
+Ces règles ne se voient dans aucun fichier pris isolément, et se paient très
+cher : une ligne manquante dans un fichier de configuration expose la base
+entière à Internet, une autre fait tomber toutes les requêtes en 401 sans
+message exploitable. Les vérifier ici coûte une seconde de CI ; les découvrir en
+production coûte une soirée — et pour la première, une fuite de données.
+
+Le test de signature, lui, est fonctionnel : il vérifie que le JWT fabriqué à la
+main par make_service_key.py (bibliothèque standard uniquement, pour tourner
+avant que le venv n'existe) est bien celui qu'une implémentation de référence
+produirait.
+"""
+import importlib.util
+import pathlib
+import re
+
+import pytest
+
+BACKEND = pathlib.Path(__file__).resolve().parents[1]
+DEPLOY = BACKEND / "deploy"
+INSTALL = DEPLOY / "install_db.sh"
+ROLES = DEPLOY / "roles_postgrest.sql"
+NGINX = DEPLOY / "nginx-postgrest.conf"
+UNIT = DEPLOY / "postgrest.service"
+MAKE_KEY = BACKEND / "scripts" / "make_service_key.py"
+
+
+def _charger_make_key():
+    """Importe le script par chemin : il vit dans scripts/, pas dans un paquet."""
+    spec = importlib.util.spec_from_file_location("make_service_key", MAKE_KEY)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+# ── PostgREST : les deux réglages dont l'absence est catastrophique ─────────
+
+def test_postgrest_ecoute_uniquement_en_local():
+    """Sans `server-host`, PostgREST écoute sur 0.0.0.0 (défaut « !4 »).
+
+    Le service tourne avec un rôle qui contourne la RLS : sur un VPS sans
+    pare-feu, l'oubli de cette ligne publie la base entière sur Internet.
+    """
+    conf = INSTALL.read_text(encoding="utf-8")
+    assert 'server-host = "127.0.0.1"' in conf, (
+        "install_db.sh ne fixe plus server-host : PostgREST écouterait sur "
+        "toutes les interfaces du VPS."
+    )
+
+
+def test_aucun_role_anonyme_configure():
+    """`db-anon-role` non défini = 401 sur toute requête sans jeton.
+
+    Le frontend Vercel ne parle jamais à la base (aucune dépendance @supabase/*),
+    donc aucun accès anonyme n'a de raison d'exister. Définir ce réglage
+    ouvrirait un chemin de lecture sans jeton.
+    """
+    lignes = [
+        ligne for ligne in INSTALL.read_text(encoding="utf-8").splitlines()
+        if re.match(r'^\s*db-anon-role\s*=', ligne)
+    ]
+    assert not lignes, f"db-anon-role est défini dans install_db.sh : {lignes}"
+
+
+def test_binaire_postgrest_verifie_par_empreinte():
+    """Le binaire est lancé en service permanent : il doit être vérifié."""
+    conf = INSTALL.read_text(encoding="utf-8")
+    assert re.search(r'PGRST_SHA256="[0-9a-f]{64}"', conf), (
+        "L'empreinte SHA-256 du binaire PostgREST a disparu de install_db.sh."
+    )
+    assert "sha256sum -c" in conf, "L'empreinte n'est plus vérifiée au téléchargement."
+
+
+# ── nginx : la façade qui traduit /rest/v1/ ────────────────────────────────
+
+def test_facade_nginx_est_locale_et_reecrit_le_chemin():
+    """supabase-py appelle {SUPABASE_URL}/rest/v1/<table>.
+
+    La barre oblique finale de proxy_pass est ce qui retire le préfixe : sans
+    elle PostgREST reçoit /rest/v1/consultants et cherche une table « rest ».
+    Et l'adresse d'écoute doit être explicite, sinon nginx prend toutes les
+    interfaces.
+    """
+    conf = NGINX.read_text(encoding="utf-8")
+    assert re.search(r"^\s*listen\s+127\.0\.0\.1:\d+;", conf, re.M), (
+        "Le bloc nginx n'écoute plus explicitement sur 127.0.0.1."
+    )
+    assert re.search(r"location\s+/rest/v1/\s*\{", conf), "location /rest/v1/ absent."
+    assert re.search(r"proxy_pass\s+http://127\.0\.0\.1:\d+/;", conf), (
+        "proxy_pass a perdu sa barre oblique finale : le préfixe /rest/v1 ne "
+        "serait plus retiré."
+    )
+    assert "proxy_intercept_errors off" in conf, (
+        "Sans cette ligne, une page d'erreur nginx remplacerait le JSON de "
+        "PostgREST, que le backend lit pour reconnaître PGRST116 ou 23505."
+    )
+
+
+# ── Rôles PostgreSQL ───────────────────────────────────────────────────────
+
+def test_service_role_contourne_la_rls_et_authenticator_non():
+    """Les 22 tables ont la RLS activée sans aucune policy : sans BYPASSRLS,
+    service_role ne verrait AUCUNE ligne, quels que soient les GRANT."""
+    sql = ROLES.read_text(encoding="utf-8").lower()
+    assert "alter role service_role bypassrls" in sql
+    assert "alter role authenticator noinherit nobypassrls" in sql, (
+        "authenticator doit rester sans privilège propre : c'est le SET ROLE "
+        "commandé par le jeton qui décide, pas l'union des rôles hérités."
+    )
+
+
+def test_privileges_par_defaut_pour_les_futures_tables():
+    """Un GRANT ... ON ALL TABLES ne couvre que l'existant.
+
+    Sans ALTER DEFAULT PRIVILEGES, la première table créée par une migration
+    répondrait 403 « permission denied » sur cette seule table, longtemps après
+    le déploiement.
+    """
+    sql = ROLES.read_text(encoding="utf-8").lower()
+    assert "alter default privileges for role" in sql
+    assert "grant all privileges on tables to service_role" in sql
+
+
+def test_les_roles_ne_sont_pas_dans_les_migrations():
+    """scripts/check_schema_drift.py rejoue backend/migrations/0*.sql sur une
+    base jetable (check_schema_drift.py:103). Les rôles sont des objets de
+    CLUSTER : y placer ce fichier ferait modifier par un simple contrôle de
+    dérive des rôles partagés avec la production."""
+    for fichier in (BACKEND / "migrations").glob("0*.sql"):
+        contenu = fichier.read_text(encoding="utf-8").lower()
+        assert "create role" not in contenu, f"{fichier.name} crée un rôle de cluster."
+        assert "bypassrls" not in contenu, f"{fichier.name} touche à BYPASSRLS."
+
+
+# ── Unité systemd ──────────────────────────────────────────────────────────
+
+def test_unite_postgrest_recharge_sans_se_tuer():
+    """PostgREST ne gère PAS SIGHUP : le signal par défaut le TUE. ExecReload
+    doit donc envoyer SIGUSR2 (rechargement de configuration)."""
+    unit = UNIT.read_text(encoding="utf-8")
+    assert "ExecReload=/bin/kill -USR2 $MAINPID" in unit
+    assert "User=postgrest" in unit, "Le service ne doit jamais tourner en root."
+    assert "ProtectHome=true" in unit, (
+        "PostgREST n'a rien à lire dans /home — ni le .env du backend, ni les CV."
+    )
+
+
+# ── Signature de la clé de service ─────────────────────────────────────────
+
+SECRET = "0" * 64  # 64 caractères : au-dessus du minimum HS256 de 32 octets
+
+
+def test_jwt_maison_identique_a_une_implementation_de_reference():
+    """La signature HS256 écrite en bibliothèque standard doit être exacte.
+
+    make_service_key.py n'utilise ni PyJWT ni python-jose parce qu'il tourne
+    pendant l'installation du VPS, avant l'existence du venv. En contrepartie,
+    sa correction se prouve ici, contre python-jose (déjà dans requirements.txt).
+    """
+    jose_jwt = pytest.importorskip("jose.jwt")
+    module = _charger_make_key()
+    charge = {"role": "service_role", "iat": 1_700_000_000}
+
+    jeton = module.sign_hs256(charge, SECRET)
+    assert jose_jwt.decode(jeton, SECRET, algorithms=["HS256"]) == charge
+
+
+def test_cle_produite_acceptee_par_la_validation_de_supabase_py():
+    """supabase-py refuse à la construction toute clé qui n'a pas la forme d'un
+    JWT (supabase/_sync/client.py:60-64). Une clé invalide empêcherait le
+    backend de démarrer, avec un message sans rapport avec ce script."""
+    module = _charger_make_key()
+    jeton = module.sign_hs256({"role": "service_role"}, SECRET)
+    assert module.SUPABASE_KEY_RE.match(jeton)
+
+
+def test_secret_lu_sans_le_saut_de_ligne(tmp_path):
+    """PostgREST retire les blancs de fin des secrets chargés par « @fichier ».
+
+    Signer avec le contenu brut d'un fichier produit par « openssl rand -hex 32 >»
+    donnerait une clé rejetée en 401, sans autre indice.
+    """
+    module = _charger_make_key()
+    fichier = tmp_path / "jwt.secret"
+    fichier.write_text(SECRET + "\n", encoding="utf-8")
+    assert module.read_secret(fichier) == SECRET
+
+
+def test_secret_trop_court_refuse(tmp_path):
+    """En dessous de 32 octets, PostgREST répond 401 « JWSInvalidSignature » à
+    TOUTES les requêtes — un symptôme qui n'évoque en rien la longueur du
+    secret. Mieux vaut échouer ici, avec un message clair."""
+    module = _charger_make_key()
+    fichier = tmp_path / "jwt.secret"
+    fichier.write_text("trop-court", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        module.read_secret(fichier)

@@ -20,3 +20,9 @@ pydantic-settings==2.5.2
 pydantic[email]
 pyotp==2.9.0
 qrcode==7.4.2
+# Hachage des mots de passe de l'authentification maison (services/passwords.py),
+# qui remplace Supabase Auth. Argon2id plutôt que bcrypt : bcrypt tronque
+# silencieusement au-delà de 72 octets et son coût est purement CPU, donc
+# parallélisable sur carte graphique. Argon2id impose un coût MÉMOIRE — 10 000
+# essais simultanés exigent 190 Gio de RAM aux paramètres retenus.
+argon2-cffi==23.1.0

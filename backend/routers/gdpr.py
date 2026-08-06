@@ -14,13 +14,11 @@ object storage (which no SQL cascade can reach).
 Admin only. The PR opening this is the review gate — Julian merges manually.
 """
 from fastapi import APIRouter, HTTPException, Depends
-import httpx
 
 from services.supabase_client import supabase
-from services import storage
+from services import credentials, storage
 from services.cv_parser import guess_extension
 from routers.auth import require_admin
-from config import settings
 
 router = APIRouter(prefix="/users", tags=["rgpd"])
 
@@ -134,27 +132,19 @@ async def gdpr_erase_user(user_id: str, user: dict = Depends(require_admin)):
         sup += _safe_delete("support_messages", "from_email", user_email)
     counts["support_messages"] = sup
 
-    # 6. The profile itself, then the Supabase Auth user (same call as
-    #    admin.delete_account).
+    # 6. Les identifiants de connexion, PUIS le profil.
+    #
+    #    L'ordre est délibéré alors que `user_credentials.user_id` référence
+    #    `profiles(id) ON DELETE CASCADE` : la cascade suffirait à effacer la
+    #    ligne, mais elle n'en RENDRAIT PAS COMPTE. Un effacement au titre de
+    #    l'article 17 doit pouvoir être justifié table par table ; « supprimé
+    #    par cascade » n'est pas un décompte. On supprime donc explicitement,
+    #    et la cascade reste le filet si cette suppression échoue.
+    counts["user_credentials"] = credentials.delete(user_id)
     counts["profiles"] = _safe_delete("profiles", "id", user_id)
-
-    auth_deleted = False
-    try:
-        with httpx.Client(timeout=10) as client:
-            r = client.delete(
-                f"{settings.supabase_url}/auth/v1/admin/users/{user_id}",
-                headers={
-                    "apikey": settings.supabase_service_key,
-                    "Authorization": f"Bearer {settings.supabase_service_key}",
-                },
-            )
-            auth_deleted = r.status_code in (200, 204)
-    except Exception:
-        pass
 
     return {
         "message": "Effacement RGPD effectué",
         "user_id": user_id,
-        "auth_user_deleted": auth_deleted,
         "deleted": counts,
     }

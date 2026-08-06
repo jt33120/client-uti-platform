@@ -8,8 +8,6 @@ from typing import Optional, Literal
 from services.supabase_client import supabase
 from services import storage, partner_compliance
 from routers.auth import get_current_user, require_admin, require_staff
-from config import settings
-import httpx
 
 router = APIRouter(prefix="/partners", tags=["partners"])
 
@@ -239,21 +237,19 @@ async def update_partner(partner_id: str, body: PartnerUpdate, user: dict = Depe
 @router.delete("/{partner_id}")
 async def delete_partner(partner_id: str, user: dict = Depends(require_admin)):
     """
-    Permanently delete a partner: removes their profile row (which cascades
-    to partner_clients) and their Supabase Auth account.
+    Supprime définitivement un partenaire : la suppression du profil entraîne en
+    cascade `partner_clients` (clé étrangère historique) ET `user_credentials`
+    (migration 0018). Il n'y a plus d'utilisateur GoTrue à supprimer à part.
+
+    Le filtre `.eq("role", "ao")` protège l'endpoint contre un identifiant de
+    compte interne : il ne supprime que des partenaires. Comme l'ancien appel
+    GoTrue, lui, ne filtrait rien, un identifiant d'administrateur passé ici
+    laissait le profil intact mais détruisait son compte d'authentification —
+    le compte devenait inutilisable sans que rien ne le signale. Ce n'est plus
+    possible : il n'y a qu'une seule suppression, et elle est filtrée.
     """
     try:
-        # Delete profile row — partner_clients FK cascades automatically
         supabase.table("profiles").delete().eq("id", partner_id).eq("role", "ao").execute()
-        # Delete Supabase Auth user via direct HTTP (bypasses gotrue-py header bug)
-        with httpx.Client(timeout=10) as client:
-            client.delete(
-                f"{settings.supabase_url}/auth/v1/admin/users/{partner_id}",
-                headers={
-                    "apikey": settings.supabase_service_key,
-                    "Authorization": f"Bearer {settings.supabase_service_key}",
-                },
-            )
         return {"message": "Partenaire supprimé"}
     except HTTPException:
         raise

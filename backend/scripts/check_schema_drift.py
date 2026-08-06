@@ -96,12 +96,25 @@ def _with_dbname(dsn: str, dbname: str) -> str:
     return urlunsplit(parts._replace(path="/" + dbname))
 
 
+SCHEMA = REPO / "backend" / "migrations" / "schema.sql"
+
+
 def sql_files() -> list[Path]:
-    """Le SQL versionné, dans l'ordre où il doit être rejoué."""
-    files = [REPO / "supabase_schema.sql"]
-    files += sorted(REPO.glob("supabase_migration_*.sql"))
-    files += sorted((REPO / "backend" / "migrations").glob("0*.sql"))
-    return [f for f in files if f.exists()]
+    """Le SQL à rejouer pour reconstruire le schéma.
+
+    Depuis la consolidation, c'est UN fichier. Auparavant il fallait rejouer
+    ~46 fichiers dans un ordre que personne n'avait écrit, puis recommencer une
+    seconde fois pour rattraper les dépendances que l'ordre alphabétique
+    inversait — deux migrations altèrent `ao_consultant_state`, créée par un
+    fichier situé plus loin dans l'alphabet. Une reconstruction qui a besoin
+    d'être jouée deux fois pour être juste n'est pas une reconstruction fiable.
+
+    Les anciens fichiers restent dans le dépôt pour l'historique ; ils ne sont
+    plus la source de vérité et ne sont plus rejoués ici.
+    """
+    if not SCHEMA.exists():
+        sys.exit(f"Fichier de schéma introuvable : {SCHEMA}")
+    return [SCHEMA]
 
 
 def rebuild(scratch_dsn: str, dbname: str) -> set[str]:
@@ -113,30 +126,23 @@ def rebuild(scratch_dsn: str, dbname: str) -> set[str]:
     if base.returncode != 0:
         sys.exit(f"Base jetable injoignable : {base.stderr.strip()}")
 
-    run = lambda dsn, *a: subprocess.run(["psql", dsn, "-v", "ON_ERROR_STOP=0", "-q", *a],
+    run = lambda dsn, *a: subprocess.run(["psql", dsn, "-q", *a],
                                          capture_output=True, text=True)
     run(scratch_dsn, "-c", f'drop database if exists "{dbname}"')
     run(scratch_dsn, "-c", f'create database "{dbname}"')
     target = _with_dbname(scratch_dsn, dbname)
 
-    # Le schéma `auth` de Supabase n'existe pas sur un Postgres nu, et
-    # public.profiles y fait référence par clé étrangère. On le reconstitue au
-    # minimum : le but est de valider le schéma APPLICATIF, pas de rejouer
-    # GoTrue. (Après migration vers une auth maison, cette table sera à nous.)
-    for stmt in (
-        "create extension if not exists pgcrypto",
-        "create extension if not exists pg_trgm",
-        "create schema if not exists auth",
-        "create table if not exists auth.users (id uuid primary key, email text, "
-        "encrypted_password text, created_at timestamptz default now())",
-    ):
-        run(target, "-c", stmt)
-
+    # ON_ERROR_STOP=1, désormais : schema.sql est censé passer intégralement.
+    # Auparavant on tolérait les erreurs — c'était nécessaire (les fichiers
+    # référençaient auth.users et storage.buckets, absents d'un Postgres nu),
+    # mais ça masquait aussi les vraies. Une erreur ici doit maintenant faire
+    # échouer bruyamment : un schéma qui ne se rejoue pas d'un bloc n'est pas
+    # une sauvegarde de la structure, c'est une illusion de sauvegarde.
     for path in sql_files():
-        run(target, "-f", str(path))
-    # 2e passe : rattrape les dépendances que l'ordre alphabétique a inversées.
-    for path in sorted(REPO.glob("supabase_migration_*.sql")):
-        run(target, "-f", str(path))
+        res = subprocess.run(["psql", target, "-v", "ON_ERROR_STOP=1", "-q", "-f", str(path)],
+                             capture_output=True, text=True)
+        if res.returncode != 0:
+            sys.exit(f"Échec du rejeu de {path.name} :\n{res.stderr.strip()}")
 
     cols = subprocess.run(["psql", target, "-tAc", COLS_SQL], capture_output=True, text=True)
     return {l.strip() for l in cols.stdout.splitlines() if l.strip()}

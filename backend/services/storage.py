@@ -14,6 +14,28 @@ from typing import Optional
 from config import settings
 from services.supabase_client import supabase
 
+#: Buckets dont les objets sont lus DIRECTEMENT par le navigateur, donc rendus
+#: publics sur S3 : l'avatar s'affiche dans une balise <img>, et les images des
+#: modèles d'e-mails doivent se charger dans le client de messagerie du
+#: destinataire — une URL signée y serait périmée avant d'être ouverte.
+#:
+#: Tout le reste est PRIVÉ et ne s'ouvre que par URL signée ou côté serveur.
+#:
+#: Cette liste remplace un test `bucket == "cvs"` qui ne protégeait que les CV et
+#: laissait passer en lecture publique deux catégories de fichiers que le code
+#: traite pourtant comme privées :
+#:   * les pièces jointes d'appel d'offres — routers/aos.py crée le bucket avec
+#:     public=False et les sert par URL signée ;
+#:   * les documents de conformité des partenaires — c'est-à-dire des
+#:     attestations de vigilance URSSAF et des KBIS.
+#:
+#: Sur Supabase, la politique du bucket les protégeait. Sur S3, c'est l'ACL de
+#: l'objet qui décide, et elle disait « public-read ».
+#:
+#: Liste BLANCHE, et c'est le point : un bucket ajouté demain naît privé. Avec
+#: l'ancien test, il naissait public.
+PUBLIC_BUCKETS = {"avatars", "email-assets"}
+
 _s3_client = None
 
 
@@ -75,8 +97,7 @@ def get_public_url(bucket: str, path: str) -> str:
 def upload(bucket: str, path: str, content: bytes, content_type: str) -> str:
     """Upload bytes and return the object's public URL (or path for private buckets)."""
     if _use_s3():
-        # CVs stay private on S3 too — no public-read ACL.
-        extra = {} if bucket == "cvs" else {"ACL": "public-read"}
+        extra = {"ACL": "public-read"} if bucket in PUBLIC_BUCKETS else {}
         _s3().put_object(
             Bucket=settings.s3_bucket,
             Key=f"{bucket}/{path}",

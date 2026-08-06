@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, EmailStr
 from typing import Optional
 from jose import jwt, JWTError
@@ -9,12 +10,13 @@ from services import storage
 from services.email import send_email, render_email_html
 from services import email_templates
 from services.client_ip import public_client_ip
+from services import credentials, passwords
 from config import settings
 import io
 import base64
 import time
 import traceback
-import httpx
+import uuid
 import pyotp
 import qrcode
 import qrcode.image.svg
@@ -251,56 +253,46 @@ def is_staff(user: dict) -> bool:
     return user.get("role") in ("admin", "commerce")
 
 
-def _parse_supabase_error(error_msg: str) -> tuple[int, str]:
+def _parse_db_error(error_msg: str) -> tuple[int, str]:
     """
-    Map raw Supabase / GoTrue error strings to human-readable French messages.
-    Returns (http_status_code, user_facing_message).
-    """
-    msg = error_msg.lower()
+    Traduit une erreur PostgREST/PostgreSQL en (code HTTP, message utilisateur).
 
-    # ── Auth errors ───────────────────────────────────────────────
-    if "user already registered" in msg or "already been registered" in msg or "already exists" in msg:
+    Avant la migration, cette fonction décodait des messages GoTrue (« User
+    already registered », « Signups not allowed », et une aide qui renvoyait vers
+    le tableau de bord Supabase). Ces chaînes n'existent plus : la création de
+    compte ne fait plus qu'insérer deux lignes, donc les seules erreurs possibles
+    sont celles de la base — contrainte violée, table absente, base injoignable.
+    """
+    msg = (error_msg or "").lower()
+
+    # 23505 = unique_violation. PostgREST renvoie le code ET le libellé
+    # « duplicate key value violates unique constraint » ; on teste les deux
+    # formes pour ne pas dépendre du format d'un message d'erreur.
+    if "23505" in msg or "duplicate key" in msg or "violates unique constraint" in msg:
         return 409, "Un compte existe déjà avec cet email."
 
-    if "password should be at least" in msg or "password is too short" in msg:
-        return 422, "Le mot de passe est trop court (minimum 8 caractères)."
+    # 23503 = foreign_key_violation : la ligne d'identifiants référence un profil
+    # qui n'existe pas (ou plus). Anomalie interne, pas une faute de l'appelant.
+    if "23503" in msg or "violates foreign key" in msg:
+        return 500, "Erreur de cohérence en base : le profil n'a pas pu être rattaché."
 
-    if "unable to validate email address" in msg or "invalid email" in msg:
-        return 422, "L'adresse email semble invalide."
-
-    if "email rate limit exceeded" in msg or "too many requests" in msg or "rate limit" in msg:
-        return 429, "Trop de tentatives. Veuillez patienter quelques minutes avant de réessayer."
-
-    if "user not allowed" in msg or "signups not allowed" in msg or "signup is disabled" in msg:
-        return 403, (
-            "Les inscriptions sont désactivées sur ce projet Supabase. "
-            "Activez-les dans : Supabase Dashboard → Authentication → Providers → Email → "
-            "cochez « Enable Email provider » et désactivez « Confirm email » pour le POC."
-        )
-
-    if "email not confirmed" in msg:
-        return 403, "Email non confirmé. Vérifiez votre boîte mail ou désactivez la confirmation email dans Supabase."
-
-    if "invalid api key" in msg or "apikey" in msg:
-        return 500, "Clé API Supabase invalide : vérifiez SUPABASE_SERVICE_KEY dans votre .env."
+    if "23514" in msg or "violates check constraint" in msg:
+        return 422, "Valeur refusée par la base (email ou rôle invalide)."
 
     if "relation" in msg and "does not exist" in msg:
-        return 500, "La table 'profiles' n'existe pas en base. Avez-vous exécuté supabase_schema.sql ?"
+        return 500, (
+            "Table absente en base. Appliquez les migrations "
+            "(backend/migrations/) avant de créer des comptes."
+        )
 
-    if "violates foreign key" in msg:
-        return 500, "Erreur de contrainte base de données : l'utilisateur Auth n'a pas été créé avant le profil."
-
-    if "violates unique constraint" in msg:
-        return 409, "Un compte existe déjà avec cet email."
-
-    if "permission denied" in msg or "not authorized" in msg:
-        return 403, "Permission refusée par Supabase. Vérifiez que vous utilisez la clé service_role (pas la clé anon)."
+    if "permission denied" in msg or "42501" in msg:
+        return 500, "Permission refusée par la base : vérifiez le rôle utilisé par PostgREST."
 
     if "connection" in msg or "timeout" in msg or "could not connect" in msg:
-        return 503, "Impossible de joindre Supabase. Vérifiez votre SUPABASE_URL et votre connexion réseau."
+        return 503, "Base de données injoignable. Réessayez dans un instant."
 
-    # ── Fallback — generic to the client; the raw message stays in logs ──
-    print(f"[AUTH] unmapped registration error: {error_msg}")
+    # ── Repli — générique côté client ; le message brut reste dans les journaux ──
+    print(f"[AUTH] erreur base non cartographiée: {error_msg}")
     return 400, "Inscription impossible pour le moment. Réessayez ou contactez le support."
 
 
@@ -355,56 +347,24 @@ async def register(body: RegisterRequest, request: Request):
     if body.role not in VALID_ROLES:
         raise HTTPException(status_code=400, detail="Rôle invalide. Utilisez 'admin', 'commerce' ou 'ao'.")
 
-    if len(body.password) < 8:
-        raise HTTPException(status_code=422, detail="Le mot de passe doit contenir au moins 8 caractères.")
+    try:
+        passwords.check_password(body.password)
+    except passwords.PasswordRejected as e:
+        raise HTTPException(status_code=422, detail=str(e))
 
     if len(body.name.strip()) < 2:
         raise HTTPException(status_code=422, detail="Le nom doit contenir au moins 2 caractères.")
 
-    # ── Step 1: Create Supabase Auth user ─────────────────────────
-    # Using direct HTTP instead of supabase.auth.admin to ensure the
-    # service_role key is sent in BOTH the apikey and Authorization headers,
-    # which some versions of gotrue-py fail to do correctly.
-    try:
-        with httpx.Client(timeout=15) as client:
-            resp = client.post(
-                f"{settings.supabase_url}/auth/v1/admin/users",
-                headers={
-                    "apikey": settings.supabase_service_key,
-                    "Authorization": f"Bearer {settings.supabase_service_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "email": body.email,
-                    "password": body.password,
-                    "email_confirm": True,
-                },
-            )
-        if resp.status_code >= 400:
-            raw_error = resp.text
-            print(f"[AUTH] create_user HTTP {resp.status_code}: {raw_error}")
-            status, detail = _parse_supabase_error(raw_error)
-            raise HTTPException(status_code=status, detail=detail)
-        user_data = resp.json()
-    except HTTPException:
-        raise
-    except Exception as e:
-        tb = traceback.format_exc()
-        raw_error = str(e)
-        print(f"[AUTH] create_user failed — raw error: {raw_error}\n{tb}")
-        status, detail = _parse_supabase_error(raw_error)
-        raise HTTPException(status_code=status, detail=detail)
+    # ── Étape 1 : hacher le mot de passe ──────────────────────────
+    # Argon2id coûte ~44 ms de CPU : hors de la boucle d'événements, sinon un
+    # uvicorn mono-worker (cf. uti-backend.service) se fige le temps du calcul.
+    password_hash = await run_in_threadpool(passwords.hash_password, body.password)
 
-    # ── Validate response ─────────────────────────────────────────
-    user_id = user_data.get("id")
-    if not user_id:
-        print(f"[AUTH] Unexpected Supabase response (no id): {user_data}")
-        raise HTTPException(
-            status_code=500,
-            detail="Supabase n'a pas retourné d'utilisateur. Vérifiez vos logs serveur."
-        )
-
-    # ── Step 2: Insert profile row ────────────────────────────────
+    # ── Étape 2 : créer le profil ─────────────────────────────────
+    # L'identifiant est tiré ICI, alors qu'il venait de la réponse de GoTrue.
+    # C'est le pendant du retrait de la clé étrangère profiles.id → auth.users
+    # (migration 0018) : plus personne d'autre que nous ne fabrique cet UUID.
+    user_id = str(uuid.uuid4())
     # Carry the commercial entity from the invitation (UTI vs Groupement-IT).
     org = invitation.get("org") if invitation else None
     profile_row = {
@@ -416,32 +376,33 @@ async def register(body: RegisterRequest, request: Request):
     }
     try:
         try:
-            profile_resp = supabase.table("profiles").insert(profile_row).execute()
+            supabase.table("profiles").insert(profile_row).execute()
         except Exception:
             # 'org' column not migrated yet — retry without it.
             profile_row.pop("org", None)
-            profile_resp = supabase.table("profiles").insert(profile_row).execute()
+            supabase.table("profiles").insert(profile_row).execute()
     except Exception as e:
-        tb = traceback.format_exc()
-        print(f"[AUTH] profiles insert failed for user {user_id}:\n{tb}")
-        # Auth user was created — attempt cleanup to avoid orphan
-        try:
-            with httpx.Client(timeout=10) as client:
-                client.delete(
-                    f"{settings.supabase_url}/auth/v1/admin/users/{user_id}",
-                    headers={
-                        "apikey": settings.supabase_service_key,
-                        "Authorization": f"Bearer {settings.supabase_service_key}",
-                    },
-                )
-            print(f"[AUTH] Cleaned up orphan auth user {user_id}")
-        except Exception as cleanup_err:
-            print(f"[AUTH] Cleanup failed: {cleanup_err}")
-        status, detail = _parse_supabase_error(str(e))
+        print(f"[AUTH] insertion du profil échouée pour {user_id}:\n{traceback.format_exc()}")
+        status, detail = _parse_db_error(str(e))
         raise HTTPException(status_code=status, detail=detail)
 
-    if hasattr(profile_resp, 'error') and profile_resp.error:
-        status, detail = _parse_supabase_error(profile_resp.error.message)
+    # ── Étape 3 : créer les identifiants ──────────────────────────
+    # Table SÉPARÉE de profiles : plusieurs endpoints font select("*") sur
+    # profiles et renvoient la ligne au navigateur — un hachage posé là partirait
+    # avec. Voir services/credentials.py.
+    try:
+        credentials.create(user_id, body.email, password_hash)
+    except Exception as e:
+        print(f"[AUTH] insertion des identifiants échouée pour {user_id}:\n{traceback.format_exc()}")
+        # Le profil vient d'être créé et n'a pas de mot de passe : il serait
+        # inutilisable ET bloquerait toute nouvelle tentative (email UNIQUE).
+        # Même rôle que la suppression de l'utilisateur GoTrue orphelin d'avant.
+        try:
+            supabase.table("profiles").delete().eq("id", user_id).execute()
+            print(f"[AUTH] profil orphelin {user_id} supprimé")
+        except Exception as cleanup_err:  # noqa: BLE001
+            print(f"[AUTH] nettoyage du profil orphelin impossible: {cleanup_err}")
+        status, detail = _parse_db_error(str(e))
         raise HTTPException(status_code=status, detail=detail)
 
     # ── Consume invitation token ──────────────────────────────────
@@ -465,62 +426,108 @@ async def register(body: RegisterRequest, request: Request):
     }
 
 
-def _verify_credentials(email: str, password: str) -> Optional[dict]:
-    """
-    Vérifie un couple email/mot de passe auprès de GoTrue SANS passer par
-    ``supabase.auth.sign_in_with_password()``.
+def _locked_out(seconds: int) -> HTTPException:
+    """429 assorti de Retry-After, quand le verrou PERSISTANT est encore actif.
 
-    Pourquoi : supabase-py lie la session de l'utilisateur connecté au client
-    ``supabase`` partagé. Du coup, toutes les requêtes ``.table()`` suivantes
-    s'exécutent en tant que cet utilisateur (role ``authenticated``) au lieu de
-    ``service_role`` — et se font refuser par la RLS deny-all (« profil
-    introuvable »). En tapant directement l'endpoint REST GoTrue, le singleton
-    reste un pur ``service_role`` qui contourne la RLS.
-
-    Retourne le dict user GoTrue si OK, None si identifiants invalides.
-    Lève HTTPException pour les cas email non confirmé / rate limit.
+    429 plutôt que 423 : la page de connexion affiche `detail` quel que soit le
+    code, et lib/api.js:32 ne détourne l'utilisateur que sur 401 — un 429 laisse
+    donc le message à l'écran, ce qui est le comportement voulu ici.
     """
-    with httpx.Client(timeout=15) as client:
-        resp = client.post(
-            f"{settings.supabase_url}/auth/v1/token",
-            params={"grant_type": "password"},
-            headers={
-                "apikey": settings.supabase_service_key,
-                "Content-Type": "application/json",
-            },
-            json={"email": email, "password": password},
-        )
-    if resp.status_code == 200:
-        return resp.json().get("user")
-    msg = resp.text.lower()
-    if "email not confirmed" in msg:
-        raise HTTPException(status_code=403, detail="Email non confirmé. Vérifiez votre boîte mail.")
-    if resp.status_code == 429 or "rate limit" in msg or "too many requests" in msg:
-        raise HTTPException(status_code=429, detail="Trop de tentatives. Réessayez dans quelques minutes.")
-    return None
+    minutes = max(1, round(seconds / 60))
+    return HTTPException(
+        status_code=429,
+        detail=(
+            f"Trop de tentatives infructueuses. Compte bloqué pendant encore "
+            f"{minutes} minute{'s' if minutes > 1 else ''}. Vous pouvez aussi "
+            "réinitialiser votre mot de passe, ce qui débloque immédiatement l'accès."
+        ),
+        headers={"Retry-After": str(seconds)},
+    )
+
+
+async def _check_password(row: Optional[dict], password: str, now: datetime) -> bool:
+    """Vérifie un mot de passe et tient le compteur d'échecs persistant à jour.
+
+    `row` peut être None (adresse inconnue) : `credentials.verify` paie quand
+    même un hachage complet, pour que le temps de réponse n'énumère pas les
+    comptes.
+    """
+    ok = await run_in_threadpool(credentials.verify, row, password)
+    if not ok:
+        if row:
+            credentials.record_failure(row, now)
+        return False
+    credentials.record_success(row["user_id"])
+    # Remontée de coût transparente : si les paramètres Argon2id ont été relevés
+    # depuis, c'est le seul moment où le mot de passe est en clair. Un seul
+    # algorithme de bout en bout — on ne relit jamais un format étranger.
+    if passwords.needs_rehash(row.get("password_hash") or ""):
+        try:
+            neuf = await run_in_threadpool(passwords.hash_password, password)
+            credentials.set_password(row["user_id"], neuf, now)
+        except Exception as e:  # noqa: BLE001
+            print(f"[AUTH] re-hachage impossible pour {row['user_id']}: {e}")
+    return True
+
+
+async def _reauthenticate(user_id: str, password: str) -> bool:
+    """Re-vérifie le mot de passe d'un utilisateur DÉJÀ authentifié.
+
+    Utilisé par PATCH /auth/me (changer d'e-mail ou de mot de passe) et par
+    POST /auth/me/mfa/disable. Le verrou d'échecs s'applique aussi ici : sans
+    cela, une session volée offrirait un oracle de devinette du mot de passe
+    sans aucune limite persistante.
+
+    Lève 429 si le compte est verrouillé, renvoie False si le mot de passe est
+    faux, True sinon.
+    """
+    now = datetime.now(timezone.utc)
+    try:
+        cred = credentials.by_user_id(user_id)
+    except Exception as e:  # noqa: BLE001
+        print(f"[AUTH] lecture des identifiants impossible pour {user_id}: {e}")
+        raise HTTPException(status_code=503, detail="Vérification du mot de passe indisponible. Réessayez.")
+    if cred is None:
+        # Profil sans ligne d'identifiants : anomalie, mais surtout pas un
+        # laissez-passer. On refuse.
+        print(f"[AUTH] aucun identifiant en base pour {user_id}")
+        return False
+    attente = credentials.lock_seconds_remaining(cred, now)
+    if attente:
+        raise _locked_out(attente)
+    return await _check_password(cred, password, now)
 
 
 @router.post("/login")
 async def login(body: LoginRequest, request: Request):
-    # Anti brute-force : par IP (large) + par compte visé (plus strict).
+    # Deux freins COMPLÉMENTAIRES, et pas redondants :
+    #   • `_throttle` (mémoire du processus) refuse la requête AVANT les ~44 ms
+    #     d'Argon2 : c'est lui qui protège le CPU. Mais il disparaît à chaque
+    #     `systemctl restart` (donc à chaque déploiement).
+    #   • le verrou en base (ci-dessous) survit aux redémarrages et serait vu par
+    #     tous les workers si l'on en ajoutait un jour.
     _throttle(f"login:ip:{_client_ip(request)}", 15, 300)
     _throttle(f"login:email:{body.email.lower()}", 8, 300)
-    # ── Step 1: vérifier les identifiants via GoTrue ──────────────
-    # NB: on N'utilise PAS supabase.auth.sign_in_with_password (cela lierait la
-    # session au client service_role partagé → lectures suivantes en role
-    # 'authenticated' → bloquées par la RLS deny-all). Voir _verify_credentials.
+
+    now = datetime.now(timezone.utc)
     try:
-        auth_user = _verify_credentials(body.email, body.password)
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"[AUTH] login failed: {e}")
+        cred = credentials.by_email(body.email)
+    except Exception as e:  # noqa: BLE001
+        print(f"[AUTH] lecture des identifiants impossible: {e}")
         raise HTTPException(status_code=503, detail="Service d'authentification indisponible. Réessayez dans un instant.")
 
-    if not auth_user or not auth_user.get("id"):
+    # Verrou vérifié AVANT le hachage : un compte bloqué ne doit pas coûter de CPU.
+    if cred:
+        attente = credentials.lock_seconds_remaining(cred, now)
+        if attente:
+            raise _locked_out(attente)
+
+    if not await _check_password(cred, body.password, now):
+        # Message unique pour « adresse inconnue » et « mot de passe faux » :
+        # sinon la page de connexion devient un annuaire des comptes existants.
         raise HTTPException(status_code=401, detail="Email ou mot de passe incorrect.")
 
-    user_id = auth_user["id"]
+    user_id = cred["user_id"]
 
     # ── Step 2: Fetch profile ─────────────────────────────────────
     try:
@@ -711,17 +718,15 @@ class MfaSelfDisableRequest(BaseModel):
 async def mfa_self_disable(body: MfaSelfDisableRequest, user: dict = Depends(get_current_user)):
     """Désactive la 2FA. Re-authentification par mot de passe requise : une
     session volée ne doit pas pouvoir retirer le second facteur en silence."""
-    user_id, email = user["sub"], user["email"]
+    user_id = user["sub"]
     _throttle(f"mfa:self-disable:{user_id}", 5, 300)
     if not body.current_password:
         raise HTTPException(status_code=422, detail="Mot de passe actuel requis pour désactiver la double authentification.")
-    try:
-        verified = _verify_credentials(email, body.current_password)
-    except HTTPException:
-        raise
-    except Exception:
-        raise HTTPException(status_code=500, detail="Erreur de vérification du mot de passe.")
-    if not verified:
+    # Recherche par IDENTIFIANT, pas par e-mail : le jeton de session porte
+    # l'adresse figée à la connexion, or l'utilisateur a pu en changer depuis
+    # (PATCH /auth/me). GoTrue ne voyait pas la différence — il recevait
+    # l'adresse ; nous, si.
+    if not await _reauthenticate(user_id, body.current_password):
         raise HTTPException(status_code=401, detail="Mot de passe actuel incorrect.")
     # 2FA obligatoire (défaut) : la désactivation serait illusoire — ré-enrôlement
     # forcé à la prochaine connexion. On refuse proprement et on renvoie vers l'admin.
@@ -793,8 +798,16 @@ class ForgotPasswordRequest(BaseModel):
 
 
 class ResetPasswordRequest(BaseModel):
-    access_token: str
+    # `token` remplace `access_token` : ce n'est plus un JWT Supabase déchiffrable
+    # par le navigateur, mais une valeur OPAQUE de 256 bits dont seule l'empreinte
+    # est connue du serveur. Le champ change de nom exprès — un `access_token`
+    # envoyé par un vieil onglet doit échouer en 422, pas être interprété.
+    token: str
     new_password: str
+
+
+class ResetTokenRequest(BaseModel):
+    token: str
 
 
 def _send_reset_email(to_email: str, reset_url: str) -> tuple[bool, Optional[str]]:
@@ -822,90 +835,95 @@ def _send_reset_email(to_email: str, reset_url: str) -> tuple[bool, Optional[str
 @router.post("/forgot-password")
 async def forgot_password(body: ForgotPasswordRequest, request: Request):
     """
-    Generates a Supabase recovery link (admin generate_link, which does NOT send
-    any email) and delivers it ourselves via Infomaniak SMTP — so the message
-    is branded "Groupement-IT" instead of "Supabase Auth <noreply@mail.app.supabase.io>".
+    Émet un lien de réinitialisation MAISON et l'envoie par notre SMTP.
 
-    Always returns 200 to avoid leaking whether the email exists in the system.
+    Ce qui change par rapport à Supabase : le jeton n'est plus un JWT de
+    récupération posé dans le FRAGMENT de l'URL (que le backend ne voyait jamais,
+    et ne pouvait donc ni révoquer ni limiter à un seul usage), mais une valeur
+    opaque de 256 bits dont seule l'EMPREINTE SHA-256 est écrite en base. Une
+    copie de `user_credentials` ne contient donc aucun lien exploitable.
+
+    Réponse 200 systématique : ne jamais révéler si l'adresse existe.
     """
     # Anti-abus : cet endpoint public déclenche des e-mails sortants.
     _throttle(f"fp:ip:{_client_ip(request)}", 5, 900)
     _throttle(f"fp:email:{body.email.lower()}", 3, 900)
     try:
-        with httpx.Client(timeout=10) as client:
-            link_resp = client.post(
-                f"{settings.supabase_url}/auth/v1/admin/generate_link",
-                headers={
-                    "apikey": settings.supabase_service_key,
-                    "Authorization": f"Bearer {settings.supabase_service_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "type": "recovery",
-                    "email": body.email,
-                    "redirect_to": f"{settings.frontend_url}/reset-password",
-                },
-            )
-        # 200 only when the user exists; otherwise stay silent (anti-enumeration).
-        if link_resp.status_code == 200:
-            action_link = link_resp.json().get("action_link")
-            if action_link:
-                sent, err = _send_reset_email(body.email, action_link)
+        cred = credentials.by_email(body.email)
+        if cred:
+            clear, token_hash = passwords.new_reset_token()
+            if credentials.issue_reset(
+                cred["user_id"], token_hash, passwords.reset_token_expiry()
+            ):
+                # Le clair ne va QUE dans l'e-mail. Il n'est ni journalisé, ni
+                # stocké — le journaliser reviendrait à écrire un mot de passe
+                # temporaire dans journalctl.
+                reset_url = f"{settings.frontend_url}/reset-password?token={clear}"
+                sent, err = _send_reset_email(cred["email"], reset_url)
                 if not sent:
-                    print(f"[AUTH] reset email not sent to {body.email}: {err}")
+                    print(f"[AUTH] lien de réinitialisation non déposé en file: {err}")
             else:
-                print(f"[AUTH] generate_link returned no action_link for {body.email}")
+                print("[AUTH] impossible d'armer le jeton de réinitialisation (0 ligne mise à jour)")
         else:
-            # Non-existent email, rate limit, etc. — log for ops, reveal nothing.
-            print(f"[AUTH] forgot-password generate_link HTTP {link_resp.status_code} (non-fatal)")
-    except Exception as e:
+            # Adresse inconnue : on journalise pour l'exploitation, on ne révèle rien.
+            print("[AUTH] forgot-password sur une adresse sans compte (non fatal)")
+    except Exception as e:  # noqa: BLE001
         print(f"[AUTH] forgot-password error (non-fatal): {e}")
     return {"message": "Si un compte existe pour cet email, un lien de réinitialisation a été envoyé."}
 
 
+@router.post("/reset-password/verify")
+async def verify_reset_token(body: ResetTokenRequest, request: Request):
+    """Vérifie un jeton SANS le consommer, et renvoie l'adresse qu'il concerne.
+
+    Sert uniquement à pré-remplir le champ « username » masqué de la page, pour
+    que le trousseau du navigateur associe le nouveau mot de passe au bon compte
+    (ResetPasswordPage.jsx). Auparavant, le front obtenait cette adresse en
+    décodant le JWT Supabase avec `atob` ; un jeton opaque ne se décode pas.
+
+    Divulgation acceptable : qui détient le jeton peut déjà prendre le contrôle
+    du compte, apprendre l'adresse ne lui donne rien de plus. En revanche il faut
+    limiter le débit, sinon l'endpoint devient un oracle de validité de jetons.
+    """
+    _throttle(f"rpv:ip:{_client_ip(request)}", 20, 900)
+    row = credentials.by_reset_token_hash(passwords.hash_reset_token(body.token))
+    if not row or passwords.reset_token_is_expired(row.get("reset_token_expires_at")):
+        raise HTTPException(status_code=400, detail="Lien de réinitialisation invalide ou expiré.")
+    return {"valid": True, "email": row["email"]}
+
+
 @router.post("/reset-password")
 async def reset_password(body: ResetPasswordRequest, request: Request):
-    """
-    Validates the Supabase recovery token and updates the password.
-    The access_token comes from the URL hash after the user clicks the reset link.
-    """
+    """Consomme le jeton de réinitialisation et pose le nouveau mot de passe."""
     _throttle(f"rp:ip:{_client_ip(request)}", 10, 900)
-    if len(body.new_password) < 8:
-        raise HTTPException(status_code=422, detail="Le mot de passe doit contenir au moins 8 caractères.")
     try:
-        # Verify the recovery token by calling Supabase /auth/v1/user with it
-        with httpx.Client(timeout=10) as client:
-            user_resp = client.get(
-                f"{settings.supabase_url}/auth/v1/user",
-                headers={
-                    "apikey": settings.supabase_service_key,
-                    "Authorization": f"Bearer {body.access_token}",
-                },
-            )
-        if user_resp.status_code != 200:
+        passwords.check_password(body.new_password)
+    except passwords.PasswordRejected as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    token_hash = passwords.hash_reset_token(body.token)
+    now = datetime.now(timezone.utc)
+    try:
+        row = credentials.by_reset_token_hash(token_hash)
+        # Message identique pour « jeton inconnu », « jeton déjà utilisé » et
+        # « jeton périmé » : distinguer les trois indiquerait à un attaquant
+        # qu'il a trouvé un jeton valide mais consommé.
+        if not row or passwords.reset_token_is_expired(row.get("reset_token_expires_at"), now):
             raise HTTPException(status_code=400, detail="Lien de réinitialisation invalide ou expiré.")
-        user_id = user_resp.json().get("id")
-        if not user_id:
+
+        new_hash = await run_in_threadpool(passwords.hash_password, body.new_password)
+        # L'usage unique se joue ICI : l'UPDATE filtre sur l'empreinte encore
+        # présente et l'efface dans le même ordre. Un second appel ne met à jour
+        # aucune ligne et PostgREST renvoie une liste vide — pas besoin de verrou
+        # applicatif. Même motif que le claim de services/email_outbox.py.
+        if not credentials.consume_reset(token_hash, new_hash, now):
             raise HTTPException(status_code=400, detail="Lien de réinitialisation invalide ou expiré.")
-        # Update the password via admin API
-        with httpx.Client(timeout=10) as client:
-            upd = client.put(
-                f"{settings.supabase_url}/auth/v1/admin/users/{user_id}",
-                headers={
-                    "apikey": settings.supabase_service_key,
-                    "Authorization": f"Bearer {settings.supabase_service_key}",
-                    "Content-Type": "application/json",
-                },
-                json={"password": body.new_password},
-            )
-        if upd.status_code >= 400:
-            raise HTTPException(status_code=400, detail="Impossible de mettre à jour le mot de passe.")
-        return {"message": "Mot de passe mis à jour avec succès."}
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(f"[AUTH] reset-password error: {e}")
         raise HTTPException(status_code=400, detail="Lien de réinitialisation invalide ou expiré.")
+    return {"message": "Mot de passe mis à jour avec succès."}
 
 
 class UpdateProfileRequest(BaseModel):
@@ -925,42 +943,47 @@ class UpdateProfileRequest(BaseModel):
 @router.patch("/me")
 async def update_profile(body: UpdateProfileRequest, user: dict = Depends(get_current_user)):
     user_id = user["sub"]
-    current_email = user["email"]
+    ancien_email: Optional[str] = None
 
     # Email or password change requires current password verification
     if body.email or body.new_password:
         if not body.current_password:
             raise HTTPException(status_code=422, detail="Mot de passe actuel requis pour changer l'email ou le mot de passe.")
-        try:
-            verified = _verify_credentials(current_email, body.current_password)
-        except HTTPException:
-            raise
-        except Exception:
-            raise HTTPException(status_code=500, detail="Erreur de vérification du mot de passe.")
-        if not verified:
+        # Cet endpoint vérifie un mot de passe : c'est donc un oracle de
+        # devinette pour qui détiendrait une session volée. Il n'avait aucune
+        # limite propre — GoTrue appliquait la sienne, et elle part avec lui.
+        # Même cadence que les autres re-authentifications (mfa/disable).
+        _throttle(f"me:reauth:{user_id}", 5, 300)
+        if not await _reauthenticate(user_id, body.current_password):
             raise HTTPException(status_code=401, detail="Mot de passe actuel incorrect.")
 
-        if body.new_password and len(body.new_password) < 8:
-            raise HTTPException(status_code=422, detail="Le nouveau mot de passe doit contenir au moins 8 caractères.")
-
-        auth_update: dict = {}
+        # L'adresse D'ABORD, le mot de passe ensuite. L'ordre compte : « adresse
+        # déjà utilisée » est l'échec le plus probable ici (une faute de saisie
+        # suffit), et il est refusé par la contrainte UNIQUE. En le traitant en
+        # premier, on ressort en 409 sans avoir touché au mot de passe ; dans
+        # l'ordre inverse, l'utilisateur verrait une erreur alors que son mot de
+        # passe aurait DÉJÀ changé — et il ne saurait plus lequel utiliser.
         if body.email:
-            auth_update["email"] = body.email
-        if body.new_password:
-            auth_update["password"] = body.new_password
+            # `ancien_email` est retenu pour pouvoir revenir en arrière si la
+            # mise à jour du profil échoue plus bas : sinon les deux tables se
+            # contrediraient et l'utilisateur se connecterait avec une adresse
+            # que son profil n'affiche pas.
+            existant = credentials.by_user_id(user_id)
+            ancien_email = (existant or {}).get("email")
+            try:
+                credentials.set_email(user_id, body.email)
+            except Exception as e:  # noqa: BLE001
+                status, detail = _parse_db_error(str(e))
+                raise HTTPException(status_code=status, detail=detail)
 
-        with httpx.Client(timeout=10) as client:
-            resp = client.put(
-                f"{settings.supabase_url}/auth/v1/admin/users/{user_id}",
-                headers={
-                    "apikey": settings.supabase_service_key,
-                    "Authorization": f"Bearer {settings.supabase_service_key}",
-                    "Content-Type": "application/json",
-                },
-                json=auth_update,
-            )
-        if resp.status_code >= 400:
-            raise HTTPException(status_code=400, detail="Impossible de mettre à jour les identifiants.")
+        if body.new_password:
+            try:
+                passwords.check_password(body.new_password)
+            except passwords.PasswordRejected as e:
+                raise HTTPException(status_code=422, detail=str(e))
+            new_hash = await run_in_threadpool(passwords.hash_password, body.new_password)
+            if not credentials.set_password(user_id, new_hash):
+                raise HTTPException(status_code=500, detail="Impossible de mettre à jour le mot de passe.")
 
     profile_update: dict = {}
     if body.name and body.name.strip():
@@ -997,6 +1020,14 @@ async def update_profile(body: UpdateProfileRequest, user: dict = Depends(get_cu
             if legacy and legacy != profile_update:
                 supabase.table("profiles").update(legacy).eq("id", user_id).execute()
                 raise HTTPException(status_code=501, detail="Certains champs de profil ne sont pas encore disponibles : appliquez la migration 0009_profile_fields.sql.")
+            # Remise en cohérence : l'adresse de connexion a déjà changé, mais le
+            # profil non. Sans ce retour arrière, l'utilisateur se connecterait
+            # avec une adresse introuvable dans l'écran « Comptes » de l'admin.
+            if ancien_email:
+                try:
+                    credentials.set_email(user_id, ancien_email)
+                except Exception as revert_err:  # noqa: BLE001
+                    print(f"[AUTH] retour arrière de l'email de connexion impossible pour {user_id}: {revert_err}")
             raise HTTPException(status_code=500, detail=f"Mise à jour du profil impossible : {e}")
 
     profile = supabase.table("profiles").select("*").eq("id", user_id).single().execute()

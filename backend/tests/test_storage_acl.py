@@ -1,16 +1,20 @@
 """
-Garde-fou : les CV ne deviennent jamais publics sur S3.
+Garde-fou : rien de personnel ne devient public sur S3.
 
-Deux endroits du code posent une ACL sur les objets envoyés vers OVH Object
-Storage : le chemin d'exécution (services/storage.py) et le script de migration
-des fichiers existants (scripts/migrate_storage_to_ovh.py). Le premier gardait
-les CV privés, le second écrivait ACL="public-read" sans distinction. Une seule
-exécution du script aurait rendu tous les CV lisibles par quiconque connaît
-l'URL — un CV, c'est un nom, un téléphone, un parcours professionnel.
+Deux défauts successifs, de la même famille.
 
-Le défaut n'était visible d'aucun des deux fichiers pris isolément : chacun était
-cohérent avec lui-même. C'est pour ce genre de règle — vraie à deux endroits qui
-ne se lisent pas l'un l'autre — qu'un test vaut mieux qu'un commentaire.
+Le premier : deux endroits posaient une ACL — le chemin d'exécution
+(services/storage.py) et le script de migration — et ils ne disaient pas la même
+chose. Le premier gardait les CV privés, le second écrivait « public-read » sur
+tout. Chacun était cohérent avec lui-même ; c'est pour ça que l'écart ne se
+voyait pas. Corrigé en supprimant la seconde définition : le script IMPORTE
+désormais la règle.
+
+Le second, plus large : la règle elle-même était une liste NOIRE
+(`bucket == "cvs"`). Tout ce qui n'était pas un CV partait en public-read — les
+pièces jointes d'appel d'offres, et les documents de conformité des partenaires,
+c'est-à-dire des attestations de vigilance URSSAF et des KBIS. Corrigé en liste
+BLANCHE : un bucket ajouté demain naît privé.
 
 Lecture par `ast`, sans import : le script tire boto3 et la configuration
 Supabase, dont l'absence mettrait le test en skip précisément là où on voudrait
@@ -18,6 +22,7 @@ qu'il parle.
 """
 import ast
 import pathlib
+import re
 
 BACKEND = pathlib.Path(__file__).resolve().parents[1]
 SCRIPT = BACKEND / "scripts" / "migrate_storage_to_ovh.py"
@@ -51,19 +56,50 @@ def test_migration_script_never_hardcodes_public_read():
                 )
 
 
-def test_cvs_bucket_is_declared_private_in_both_places():
-    """« cvs » doit être traité comme privé par le script ET par le runtime."""
+def test_la_regle_dacl_a_une_seule_source():
+    """Le script IMPORTE la règle, il ne la recopie pas.
+
+    C'est la correction de fond du défaut d'origine : le script portait sa
+    propre copie de la règle, et les deux ont divergé — le code d'exécution
+    gardait les CV privés, le script écrivait « public-read » sur tout. Chacun
+    était cohérent avec lui-même, c'est pour ça que l'écart ne se voyait pas.
+    """
     src_script = SCRIPT.read_text(encoding="utf-8")
-    assert "PRIVATE_BUCKETS" in src_script, (
-        "Le script de migration ne distingue plus les buckets privés des publics."
+    assert "from services.storage import PUBLIC_BUCKETS" in src_script, (
+        "Le script de migration ne tire plus la règle d'ACL de services/storage.py. "
+        "Une seconde définition finira par diverger de la première."
     )
-    assert '"cvs"' in src_script.split("PRIVATE_BUCKETS", 1)[1][:200], (
-        "« cvs » ne figure plus dans PRIVATE_BUCKETS."
+    assert not re.search(r"^PRIVATE_BUCKETS\s*=", src_script, re.M), (
+        "Une liste locale est réapparue dans le script : c'est exactement le "
+        "montage qui avait laissé passer les CV en public-read."
     )
 
-    src_service = SERVICE.read_text(encoding="utf-8")
-    assert 'bucket == "cvs"' in src_service, (
-        "services/storage.py ne réserve plus un traitement privé au bucket cvs."
+
+def test_les_buckets_publics_sont_une_liste_blanche():
+    """Un bucket ajouté demain doit naître PRIVÉ.
+
+    L'ancien test était `bucket == "cvs"` : tout ce qui n'était pas un CV
+    partait en public-read, y compris les pièces jointes d'appel d'offres et les
+    attestations de vigilance URSSAF des partenaires. Une liste noire protège ce
+    qu'on a pensé à y mettre ; une liste blanche protège tout le reste.
+    """
+    src = SERVICE.read_text(encoding="utf-8")
+    assert re.search(r"^PUBLIC_BUCKETS\s*=\s*\{", src, re.M), (
+        "services/storage.py ne déclare plus de liste blanche PUBLIC_BUCKETS."
+    )
+    bloc = re.search(r"PUBLIC_BUCKETS\s*=\s*\{([^}]*)\}", src).group(1)
+    for interdit in ("cvs", "compliance", "ao-sources"):
+        assert f'"{interdit}"' not in bloc, (
+            f"« {interdit} » est passé dans les buckets PUBLICS. "
+            f"Ce sont des CV, des attestations URSSAF ou des pièces jointes d'AO : "
+            f"ils ne s'ouvrent que par URL signée."
+        )
+    # Sur le CODE seul : le commentaire qui explique ce que la liste blanche
+    # remplace cite forcément l'ancien test, et un test qui échoue sur sa propre
+    # documentation apprend surtout à ne plus rien documenter.
+    code = "\n".join(l for l in src.splitlines() if not l.lstrip().startswith("#"))
+    assert 'bucket == "cvs"' not in code, (
+        "Le test par liste noire est réapparu dans le code de services/storage.py."
     )
 
 
@@ -82,5 +118,9 @@ def test_migration_script_covers_every_populated_bucket():
         ):
             buckets = [e.value for e in node.value.elts if isinstance(e, ast.Constant)]
     assert buckets, "BUCKETS introuvable dans le script de migration."
-    for attendu in ("cvs", "avatars", "ao-sources"):
-        assert attendu in buckets, f"Le bucket « {attendu} » ne serait pas migré."
+    for attendu in ("cvs", "avatars", "ao-sources", "compliance", "email-assets"):
+        assert attendu in buckets, (
+            f"Le bucket « {attendu} » ne serait pas migré : ses objets resteraient "
+            f"sur Supabase et leurs liens mourraient à la fermeture du projet — "
+            f"c'est-à-dire APRÈS la bascule, quand plus personne ne regarde."
+        )

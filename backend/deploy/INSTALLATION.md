@@ -14,6 +14,7 @@ Compter environ **3 heures**, en une seule séance.
 | PostgREST | **14.16** — binaire statique, empreinte vérifiée |
 | Façade | nginx sur `127.0.0.1:8080`, chemin `/rest/v1/` |
 | Exposition | **aucune** — rien n'écoute sur une interface publique |
+| Fichiers | `/var/lib/uti/files`, `0700` `julian.talou` — servis par le backend (§4 bis) |
 
 > **Combinaison éprouvée.** PostgreSQL **18.4** + PostgREST **14.16** +
 > `supabase-py` **2.9.0** : `scripts/verify_postgrest.py` passe **15 cas sur 15**
@@ -198,6 +199,85 @@ psql -d uti -c "drop table _essai_bascule"
 Si les quatre passent, la pile est bonne. La production tourne toujours sur Supabase.
 
 **Retour arrière :** psql -d uti -c "drop table if exists _essai_bascule"  — la table d'essai est le seul objet créé.
+
+## 4 bis. Le dépôt des FICHIERS (CV, pièces d'AO, URSSAF, KBIS)
+
+Indépendant de la base : **à faire avant la bascule du §5**, et réversible.
+
+### Pourquoi `/var/lib/uti/files`, et pas ailleurs
+
+| Emplacement écarté | Pourquoi |
+|---|---|
+| `~/app/backend/uploads` | `deploy.sh` remplace cet arbre à chaque mise à jour : des CV de production y seraient effacés par un déploiement de routine. |
+| `/home/julian.talou/files` | `/home` est en `750` : tout service qui devrait un jour y lire aurait besoin d'une exception. Et un compte utilisateur n'est pas un emplacement d'état applicatif. |
+| `/var/lib/uti/files` | Emplacement prévu par la FHS pour l'état applicatif persistant. Hors de l'arbre git, hors de `/home`, et c'est ce que la sauvegarde vise. |
+
+### Droits UNIX : qui écrit, qui lit, et pourquoi
+
+```bash
+sudo install -d -m 750 -o julian.talou -g julian.talou /var/lib/uti
+sudo install -d -m 700 -o julian.talou -g julian.talou /var/lib/uti/files
+ls -ld /var/lib/uti /var/lib/uti/files    # drwx------ julian.talou julian.talou
+```
+
+| Acteur | Compte | Accès | Pourquoi |
+|---|---|---|---|
+| Backend FastAPI | `julian.talou` (`uti-backend.service`) | **lecture + écriture** | Il dépose les fichiers et il les sert lui-même. |
+| Sauvegarde | `julian.talou` (`uti-backup.service`) | **lecture** | Même compte : rien de plus à ouvrir. |
+| nginx | `www-data` | **aucun** | Il relaie, il ne lit jamais ces fichiers. Voir ci-dessous. |
+| Tout autre compte du VPS | — | **aucun** | `0700` sur les répertoires, `0600` sur les fichiers, imposés dans le code (`services/storage.py`) et non hérités du `umask` — un `umask` à 022 donnerait des CV en `0644`. |
+
+**Pourquoi `www-data` n'a besoin de rien.** `X-Accel-Redirect` (nginx autorise,
+le backend décide) a été **écarté**. À 38 objets et ~50 Mo, le gain est nul, et
+le coût est réel : il faudrait ouvrir la lecture de CV, d'attestations URSSAF et
+de KBIS à un second compte, et la décision « qui a le droit de lire » vivrait
+dans deux systèmes au lieu d'un — exactement le montage qui avait laissé les CV
+en `public-read`. Le seuil de bascule est écrit dans `backend/nginx.conf` : un
+objet unique au-delà de ~100 Mo, ou des téléchargements concurrents qui saturent
+l'unique worker uvicorn.
+
+### Configuration et migration des 38 objets
+
+```bash
+cd ~/app/backend
+cp -a .env .env.avant-stockage-$(date +%F-%H%M)
+
+# 1) Chemin + origine publique. STORAGE_BACKEND reste inchangé pour l'instant.
+cat >> .env <<'EOF'
+LOCAL_STORAGE_DIR=/var/lib/uti/files
+PUBLIC_BASE_URL=https://vps-cc93f2a8.vps.ovh.net
+EOF
+
+# 2) Simulation, puis copie. ⚠️ TANT QUE SUPABASE_URL POINTE ENCORE SUR SUPABASE :
+#    --rewrite-db écrit dans la base COURANTE. Lancé après la bascule du §5, il
+#    réécrirait la base neuve — vide — et les 32 CV deviendraient introuvables.
+venv/bin/python scripts/migrate_storage_to_ovh.py --dry-run
+venv/bin/python scripts/migrate_storage_to_ovh.py --vers local
+venv/bin/python scripts/migrate_storage_to_ovh.py --vers local --rewrite-db
+
+# 3) Bascule de l'application
+sed -i 's#^STORAGE_BACKEND=.*#STORAGE_BACKEND=local#' .env
+sudo systemctl restart uti-backend
+
+# 4) Sauvegarde des fichiers : sans elle, la migration a supprimé la seule copie
+sudo sed -i '/^Environment=BACKUP_DIR=/a Environment=FILES_DIR=/var/lib/uti/files' \
+    /etc/systemd/system/uti-backup.service   # ou recopier l'unité du dépôt
+sudo systemctl daemon-reload && sudo systemctl start uti-backup
+cat /var/backups/uti/.dernier_succes_fichiers
+bash ~/app/backend/deploy/restore_drill.sh
+```
+
+**Réussite :** `find /var/lib/uti/files -type f | wc -l` = 38 ;
+`ls -l /var/lib/uti/files/cvs/*/ | head` montre des `-rw-------` ; un CV s'ouvre
+depuis l'application ; un avatar s'affiche ; `restore_drill.sh` termine sur
+« N fichier(s) restauré(s) … 0 absente(s) ».
+
+**Retour arrière :** `sed -i 's#^STORAGE_BACKEND=.*#STORAGE_BACKEND=supabase#' .env`
+puis `sudo systemctl restart uti-backend`. Les fichiers restent sur Supabase (le
+script ne supprime rien) et `storage._object_path()` relit indifféremment une
+URL Supabase héritée ou un chemin nu : le retour est immédiat et complet.
+
+---
 
 ## 5. BASCULE (uniquement quand le schéma, les données ET l'auth maison sont en place)
 

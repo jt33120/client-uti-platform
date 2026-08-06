@@ -17,7 +17,7 @@ il décale la suppression, donc la facture Supabase et la charge mentale.
 
 | # | Chantier | Fenêtre | Dépend de | Bloque |
 |---|---|---|---|---|
-| A | **Stockage → OVH Object Storage** | 6 → 8 août | rien | rien |
+| A | **Stockage → disque du VPS** (`STORAGE_BACKEND=local`) | 6 → 8 août | rien | E |
 | B | Installation PostgreSQL 18 + PostgREST (`deploy/install_db.sh`) | 7 → 8 août | rien | C, E |
 | C | Schéma + `seed.sql` + `verify_postgrest.py` sur la base neuve | 10 → 12 août | B | D, G |
 | D | Authentification maison (remplace GoTrue) | 10 → 14 août | C | G |
@@ -41,23 +41,48 @@ sans sauvegarde éprouvée, c'est remplacer un hébergeur qui sauvegardait pour
 nous par une machine où personne ne le fait. Le filet Supabase est encore là ce
 jour-là, mais il disparaîtra dans deux semaines.
 
+### Pourquoi les fichiers vont sur le disque du VPS, et pas dans un conteneur objet
+
+**Décision prise, non rediscutée ici.** Obtenir un conteneur de stockage objet
+exige un accès OVH qui appartient à un associé. Le volume est de **38 objets
+pour ~50 Mo**, le VPS a **185 Go libres**. Poser les fichiers sur son disque
+supprime une dépendance externe au lieu d'en ajouter une, et ne laisse qu'une
+seule destination hors-site à obtenir : celle des **sauvegardes**.
+
+**Ce que cette décision coûte, et qui doit être payé avant la bascule.** Tant
+que les fichiers vivaient chez un hébergeur, quelqu'un d'autre les répliquait.
+À partir de maintenant, personne — sauf `deploy/backup_db.sh`, qui embarque
+désormais `/var/lib/uti/files` dans la même archive chiffrée que la base, et
+`deploy/restore_drill.sh`, qui vérifie chaque lundi que **chaque référence de la
+base restaurée désigne un fichier réellement présent**. C'est pour cette raison
+que le chantier A **bloque désormais E** : sauvegarder une base dont les
+fichiers ne sont pas sauvegardés, c'est valider la moitié des données en croyant
+les valider toutes. Voir RUNBOOK.md §9.7.
+
+Une conséquence à connaître avant le jour J : **le RTO des fichiers n'est plus
+zéro.** Ils ne sont plus « ailleurs » ; ils meurent avec le VPS et ne reviennent
+que par l'étape 7 bis du RUNBOOK §10.3. Cette ligne a été corrigée au §10.1.
+
 ### Pourquoi le stockage passe en premier
 
 1. **Il doit précéder la bascule pour une raison mécanique, pas de confort.**
-   `scripts/migrate_storage_to_ovh.py:116-130` (`--rewrite-db`) réécrit
-   `submissions.cv_url` et `profiles.avatar_url` **dans la base courante**. Tant
-   que la base courante est Supabase, la réécriture pointe les lignes de
-   production vers OVH et les 32 CV restent téléchargeables. Faite après la
-   bascule, elle s'appliquerait à une base vide : les CV existants deviendraient
-   introuvables dès le basculement de `STORAGE_BACKEND`, c'est-à-dire
-   aujourd'hui, pas le 17.
+   `scripts/migrate_storage_to_ovh.py` (`--rewrite-db`) réécrit
+   `submissions.cv_url`, `profiles.avatar_url`,
+   `partner_compliance_docs.file_url` et les images des modèles d'e-mail **dans
+   la base courante**. Tant que la base courante est Supabase, la réécriture
+   pointe les lignes de production vers le VPS et les 32 CV restent
+   téléchargeables. Faite après la bascule, elle s'appliquerait à une base
+   vide : les CV existants deviendraient introuvables dès le basculement de
+   `STORAGE_BACKEND`, c'est-à-dire aujourd'hui, pas le 17.
 2. **Il est réversible en 30 secondes** : une variable (`STORAGE_BACKEND`), et
    le script ne supprime rien côté Supabase (`migrate_storage_to_ovh.py:14-15`).
+   Le retour arrière fonctionne parce que `storage._object_path()` relit
+   indifféremment une URL Supabase héritée ou un chemin nu.
 3. **Il retire une variable du jour J.** Le 17 août, une seule chose doit
    changer. Un incident ce matin-là doit avoir une cause unique.
-4. **Il fait apparaître tôt les surprises OVH** — ACL des objets, URL
-   présignées, endpoint, politique du conteneur — pendant qu'on peut encore
-   revenir en arrière sans conséquence.
+4. **Il fait apparaître tôt les surprises du service des fichiers** — droits
+   UNIX, expiration des liens, affichage d'un PDF dans le navigateur — pendant
+   qu'on peut encore revenir en arrière sans conséquence.
 
 ---
 
@@ -165,6 +190,26 @@ l'archive — c'est du temps acheté volontairement, pas du temps perdu.
 référentiel. C'est le prix de « repartir propre », il se paie une fois, et il
 se paie un lundi matin.
 
+### Avant le jour J — bascule du stockage (chantier A)
+
+**À faire pendant que `SUPABASE_URL` pointe encore sur Supabase.** L'ordre n'est
+pas un confort : `--rewrite-db` écrit dans la base courante.
+
+| # | Geste | On vérifie quoi | Retour arrière |
+|---|---|---|---|
+| A1 | `sudo install -d -m 750 -o julian.talou -g julian.talou /var/lib/uti` puis `-m 700 … /var/lib/uti/files` | `ls -ld` → `drwx------ julian.talou` | `rm -rf /var/lib/uti` (rien dedans) |
+| A2 | Dans `.env` : `LOCAL_STORAGE_DIR=/var/lib/uti/files`, `PUBLIC_BASE_URL=https://vps-cc93f2a8.vps.ovh.net`. **Ne pas encore toucher `STORAGE_BACKEND`.** | Le backend redémarre | `cp -a .env.avant-stockage .env` |
+| A3 | `venv/bin/python scripts/migrate_storage_to_ovh.py --dry-run` | 38 objets annoncés, cinq buckets listés | — (n'écrit rien) |
+| A4 | `venv/bin/python scripts/migrate_storage_to_ovh.py --vers local` | `find /var/lib/uti/files -type f \| wc -l` = 38 | `rm -rf /var/lib/uti/files/*` — Supabase est intact, le script ne supprime rien |
+| A5 | `venv/bin/python scripts/migrate_storage_to_ovh.py --vers local --rewrite-db` | Les CV, avatars, pièces de conformité et images de modèles pointent vers le VPS **dans la base Supabase** | Restaurer les colonnes depuis l'archive du jour, ou relancer `--vers s3` ; les lecteurs acceptent encore les deux formes |
+| A6 | `sed -i 's#^STORAGE_BACKEND=.*#STORAGE_BACKEND=local#' .env` puis `sudo systemctl restart uti-backend` | Un CV s'ouvre, un avatar s'affiche, une pièce d'AO se télécharge | Remettre `STORAGE_BACKEND=supabase` + redémarrer → **30 secondes** |
+| A7 | `sudo systemctl start uti-backup` puis `cat /var/backups/uti/.dernier_succes_fichiers` | Une archive `uti/fichiers/…tar.age` est partie hors-site | — |
+| A8 | `bash ~/app/backend/deploy/restore_drill.sh` | « N fichier(s) restauré(s), 0 absente(s) » | — |
+
+**A7 et A8 ne sont pas facultatifs.** Tant qu'ils ne sont pas verts, les
+fichiers ne sont sauvegardés nulle part : la migration aurait remplacé un
+hébergeur qui les répliquait par un disque que personne ne copie.
+
 ### Dimanche 16 août — répétition générale
 
 - Annonce aux 11 comptes : « plateforme indisponible lundi de 9 h à 12 h,
@@ -213,9 +258,11 @@ la suppression. Les marqueurs de journal cités viennent du code réel.
 | 2 | **MFA** | Scanner le QR, saisir les 6 chiffres | Connexion acceptée | `timedatectl` sur le VPS : un décalage > 30 s casse tous les TOTP. Puis `journalctl \| grep MFA` |
 | 3 | **Invitation** | Créer une invitation, ouvrir le lien en navigation privée, créer le compte | Compte créé **avec le rôle de l'invitation** | `select * from invitations order by created_at desc limit 5`. Rappel : `POST /auth/register` exige `invite_token`, 403 sinon |
 | 4 | **Reset mot de passe** | « Mot de passe oublié » | E-mail reçu en < 40 s | `select status, attempts, last_error from email_outbox order by created_at desc limit 5` ; `python scripts/test_smtp.py` |
-| 5 | **Upload de CV** | Soumettre un CV sur un AO | Ligne dans `submissions` + objet `cvs/<ao_id>/<sid>.pdf` dans OVH | `[ERROR] POST /submissions` dans journald ; taille > 25 Mo refusée par nginx (`client_max_body_size`) |
-| 6 | **Téléchargement de CV** | Cliquer sur le CV | Le PDF s'ouvre via une URL présignée | — |
-| 6bis | **CV NON public** | Coller `$S3_PUBLIC_BASE_URL/cvs/<clé>` en navigation privée | **403 ou 401** | Si 200 : le conteneur OVH est en lecture publique et les 32 CV sont lisibles par quiconque connaît l'URL. Corriger la politique du conteneur **immédiatement** |
+| 5 | **Upload de CV** | Soumettre un CV sur un AO | Ligne dans `submissions` + fichier `/var/lib/uti/files/cvs/<ao_id>/<sid>.pdf` en `0600 julian.talou` | `[ERROR] POST /submissions` dans journald ; taille > 25 Mo refusée par nginx (`client_max_body_size`) ; répertoire absent ou droits |
+| 6 | **Téléchargement de CV** | Cliquer sur le CV | Le PDF s'ouvre dans un nouvel onglet, URL `…/files/d/<jeton>` | 410 = lien expiré (normal au-delà d'1 h) ; 403 = signature invalide ; 404 = fichier absent du disque |
+| 6bis | **CV NON public** | `curl -si https://<backend>/files/public/cvs/<ao_id>/<sid>.pdf` puis rejouer l'URL du contrôle 6 **une fois le jeton expiré** | **404** dans le premier cas, **410** dans le second | Un 200 sur `/files/public/cvs/…` voudrait dire que « cvs » est entré dans `PUBLIC_BUCKETS` : les 32 CV seraient lisibles par quiconque devine un chemin. Corriger **immédiatement** (`services/storage.py`) |
+| 6ter | **Traversée de chemin** | `curl -si 'https://<backend>/files/public/avatars/../../../etc/passwd'` et la même chose avec `%2e%2e%2f` | **404**, jamais 200 | Un 200 signifie que le dépôt n'enferme plus les chemins : le `.env` du backend, qui porte vingt secrets, est un voisin de `/var/lib/uti/files`. `services/storage.py:_safe_join` |
+| 6quater | **Un fichier déposé ne s'exécute pas** | Déposer un `.html` comme pièce de conformité, l'ouvrir | Le navigateur **télécharge**, il n'affiche pas | Servis depuis notre propre domaine, ces fichiers sont same-origin. `Content-Type: application/octet-stream` + `Content-Disposition: attachment` + `nosniff` attendus dans les en-têtes |
 | 7 | **Matching (jointure embarquée)** | Lancer un matching sur un AO à ≥ 2 soumissions, ouvrir les résultats | `consultants` et `submissions` sont des **objets remplis** dans la réponse, pas `null` (`routers/matching.py:243`) | Un `null` = clé étrangère absente → rejouer `0017_matchings_consultant_fk.sql`. Chercher `PGRST200` dans `/var/log/nginx/uti-postgrest.error.log` |
 | 8 | **Cartographie** | Ouvrir la carte | Les clients géocodés apparaissent | Colonnes `clients.latitude/longitude` ajoutées par `0016_schema_drift.sql`. Code `42703` dans les journaux = colonne manquante |
 | 9 | **Envoi d'AO** | Publier un AO, notifier la liste 1 | **n > 0 destinataires** | `select count(*) from partner_clients` : à zéro, l'envoi réussit sans destinataire et rien ne le signale |
@@ -248,8 +295,19 @@ on ne supprime pas, on reporte d'une semaine.
       deux endroits distincts dont un hors du VPS** (le VPS peut brûler), en
       0600 ou chiffrée.
 - [ ] **7. Zéro dépendance résiduelle** : aucune URL `supabase.co` dans
-      `~/app/backend/.env`, `STORAGE_BACKEND=s3`, aucun appel `/auth/v1/`
-      (la façade renvoie 501, donc un oubli se serait déjà manifesté).
+      `~/app/backend/.env`, `STORAGE_BACKEND=local`, aucun appel `/auth/v1/`
+      (la façade renvoie 501, donc un oubli se serait déjà manifesté). **Et
+      aucune URL `supabase.co` restante en BASE** :
+      `select count(*) from submissions where cv_url like '%supabase%'`,
+      idem `profiles.avatar_url`, `partner_compliance_docs.file_url` et
+      `email_templates.body` — quatre requêtes, quatre zéros. Une seule non
+      nulle et la suppression du projet casse ce lien-là, en silence.
+- [ ] **7 bis. Les FICHIERS sont sauvegardés ET restaurables.**
+      `/var/backups/uti/.dernier_succes_fichiers` daté de moins de 24 h, et une
+      exécution de `restore_drill.sh` qui affiche « 0 absente(s) » : chaque CV,
+      pièce d'AO, attestation URSSAF et KBIS que la base restaurée référence
+      existe dans l'archive restaurée. **Sans ce point, supprimer Supabase
+      supprime la seule autre copie des fichiers.**
 - [ ] **8. Les 11 comptes recréés et chacun s'est connecté au moins une fois**
       sur la base neuve. Six seulement s'étaient déjà connectés sur Supabase :
       c'est ce contrôle qui prouve la chaîne de bout en bout, sur de vraies

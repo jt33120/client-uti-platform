@@ -23,6 +23,11 @@ User=julian.talou
 Group=julian.talou
 Environment=BACKEND_DIR=/home/julian.talou/app/backend
 Environment=BACKUP_DIR=/var/backups/uti
+# Répertoire des fichiers (CV, pièces d'AO, URSSAF, KBIS) depuis qu'ils vivent
+# sur le disque du VPS. DOIT être identique à LOCAL_STORAGE_DIR de backend/.env :
+# deux valeurs différentes produiraient une sauvegarde parfaitement verte d'un
+# répertoire vide. Lecture seule ici — ce service n'y écrit jamais.
+Environment=FILES_DIR=/var/lib/uti/files
 # PostgreSQL 18 : le binaire de la distribution n'est pas toujours en tête du PATH.
 Environment=PATH=/usr/lib/postgresql/18/bin:/usr/local/bin:/usr/bin:/bin
 

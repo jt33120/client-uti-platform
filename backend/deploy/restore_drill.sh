@@ -15,8 +15,19 @@
 #   2. y rejoue la dernière archive avec --exit-on-error (une erreur = un échec,
 #      pas un avertissement qu'on relit trois semaines plus tard) ;
 #   3. compte les lignes de CHAQUE table des deux côtés et compare ;
-#   4. supprime la base jetable, quoi qu'il arrive (trap) ;
-#   5. CRIE si quoi que ce soit diverge.
+#   4. RESTAURE AUSSI L'ARCHIVE DES FICHIERS et vérifie que chaque fichier
+#      référencé par la base restaurée s'y trouve réellement ;
+#   5. supprime la base jetable, quoi qu'il arrive (trap) ;
+#   6. CRIE si quoi que ce soit diverge.
+#
+#  POURQUOI L'ÉTAPE 4 EST AUSSI IMPORTANTE QUE LES TROIS PREMIÈRES
+#  Depuis que les fichiers vivent sur le disque du VPS, une base restaurée seule
+#  est une base de LIENS MORTS : `submissions.cv_url` désigne un CV qui n'existe
+#  nulle part. Cette panne-là a la particularité de ne pas ressembler à une
+#  panne — la restauration réussit, l'application démarre, les écrans
+#  s'affichent, et c'est en cliquant sur un CV qu'on découvre, des semaines plus
+#  tard, qu'il n'y en a plus. Vérifier la base sans vérifier les fichiers
+#  reviendrait à valider la moitié des données en croyant les valider toutes.
 #
 #  CE QU'IL NE FAIT JAMAIS
 #  Toucher à la base vivante. Trois garde-fous indépendants ci-dessous, parce
@@ -46,6 +57,8 @@ set -uo pipefail
 DEST="${BACKUP_DIR:-/var/backups/uti}"
 BASE="${PGDATABASE:-uti}"
 BACKEND="${BACKEND_DIR:-/home/julian.talou/app/backend}"
+# Même valeur que dans backup_db.sh et que LOCAL_STORAGE_DIR de backend/.env.
+FICHIERS="${FILES_DIR:-/var/lib/uti/files}"
 MODE="${1:-local}"
 
 # shellcheck source=./lib_alerte.sh disable=SC1091
@@ -88,9 +101,24 @@ if [ "$MODE" = "--hors-site" ]; then
 
   # Les objets sont nommés en UTC ISO-8601 : le dernier au sens alphabétique est
   # le plus récent au sens chronologique (voir s3_backup.py:lister).
-  CLE_S3=$("$BACKEND/venv/bin/python" "$BACKEND/deploy/s3_backup.py" lister "uti/" | tail -1) \
+  #
+  # MAIS le tri porte sur la CLÉ ENTIÈRE, et le conteneur ne contient plus
+  # seulement des dumps de base. Depuis que les fichiers y sont déposés, il
+  # cohabite trois familles :
+  #     uti/2026/08/uti-….pgcustom.age        ← la base
+  #     uti/fichiers/2026/08/uti-fichiers-….tar.age
+  #     uti/conf/conf-….tar.age
+  # « uti/f… » et « uti/c… » trient APRÈS « uti/2… ». Un `tail -1` nu ramenait
+  # donc l'archive des FICHIERS, que `pg_restore` refuse — et la répétition
+  # échouait sur un message parlant de format d'archive, pas de sélection. Pire
+  # cas : elle aurait « réussi » sur la mauvaise famille.
+  #
+  # On filtre donc sur le SUFFIXE, qui dit ce qu'est l'objet, plutôt que sur le
+  # préfixe, qui dit seulement où il est rangé.
+  CLE_S3=$("$BACKEND/venv/bin/python" "$BACKEND/deploy/s3_backup.py" lister "uti/" \
+           | grep '\.pgcustom\.age$' | tail -1) \
     || alerte "impossible de lister le conteneur hors-site"
-  [ -n "$CLE_S3" ] || alerte "le conteneur hors-site est VIDE — rien n'y a jamais été déposé"
+  [ -n "$CLE_S3" ] || alerte "aucun dump de base (*.pgcustom.age) dans le conteneur hors-site"
 
   "$BACKEND/venv/bin/python" "$BACKEND/deploy/s3_backup.py" recuperer "$CLE_S3" "$TRAVAIL/archive.age" >/dev/null \
     || alerte "téléchargement de $CLE_S3 impossible"
@@ -213,6 +241,94 @@ fk_restauree=$(psql -d "$CIBLE" -tA -c "SELECT count(*) FROM pg_constraint WHERE
 [ "${fk_restauree:-0}" -ge "${fk_vivante:-0}" ] || \
   ecarts="$ecarts\n  * clés étrangères : $fk_restauree restaurées contre $fk_vivante en base"
 
+# ── Les FICHIERS : restaurer l'archive et confronter la base restaurée ──────
+# Les quatre requêtes ci-dessous produisent, pour chaque référence de fichier
+# stockée en base, le chemin ATTENDU dans le dépôt. Elles reproduisent en SQL ce
+# que fait services/storage.py:_object_path : une valeur peut être une URL
+# publique héritée (« …/public/cvs/<chemin> »), une URL S3, ou déjà un chemin
+# nu. Le faire en SQL plutôt qu'en bash évite d'avoir à découper des URL dans un
+# shell, où un nom de fichier avec une espace suffit à tout fausser.
+requete_fichiers="
+SELECT 'cvs/' || CASE WHEN cv_url LIKE '%/cvs/%'
+         THEN split_part(split_part(cv_url, '/cvs/', 2), '?', 1)
+         ELSE ltrim(cv_url, '/') END
+  FROM public.submissions WHERE cv_url IS NOT NULL AND cv_url <> ''
+UNION ALL
+SELECT 'avatars/' || CASE WHEN avatar_url LIKE '%/avatars/%'
+         THEN split_part(split_part(avatar_url, '/avatars/', 2), '?', 1)
+         ELSE ltrim(avatar_url, '/') END
+  FROM public.profiles WHERE avatar_url IS NOT NULL AND avatar_url <> ''
+UNION ALL
+SELECT 'compliance/' || CASE WHEN file_url LIKE '%/compliance/%'
+         THEN split_part(split_part(file_url, '/compliance/', 2), '?', 1)
+         ELSE ltrim(file_url, '/') END
+  FROM public.partner_compliance_docs WHERE file_url IS NOT NULL AND file_url <> ''
+UNION ALL
+SELECT 'ao-sources/' || (f->>'path')
+  FROM public.appels_offres, jsonb_array_elements(source_files) AS f
+ WHERE source_files IS NOT NULL AND jsonb_typeof(source_files) = 'array'
+   AND f->>'path' IS NOT NULL;"
+
+# Choix de l'archive de fichiers, selon le même mode que pour la base.
+ARCHIVE_F=""
+if [ "$MODE" = "--hors-site" ]; then
+  # Même filtre par suffixe que pour la base : le préfixe « uti/fichiers/ » est
+  # aujourd'hui homogène, mais c'est un fait qu'aucune règle ne garantit — une
+  # famille ajoutée demain sous ce préfixe casserait la sélection en silence.
+  CLE_S3_F=$("$BACKEND/venv/bin/python" "$BACKEND/deploy/s3_backup.py" lister "uti/fichiers/" \
+             | grep 'uti-fichiers-.*\.tar\.age$' | tail -1)
+  if [ -n "$CLE_S3_F" ]; then
+    "$BACKEND/venv/bin/python" "$BACKEND/deploy/s3_backup.py" recuperer "$CLE_S3_F" "$TRAVAIL/fichiers.age" >/dev/null \
+      || alerte "téléchargement de $CLE_S3_F impossible"
+    age -d -i "$AGE_IDENTITY" -o "$TRAVAIL/fichiers.tar" "$TRAVAIL/fichiers.age" \
+      || alerte "DÉCHIFFREMENT IMPOSSIBLE de $CLE_S3_F — la clé privée n'ouvre pas l'archive des fichiers"
+    ARCHIVE_F="$TRAVAIL/fichiers.tar"
+  fi
+else
+  derniere=$(find "$DEST" -maxdepth 1 -name 'uti-fichiers-*.tar' -type f -printf '%f\n' 2>/dev/null | sort | tail -1)
+  [ -n "$derniere" ] && ARCHIVE_F="$DEST/$derniere"
+fi
+
+nb_refs=$(psql -d "$CIBLE" -tA -c "$requete_fichiers" 2>/dev/null | sed '/^$/d' | wc -l)
+
+if [ -z "$ARCHIVE_F" ]; then
+  # Pas d'archive. Acceptable seulement si la base restaurée ne référence
+  # AUCUN fichier — c'est-à-dire avant la bascule du stockage.
+  [ "$nb_refs" -eq 0 ] || ecarts="$ecarts\n  * fichiers : la base restaurée référence $nb_refs fichier(s) et AUCUNE archive de fichiers n'existe (backup_db.sh ne les sauvegarde pas)"
+else
+  EXTRAIT="$TRAVAIL/fichiers"
+  mkdir -p "$EXTRAIT"
+  tar -xf "$ARCHIVE_F" -C "$EXTRAIT" || alerte "l'archive de fichiers $ARCHIVE_F est illisible"
+
+  refs_absentes=""
+  nb_manquants=0
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    if [ ! -f "$EXTRAIT/$rel" ]; then
+      nb_manquants=$((nb_manquants+1))
+      # Cinq exemples suffisent : au-delà, l'alerte devient un mur de texte que
+      # personne ne lit, et le compte total dit déjà l'ampleur.
+      [ "$nb_manquants" -le 5 ] && refs_absentes="$refs_absentes\n      - $rel"
+    fi
+  done < <(psql -d "$CIBLE" -tA -c "$requete_fichiers" 2>/dev/null | sed '/^$/d')
+
+  if [ "$nb_manquants" -gt 0 ]; then
+    ecarts="$ecarts\n  * fichiers : $nb_manquants référence(s) sur $nb_refs pointent vers un fichier ABSENT de l'archive restaurée :$refs_absentes"
+  fi
+
+  nb_extraits=$(find "$EXTRAIT" -type f | wc -l)
+  nb_vivants=$(find "$FICHIERS" -type f 2>/dev/null | wc -l)
+  # L'archive n'est renvoyée que lorsque le contenu change (backup_db.sh), donc
+  # elle doit normalement être IDENTIQUE au dépôt vivant. Un écart n'est pas
+  # forcément une perte — un dépôt fait il y a trois minutes n'y est pas encore —
+  # mais il doit se dire, parce que c'est aussi la signature d'un envoi qui
+  # échoue en silence depuis des semaines.
+  if [ "$nb_extraits" -lt "$nb_vivants" ]; then
+    avertissements="$avertissements\n  * fichiers : $nb_extraits dans la sauvegarde contre $nb_vivants sur le disque (dépôt récent, ou envoi hors-site en échec)"
+  fi
+  echo "[répétition] fichiers : $nb_extraits restauré(s) depuis $ARCHIVE_F, $nb_refs référence(s) en base, $nb_manquants absente(s)."
+fi
+
 if [ -n "$ecarts" ]; then
   alerte "la restauration de $ORIGINE DIVERGE de la base vivante :$(printf '%b' "$ecarts")
 
@@ -223,8 +339,8 @@ fi
   "restauration conforme, mais des lignes présentes dans la sauvegarde ont disparu de la base vivante :$(printf '%b' "$avertissements")"
 
 total=$(awk -F'|' '{s+=$2} END {print s+0}' "$TRAVAIL/restauree.txt")
-printf '%s %s %s tables %s lignes\n' "$(date -uIs)" "$MODE" "$nb_restauree" "$total" \
-  > "$DEST/.derniere_repetition"
+printf '%s %s %s tables %s lignes %s fichiers\n' "$(date -uIs)" "$MODE" "$nb_restauree" "$total" \
+  "${nb_extraits:-0}" > "$DEST/.derniere_repetition"
 
-echo "[répétition] ✅ $ORIGINE restaurée dans $CIBLE : $nb_restauree table(s) (base vivante : $nb_vivante), $total ligne(s), aucun écart."
+echo "[répétition] ✅ $ORIGINE restaurée dans $CIBLE : $nb_restauree table(s) (base vivante : $nb_vivante), $total ligne(s), ${nb_extraits:-0} fichier(s), aucun écart."
 ping_garde ""

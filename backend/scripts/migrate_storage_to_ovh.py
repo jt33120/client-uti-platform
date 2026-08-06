@@ -36,7 +36,19 @@ except ImportError:
 from config import settings  # noqa: E402
 from services.supabase_client import supabase  # noqa: E402
 
-BUCKETS = ["cvs", "avatars"]
+#: Buckets logiques à copier. « ao-sources » manquait : les fichiers sources des
+#: appels d'offres (5 objets en production) seraient restés sur Supabase, et les
+#: liens vers eux auraient cessé de fonctionner le jour où l'on ferme le projet.
+BUCKETS = ["cvs", "avatars", "ao-sources"]
+
+#: Buckets qui doivent rester PRIVÉS sur S3. La règle vient du code d'exécution
+#: (services/storage.py:78, « CVs stay private on S3 too — no public-read ACL »)
+#: et elle est reprise ici parce que ce script écrivait, lui, en public-read sans
+#: distinction : une seule exécution aurait rendu les 32 CV lisibles par
+#: quiconque connaît l'URL. Un CV, c'est un nom, un téléphone, un parcours —
+#: exactement ce qu'on ne publie pas. Les deux endroits qui posent une ACL
+#: doivent suivre la même règle, sinon la plus permissive gagne en silence.
+PRIVATE_BUCKETS = {"cvs"}
 
 
 def _s3():
@@ -74,13 +86,16 @@ def migrate_files(dry_run: bool) -> int:
         print(f"\n[{bucket}] {len(paths)} objet(s) à migrer")
         for path in paths:
             key = f"{bucket}/{path}"
+            prive = bucket in PRIVATE_BUCKETS
             if dry_run:
-                print(f"  DRY-RUN copierait → {key}")
+                print(f"  DRY-RUN copierait → {key}  [{'privé' if prive else 'public'}]")
                 continue
             data = supabase.storage.from_(bucket).download(path)
             content_type = "application/pdf" if path.endswith(".pdf") else "application/octet-stream"
-            s3.put_object(Bucket=settings.s3_bucket, Key=key, Body=data, ContentType=content_type, ACL="public-read")
-            print(f"  ✓ {key}")
+            extra = {} if prive else {"ACL": "public-read"}
+            s3.put_object(Bucket=settings.s3_bucket, Key=key, Body=data,
+                          ContentType=content_type, **extra)
+            print(f"  ✓ {key}{'' if not prive else '  (privé)'}")
             total += 1
     return total
 

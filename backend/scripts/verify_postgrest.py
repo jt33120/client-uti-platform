@@ -39,9 +39,15 @@ Sur la base NEUVE, après schema.sql et seed.sql, AVANT de basculer la productio
 Il écrit puis efface ses propres lignes de test ; il refuse de tourner si la base
 contient déjà des données, pour ne pas être lancé par mégarde sur la production.
 
-    python scripts/make_service_key.py --secret "$PGRST_SECRET" > /tmp/k
-    python scripts/verify_postgrest.py --url https://vps-cc93f2a8.vps.ovh.net \\
-                                       --key "$(cat /tmp/k)"
+    cd backend
+    KEY=$(sudo python3 scripts/make_service_key.py)
+    ANON=$(sudo python3 scripts/make_service_key.py --role anon)
+    python3 scripts/verify_postgrest.py --url http://127.0.0.1:8080 \\
+                                        --key "$KEY" --anon-key "$ANON"
+
+L'URL est celle que le backend utilisera (`SUPABASE_URL`), SANS `/rest/v1` :
+c'est le client qui ajoute ce préfixe. PostgREST n'écoutant que sur la boucle
+locale, ce test se lance depuis le VPS.
 
 Sortie 0 si les douze cas passent, 1 sinon. C'est un feu vert, pas un indice.
 """

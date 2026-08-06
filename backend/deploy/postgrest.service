@@ -1,0 +1,68 @@
+# Unité systemd de PostgREST — l'API REST placée devant PostgreSQL, qui remplace
+# l'API Supabase. Installée par backend/deploy/install_db.sh :
+#   sudo cp backend/deploy/postgrest.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now postgrest
+[Unit]
+Description=PostgREST — API REST devant PostgreSQL (remplace l'API Supabase)
+Documentation=https://docs.postgrest.org/en/v12/
+After=network.target postgresql.service
+Wants=postgresql.service
+# Même garde anti crash-loop que le backend (uti-backend.service:15-16) : un
+# secret illisible ou une base absente ne doit pas marteler le VPS indéfiniment.
+# Après correction : sudo systemctl reset-failed postgrest
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=exec
+User=postgrest
+Group=postgrest
+ExecStart=/usr/local/bin/postgrest /etc/postgrest/postgrest.conf
+# SIGUSR2 relit la configuration ; SIGUSR1 recharge le cache de schéma.
+# ⚠️ SIGHUP n'est PAS géré par PostgREST : il TUE le processus (comportement
+# vérifié en 12.2.3). D'où cette ligne — sans ExecReload, « systemctl reload »
+# échoue proprement, mais un « kill -HUP » réflexe couperait l'API.
+ExecReload=/bin/kill -USR2 $MAINPID
+Restart=always
+RestartSec=3
+
+# ── Cloisonnement ────────────────────────────────────────────────────────
+# PostgREST parle à la base au nom d'un rôle qui contourne la RLS : c'est le
+# processus le plus sensible de la machine. Il n'a besoin que de lire deux
+# fichiers dans /etc/postgrest et d'ouvrir une socket. Tout le reste est fermé.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+# Interdit la lecture de /home : le .env du backend et les CV téléversés sont
+# hors de portée même si le binaire était compromis.
+ProtectHome=true
+ProtectSystem=strict
+# Seule exception en écriture : la socket Unix de PostgreSQL, que connect() doit
+# pouvoir ouvrir.
+ReadWritePaths=/run/postgresql
+ProtectProc=invisible
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+# AF_UNIX pour PostgreSQL, AF_INET pour l'écoute sur 127.0.0.1. Rien d'autre :
+# pas d'IPv6, pas de sockets brutes.
+RestrictAddressFamilies=AF_UNIX AF_INET
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+# Si PostgREST refusait de démarrer après une mise à jour majeure, c'est la
+# PREMIÈRE ligne à commenter pour trancher entre bogue applicatif et filtre trop
+# strict (le journal indique alors « Killed by signal SYS »).
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

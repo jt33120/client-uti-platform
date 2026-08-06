@@ -166,6 +166,23 @@ def by_reset_token_hash(token_hash: str) -> Optional[dict]:
     )
 
 
+def existing_user_ids() -> set:
+    """Identifiants des comptes qui ont DÉJÀ une ligne d'identifiants.
+
+    Sert à la migration des comptes existants (scripts/migrer_identifiants.py) :
+    savoir qui reste à contacter. Volontairement ici plutôt qu'un
+    `table("user_credentials")` dans le script — c'est l'unicité du point
+    d'accès qui rend vérifiable la promesse de ce module (cf.
+    tests/test_credentials_never_leak.py).
+
+    Ne projette QUE `user_id` : ni hachage, ni empreinte de jeton, ni compteur
+    d'échecs. Un appelant qui n'a besoin que de savoir « qui existe » ne doit
+    pas se retrouver un secret entre les mains.
+    """
+    rows = supabase.table(TABLE).select("user_id").execute().data or []
+    return {r["user_id"] for r in rows if r.get("user_id")}
+
+
 def create(user_id: str, email: str, password_hash: str) -> dict:
     """Crée la ligne d'identifiants d'un compte neuf.
 

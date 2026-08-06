@@ -321,9 +321,35 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8000/auth/logi
   -d '{"email":"sonde@sonde-interne-uti.fr","password":"sonde"}'
 ```
 
-Les autres comptes se recréent ensuite par invitation depuis l'écran « Comptes ».
+**Rendre la main à TOUS les autres comptes — un e-mail, un lien.** Plutôt que de
+supprimer et réinviter compte par compte, `migrer_identifiants.py` arme pour
+chaque profil sans identifiants un jeton de réinitialisation et envoie l'e-mail
+« password_migration ». Le circuit est celui de « mot de passe oublié » : même
+page, même usage unique, même politique de mot de passe. Les données du compte
+ne bougent pas, et `mfa_secret` vivant dans `profiles`, **les personnes déjà
+enrôlées gardent leur application d'authentification**.
+
+```bash
+cd ~/app/backend && source venv/bin/activate
+
+# 1. Voir qui serait contacté — n'écrit rien, n'envoie rien
+python scripts/migrer_identifiants.py
+
+# 2. Un seul destinataire, pour vérifier le rendu de l'e-mail
+python scripts/migrer_identifiants.py --email <ton adresse> --envoyer
+
+# 3. Tout le monde
+python scripts/migrer_identifiants.py --envoyer
+```
+
+La **simulation est le défaut** : ce script écrit à de vraies personnes, et on ne
+rappelle pas un e-mail. Les comptes suspendus sont exclus (une suspension est une
+décision d'administration, pas un oubli à rattraper), et `--relancer` réarme un
+lien expiré.
+
+À défaut, les comptes se recréent par invitation depuis l'écran « Comptes ».
 La double authentification étant obligatoire par défaut, la première connexion
-impose l'enrôlement TOTP : garder le téléphone à portée.
+d'un compte non enrôlé impose le TOTP : garder le téléphone à portée.
 
 ---
 

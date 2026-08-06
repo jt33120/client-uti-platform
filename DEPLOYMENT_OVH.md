@@ -25,7 +25,7 @@ Guide pas-à-pas pour faire tourner le backend **FastAPI** sur le VPS OVH, en
 > qui pointe déjà vers `164.132.44.212`. **Aucune manipulation DNS n'est nécessaire.**
 > (`plateforme.groupement-it.com` reste le domaine du frontend, sur Vercel.)
 
-1. **Accès SSH** au VPS : `ssh julian.talou@164.132.44.212`
+1. **Accès SSH** au VPS : `ssh -p 1622 julian.talou@164.132.44.212`
 2. Les **secrets** à portée de main : clés Supabase, OpenAI, `JWT_SECRET`,
    mot de passe SMTP Infomaniak (les mêmes que sur Railway).
 
@@ -39,7 +39,7 @@ Guide pas-à-pas pour faire tourner le backend **FastAPI** sur le VPS OVH, en
 
 ### 1.1 — Se connecter et installer les outils système
 ```bash
-ssh julian.talou@164.132.44.212
+ssh -p 1622 julian.talou@164.132.44.212
 
 sudo apt update
 sudo apt install -y python3-venv python3-pip nginx git
@@ -141,7 +141,7 @@ Quand tout est stable depuis quelques jours, tu pourras supprimer le service Rai
 ### 🔁 Mises à jour futures du backend
 Après chaque `git push` sur `master`, déploie sur le VPS :
 ```bash
-ssh julian.talou@164.132.44.212 'bash ~/app/backend/deploy.sh'
+ssh -p 1622 julian.talou@164.132.44.212 'bash ~/app/backend/deploy.sh'
 ```
 
 ---

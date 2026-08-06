@@ -40,7 +40,7 @@ Après un merge sur `master` : le frontend se redéploie seul (Vercel), et pour 
 backend on déploie sur le VPS (voir `RUNBOOK.md` §4) :
 
 ```bash
-ssh julian.talou@164.132.44.212 'bash ~/app/backend/deploy.sh'
+ssh -p 1622 julian.talou@164.132.44.212 'bash ~/app/backend/deploy.sh'
 ```
 
 ## Garder `dev` aligné sur `master`

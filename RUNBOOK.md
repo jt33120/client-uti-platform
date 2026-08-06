@@ -7,9 +7,17 @@ sans réfléchir un jour de panne.
 - **Frontend** : Vercel (auto-déploiement sur push `master`). Fichiers statiques.
 - **Backend** : FastAPI en `systemd` sur le VPS OVH (`vps-cc93f2a8.vps.ovh.net`),
   derrière nginx (HTTPS Let's Encrypt), mono-worker uvicorn.
-- **Base + Storage** : Supabase.
+- **Base + Storage** : Supabase — **en cours de migration vers le VPS**
+  (PostgreSQL 18 + PostgREST pour la base, OVH Object Storage pour les fichiers).
+  Tant que la bascule n'a pas eu lieu, tout ce qui suit reste valable tel quel.
 
-Connexion VPS : `ssh julian.talou@164.132.44.212`
+Connexion VPS : `ssh -p 1622 julian.talou@164.132.44.212`
+*(le port n'est pas le 22 : une procédure de reprise qui échoue à sa première
+ligne ne sert à rien, d'où le rappel ici et dans chaque commande de ce fichier.)*
+
+**Caractéristiques du VPS** — 8 vCPU, 22 Go de RAM, 193 Go de disque,
+Ubuntu 26.04 LTS, swap de 2 Go. Utile pour dimensionner : le backend consomme
+~90 Mo au repos, l'essentiel de la mémoire est donc disponible pour PostgreSQL.
 
 ---
 
@@ -88,7 +96,7 @@ sudo systemctl restart systemd-journald
 Après un merge sur `master` :
 
 ```bash
-ssh julian.talou@164.132.44.212 'bash ~/app/backend/deploy.sh'
+ssh -p 1622 julian.talou@164.132.44.212 'bash ~/app/backend/deploy.sh'
 ```
 
 `deploy.sh` fait : `git pull` + `pip install -r requirements.txt` +

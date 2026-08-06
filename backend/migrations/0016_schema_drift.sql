@@ -14,9 +14,12 @@
 -- SILENCIEUSEMENT :
 --
 --   * la cartographie (routers/cartography.py lit clients.city / latitude /
---     longitude) : la carte se vide, sans erreur visible ;
---   * la purge RGPD (services/data_retention.py filtre sur
---     submissions.purged_at) : la requête échoue, la purge ne s'exécute plus.
+--     longitude) : la carte se vide sans erreur visible, l'appelant avalant
+--     l'exception (cartography.py:175) ;
+--   * la purge RGPD perd son marqueur d'idempotence (submissions.purged_at) :
+--     les CV sont bien anonymisés — l'écriture a un repli explicite
+--     (data_retention.py:50-51) — mais les mêmes lignes sont rebalayées à
+--     chaque passage, faute de pouvoir marquer celles déjà traitées.
 --
 -- Idempotent : rejouable sans effet sur une base qui a déjà ces colonnes.
 
@@ -40,10 +43,13 @@ ALTER TABLE public.partner_clients
   ADD COLUMN IF NOT EXISTS assigned_at TIMESTAMPTZ DEFAULT NOW();
 
 -- ── Purge RGPD des candidatures ─────────────────────────────────────
--- services/data_retention.py s'en sert à la fois comme marqueur d'anonymisation
--- et comme FILTRE (.is_("purged_at", "null")). Sans la colonne, la requête ne
--- renvoie pas « rien à purger » : elle échoue. La purge est alors inerte, ce
--- qui est le pire des deux mondes — aucune donnée effacée, aucune alerte.
+-- Marqueur d'anonymisation (data_retention.py:49). Le filtre .is_("purged_at",
+-- "null") ne porte, lui, que sur la table consultants (lignes 101 et 181) —
+-- d'où un repli explicite à l'écriture côté submissions, qui rejoue l'update
+-- sans la colonne si elle manque. La purge continue donc de fonctionner, mais
+-- sans mémoire de ce qu'elle a déjà traité : à chaque passage elle rebalaie les
+-- mêmes lignes, l'idempotence n'étant plus assurée que par le filtre de contenu
+-- (cv_url / cv_text non nuls, lignes 174-176).
 ALTER TABLE public.submissions ADD COLUMN IF NOT EXISTS purged_at TIMESTAMPTZ;
 
 -- L'index partiel équivalent existe déjà sur consultants (0013). Le même motif

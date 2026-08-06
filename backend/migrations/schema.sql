@@ -20,10 +20,14 @@
 --  CE QUI A ÉTÉ RETIRÉ DE SUPABASE, ET POURQUOI
 --
 --  * La clé étrangère profiles.id → auth.users(id). Le schéma `auth` appartenait
---    à GoTrue ; il n'existe plus. C'est désormais public.user_credentials qui
---    porte les identifiants, dans une table SÉPARÉE de profiles — plusieurs
---    endpoints renvoient la ligne profiles telle quelle au navigateur, un hash
---    de mot de passe y fuiterait immédiatement.
+--    à GoTrue ; il n'existe plus.
+--
+--    Ce fichier ne crée AUCUNE table d'identifiants : il reproduit les 22
+--    tables de la production, et le stockage des mots de passe n'en faisait pas
+--    partie — il vivait dans auth.users. La table qui les portera est le
+--    livrable du chantier « remplacement de GoTrue ». Tant qu'elle n'est pas
+--    là, une base reconstruite ici est complète mais ne sait authentifier
+--    personne. C'est un manque VISIBLE, pas un oubli.
 --
 --  * En conséquence, profiles.id reçoit un DEFAULT gen_random_uuid(). Il n'en
 --    avait aucun : l'identifiant venait de la réponse de GoTrue à la création du
@@ -56,6 +60,56 @@
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+-- ── Rôles PostgREST ─────────────────────────────────────────────────
+-- Trois rôles, et UN SEUL contourne la RLS.
+--
+-- PostgREST se connecte avec `authenticator`, puis exécute SET ROLE vers le rôle
+-- porté par la revendication `role` du JWT. C'est donc CE rôle-là, et non
+-- l'authentificateur, qui décide de ce qui est visible.
+--
+-- POURQUOI service_role DOIT PORTER BYPASSRLS
+--
+-- Les 22 tables ont la RLS activée et zéro policy — un refus total. Un rôle qui
+-- ne contourne pas la RLS y lit donc ZÉRO LIGNE, SANS LA MOINDRE ERREUR.
+-- L'application ne tomberait pas : elle servirait des listes vides et un
+-- PGRST116 « 0 rows » sur chaque `.single()`. C'est le pire mode de panne qui
+-- soit, parce qu'il ressemble à une base vide plutôt qu'à une erreur — on
+-- chercherait le problème du côté des données, pas des droits.
+--
+-- Ces rôles manquaient à la première version de ce fichier. Le test
+-- d'acceptation passait quand même, parce que le BYPASSRLS avait été posé à la
+-- main dans le bac à sable : le fonctionnement était vérifié, le
+-- provisionnement ne l'était pas.
+--
+-- Aucun mot de passe ici : ce fichier est versionné. Celui d'`authenticator`
+-- se pose au déploiement.
+DO $$
+BEGIN
+  -- NOLOGIN : on n'ouvre jamais de connexion EN TANT QUE anon ou service_role ;
+  -- on n'y accède que par SET ROLE depuis authenticator.
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+    CREATE ROLE anon NOLOGIN;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
+    CREATE ROLE service_role NOLOGIN BYPASSRLS;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticator') THEN
+    -- NOINHERIT : authenticator ne doit détenir AUCUN droit par héritage, sans
+    -- quoi une requête sans jeton s'exécuterait avec les droits cumulés de ses
+    -- rôles membres — donc avec ceux de service_role.
+    CREATE ROLE authenticator LOGIN NOINHERIT;
+  END IF;
+END
+$$;
+
+-- Réaffirmé HORS du bloc de création : les rôles sont globaux au CLUSTER, pas à
+-- la base. Une base reconstruite sur un cluster qui possède déjà un
+-- `service_role` hériterait de ses attributs, BYPASSRLS compris ou non — et
+-- l'écart resterait invisible jusqu'à la première lecture vide.
+ALTER ROLE service_role BYPASSRLS;
+
+GRANT anon, service_role TO authenticator;
 
 CREATE TABLE public.ai_usage (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
@@ -1002,7 +1056,19 @@ ALTER TABLE ONLY public.human_decision
 --
 
 ALTER TABLE ONLY public.human_decision
-    ADD CONSTRAINT human_decision_decided_by_fkey FOREIGN KEY (decided_by) REFERENCES public.profiles(id) ON DELETE SET NULL;
+    ADD CONSTRAINT human_decision_decided_by_fkey FOREIGN KEY (decided_by) REFERENCES public.profiles(id) ON DELETE RESTRICT;
+-- RESTRICT, et non SET NULL : `decided_by` est NOT NULL, donc un SET NULL ne
+-- « détache » pas la trace — il fait ÉCHOUER la suppression du compte sur une
+-- violation de NOT NULL. La base refusait déjà de supprimer, mais pour la
+-- mauvaise raison et avec un message qui ne désigne pas la règle. RESTRICT,
+-- lui, l'énonce : une trace de décision humaine (AI Act art. 14) ne se détruit
+-- pas avec le compte de son auteur.
+--
+-- Le droit à l'effacement (RGPD art. 17) reste servi, mais en ANONYMISANT la
+-- ligne profiles au lieu de la supprimer — exactement ce que
+-- services/data_retention.py fait déjà des consultants, et pour le motif qu'il
+-- énonce lui-même. Le raisonnement vaut plus fortement encore ici : un
+-- consultant est le SUJET de la décision, l'opérateur en est le RESPONSABLE.
 
 --
 --
@@ -1242,3 +1308,22 @@ ALTER TABLE public.support_messages ENABLE ROW LEVEL SECURITY;
 
 --
 --
+
+-- ── Droits ──────────────────────────────────────────────────────────
+-- `anon` ne reçoit RIEN — pas même USAGE sur le schéma. Une requête portant un
+-- jeton `anon` se heurte donc à « permission denied », bruyamment, AVANT
+-- d'atteindre la RLS. Deux verrous indépendants plutôt qu'un : le retrait
+-- accidentel de l'un laisse l'autre debout.
+REVOKE ALL ON SCHEMA public FROM PUBLIC;
+GRANT USAGE ON SCHEMA public TO service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO service_role;
+
+-- Les tables créées PLUS TARD (migrations 0019 et suivantes) doivent être
+-- accessibles au backend sans qu'on pense à repasser un GRANT. Sans cette
+-- ligne, une table neuve renverrait « permission denied » en production le jour
+-- de son déploiement, et seulement là.
+--
+-- Ne vaut que pour les objets créés par le rôle qui exécute ce fichier : jouer
+-- schema.sql ET les migrations suivantes avec le MÊME compte propriétaire.
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO service_role;

@@ -297,14 +297,32 @@ def _executer_les_cas(sb, r, args, client_id, ao_id, consultant_id, cle_idem) ->
         raise AssertionError("aucune erreur : la clé étrangère manque")
     r.teste("violation de clé étrangère", fk)
 
-    print("\n── 12. RLS verrouillée ──")
+    print("\n── 12. Verrouillage du rôle anon ──")
     if args.anon_key:
         anon = create_client(args.url, args.anon_key)
         def rls():
-            d = anon.table("clients").select("id").execute().data
-            assert d == [], (f"le rôle anon voit {len(d)} ligne(s) : la RLS ne protège plus rien. "
-                             f"Vérifier que chaque table a ENABLE ROW LEVEL SECURITY et aucune policy.")
-            return "le rôle anon ne voit rien"
+            """Deux issues acceptables, et la meilleure des deux est le refus.
+
+            `schema.sql` pose DEUX verrous indépendants : `anon` n'a aucun droit
+            sur le schéma (permission denied, code 42501), et la RLS est activée
+            sans policy (zéro ligne). Le retrait accidentel de l'un laisse
+            l'autre debout.
+
+            Le refus vaut mieux que la liste vide : une liste vide ressemble à
+            une base sans données, un 42501 désigne la cause. Mais les deux
+            protègent, donc les deux passent — ce test vérifie qu'`anon` ne voit
+            RIEN, pas la manière dont il ne voit rien.
+            """
+            try:
+                d = anon.table("clients").select("id").execute().data
+            except Exception as e:  # noqa: BLE001
+                if "42501" in str(e) or "permission denied" in _texte(e):
+                    return "refus explicite (42501) — le meilleur des deux cas"
+                raise
+            assert d == [], (f"le rôle anon voit {len(d)} ligne(s) : plus aucun verrou ne tient. "
+                             f"Vérifier que chaque table a ENABLE ROW LEVEL SECURITY sans policy, "
+                             f"et qu'anon n'a pas reçu USAGE sur le schéma public.")
+            return "aucune ligne visible (RLS)"
         r.teste("anon ne voit rien", rls)
     else:
         print("  ⏭  ignoré (fournir --anon-key pour le tester)")

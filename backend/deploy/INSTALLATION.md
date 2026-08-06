@@ -14,6 +14,7 @@ Compter environ **3 heures**, en une seule séance.
 | PostgREST | **14.16** — binaire statique, empreinte vérifiée |
 | Façade | nginx sur `127.0.0.1:8080`, chemin `/rest/v1/` |
 | Exposition | **aucune** — rien n'écoute sur une interface publique |
+| Fichiers | `/var/lib/uti/files`, `0700` `julian.talou` — servis par le backend (§4 bis) |
 
 > **Combinaison éprouvée.** PostgreSQL **18.4** + PostgREST **14.16** +
 > `supabase-py` **2.9.0** : `scripts/verify_postgrest.py` passe **15 cas sur 15**
@@ -198,6 +199,159 @@ psql -d uti -c "drop table _essai_bascule"
 Si les quatre passent, la pile est bonne. La production tourne toujours sur Supabase.
 
 **Retour arrière :** psql -d uti -c "drop table if exists _essai_bascule"  — la table d'essai est le seul objet créé.
+
+## 4 bis. Le dépôt des FICHIERS (CV, pièces d'AO, URSSAF, KBIS)
+
+Indépendant de la base : **à faire avant la bascule du §5**, et réversible.
+
+### Pourquoi `/var/lib/uti/files`, et pas ailleurs
+
+| Emplacement écarté | Pourquoi |
+|---|---|
+| `~/app/backend/uploads` | `deploy.sh` remplace cet arbre à chaque mise à jour : des CV de production y seraient effacés par un déploiement de routine. |
+| `/home/julian.talou/files` | `/home` est en `750` : tout service qui devrait un jour y lire aurait besoin d'une exception. Et un compte utilisateur n'est pas un emplacement d'état applicatif. |
+| `/var/lib/uti/files` | Emplacement prévu par la FHS pour l'état applicatif persistant. Hors de l'arbre git, hors de `/home`, et c'est ce que la sauvegarde vise. |
+
+### Droits UNIX : qui écrit, qui lit, et pourquoi
+
+```bash
+sudo install -d -m 750 -o julian.talou -g julian.talou /var/lib/uti
+sudo install -d -m 700 -o julian.talou -g julian.talou /var/lib/uti/files
+ls -ld /var/lib/uti /var/lib/uti/files    # drwx------ julian.talou julian.talou
+```
+
+| Acteur | Compte | Accès | Pourquoi |
+|---|---|---|---|
+| Backend FastAPI | `julian.talou` (`uti-backend.service`) | **lecture + écriture** | Il dépose les fichiers et il les sert lui-même. |
+| Sauvegarde | `julian.talou` (`uti-backup.service`) | **lecture** | Même compte : rien de plus à ouvrir. |
+| nginx | `www-data` | **aucun** | Il relaie, il ne lit jamais ces fichiers. Voir ci-dessous. |
+| Tout autre compte du VPS | — | **aucun** | `0700` sur les répertoires, `0600` sur les fichiers, imposés dans le code (`services/storage.py`) et non hérités du `umask` — un `umask` à 022 donnerait des CV en `0644`. |
+
+**Pourquoi `www-data` n'a besoin de rien.** `X-Accel-Redirect` (nginx autorise,
+le backend décide) a été **écarté**. À 38 objets et ~50 Mo, le gain est nul, et
+le coût est réel : il faudrait ouvrir la lecture de CV, d'attestations URSSAF et
+de KBIS à un second compte, et la décision « qui a le droit de lire » vivrait
+dans deux systèmes au lieu d'un — exactement le montage qui avait laissé les CV
+en `public-read`. Le seuil de bascule est écrit dans `backend/nginx.conf` : un
+objet unique au-delà de ~100 Mo, ou des téléchargements concurrents qui saturent
+l'unique worker uvicorn.
+
+### Configuration et migration des 38 objets
+
+```bash
+cd ~/app/backend
+cp -a .env .env.avant-stockage-$(date +%F-%H%M)
+
+# 1) Chemin + origine publique. STORAGE_BACKEND reste inchangé pour l'instant.
+cat >> .env <<'EOF'
+LOCAL_STORAGE_DIR=/var/lib/uti/files
+PUBLIC_BASE_URL=https://vps-cc93f2a8.vps.ovh.net
+EOF
+
+# 2) Simulation, puis copie. ⚠️ TANT QUE SUPABASE_URL POINTE ENCORE SUR SUPABASE :
+#    --rewrite-db écrit dans la base COURANTE. Lancé après la bascule du §5, il
+#    réécrirait la base neuve — vide — et les 32 CV deviendraient introuvables.
+venv/bin/python scripts/migrate_storage_to_ovh.py --dry-run
+venv/bin/python scripts/migrate_storage_to_ovh.py --vers local
+venv/bin/python scripts/migrate_storage_to_ovh.py --vers local --rewrite-db
+
+# 3) Bascule de l'application
+sed -i 's#^STORAGE_BACKEND=.*#STORAGE_BACKEND=local#' .env
+sudo systemctl restart uti-backend
+
+# 4) Sauvegarde des fichiers : sans elle, la migration a supprimé la seule copie
+sudo sed -i '/^Environment=BACKUP_DIR=/a Environment=FILES_DIR=/var/lib/uti/files' \
+    /etc/systemd/system/uti-backup.service   # ou recopier l'unité du dépôt
+sudo systemctl daemon-reload && sudo systemctl start uti-backup
+cat /var/backups/uti/.dernier_succes_fichiers
+bash ~/app/backend/deploy/restore_drill.sh
+```
+
+**Réussite :** `find /var/lib/uti/files -type f | wc -l` = 38 ;
+`ls -l /var/lib/uti/files/cvs/*/ | head` montre des `-rw-------` ; un CV s'ouvre
+depuis l'application ; un avatar s'affiche ; `restore_drill.sh` termine sur
+« N fichier(s) restauré(s) … 0 absente(s) ».
+
+**Retour arrière :** `sed -i 's#^STORAGE_BACKEND=.*#STORAGE_BACKEND=supabase#' .env`
+puis `sudo systemctl restart uti-backend`. Les fichiers restent sur Supabase (le
+script ne supprime rien) et `storage._object_path()` relit indifféremment une
+URL Supabase héritée ou un chemin nu : le retour est immédiat et complet.
+
+---
+
+## 4 ter. La migration 0019 doit atteindre la base que la PRODUCTION interroge
+
+Le code d'authentification maison a été fusionné et déployé pendant que
+`SUPABASE_URL` désignait encore Supabase. Le schéma neuf de la migration 0019
+avait été chargé sur le VPS — pas sur la base que la production interrogeait.
+Résultat : `credentials.by_email()` cherchait une table `user_credentials` qui
+n'existait pas, et **toute connexion renvoyait 503** pendant des heures. Le
+processus vivait, `/health/db` était vert, aucun rollback ne pouvait se
+déclencher (`deploy.sh` a depuis une troisième sonde pour ça).
+
+La règle qui en découle tient en une phrase : **une migration doit atteindre la
+base que la production interroge AUJOURD'HUI, pas celle qu'elle interrogera
+après la bascule.** Tant que `SUPABASE_URL` pointe sur Supabase, c'est Supabase
+qu'il faut migrer.
+
+**Appliquer 0019 à Supabase** — tableau de bord → SQL Editor → coller le contenu
+de `backend/migrations/0019_auth_maison.sql`. Le fichier est idempotent :
+
+```bash
+cat ~/app/backend/migrations/0019_auth_maison.sql   # à copier tel quel
+```
+
+**Rouvrir un compte existant.** 0019 ne reprend aucun hachage bcrypt : les
+profils survivent, les mots de passe non. Sur une base peuplée, on pose donc un
+mot de passe **sur le profil existant** — sans quoi `--force` créerait un second
+profil, et les AO, matchings et décisions de l'ancien continueraient de désigner
+un compte auquel plus personne ne peut se connecter :
+
+```bash
+cd ~/app/backend && source venv/bin/activate
+python scripts/bootstrap_admin.py --profil-existant \
+    --email <adresse de l'admin> --name "<nom affiché>"
+```
+
+**Vérifier** — 401 attendu (adresse inconnue), et surtout **pas** 503 :
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8000/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"sonde@sonde-interne-uti.fr","password":"sonde"}'
+```
+
+**Rendre la main à TOUS les autres comptes — un e-mail, un lien.** Plutôt que de
+supprimer et réinviter compte par compte, `migrer_identifiants.py` arme pour
+chaque profil sans identifiants un jeton de réinitialisation et envoie l'e-mail
+« password_migration ». Le circuit est celui de « mot de passe oublié » : même
+page, même usage unique, même politique de mot de passe. Les données du compte
+ne bougent pas, et `mfa_secret` vivant dans `profiles`, **les personnes déjà
+enrôlées gardent leur application d'authentification**.
+
+```bash
+cd ~/app/backend && source venv/bin/activate
+
+# 1. Voir qui serait contacté — n'écrit rien, n'envoie rien
+python scripts/migrer_identifiants.py
+
+# 2. Un seul destinataire, pour vérifier le rendu de l'e-mail
+python scripts/migrer_identifiants.py --email <ton adresse> --envoyer
+
+# 3. Tout le monde
+python scripts/migrer_identifiants.py --envoyer
+```
+
+La **simulation est le défaut** : ce script écrit à de vraies personnes, et on ne
+rappelle pas un e-mail. Les comptes suspendus sont exclus (une suspension est une
+décision d'administration, pas un oubli à rattraper), et `--relancer` réarme un
+lien expiré.
+
+À défaut, les comptes se recréent par invitation depuis l'écran « Comptes ».
+La double authentification étant obligatoire par défaut, la première connexion
+d'un compte non enrôlé impose le TOTP : garder le téléphone à portée.
+
+---
 
 ## 5. BASCULE (uniquement quand le schéma, les données ET l'auth maison sont en place)
 

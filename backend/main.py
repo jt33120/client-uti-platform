@@ -7,7 +7,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import Response, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from config import settings, is_prod
-from routers import auth, consultants, aos, matching, clients, partners, submissions, invitations, pacs, support, assistant, admin, gdpr, decisions, scoring_config, cartography, notifications, email_templates, cv, client_review
+from routers import auth, consultants, aos, matching, clients, partners, submissions, invitations, pacs, support, assistant, admin, gdpr, decisions, scoring_config, cartography, notifications, email_templates, cv, client_review, files
 from mip_rum_middleware import MIPRumMiddleware
 
 IS_PROD = is_prod()
@@ -58,14 +58,27 @@ def is_allowed_origin(origin: str) -> bool:
     return bool(_VERCEL_PREVIEW_RE.match(origin))
 
 
-def _apply_security_headers(response: Response) -> None:
+def _apply_security_headers(response: Response, path: str = "") -> None:
     """Hardened response headers — applied to every response."""
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["X-Permitted-Cross-Domain-Policies"] = "none"
-    # API renvoie du JSON : un CSP verrouillé n'a aucun effet de bord ici.
-    response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
+    if path.startswith("/files/"):
+        # Ces réponses ne sont PAS du JSON : ce sont des PDF et des images
+        # affichés par le navigateur (routers/files.py). « default-src 'none' »
+        # y bloquerait selon les navigateurs la visionneuse PDF intégrée, et on
+        # découvrirait la panne en production sur un CV. Seule interdiction qui
+        # compte ici : le script — c'est elle qui ferme le XSS same-origin
+        # qu'introduit le fait de servir des fichiers déposés par des tiers
+        # depuis notre propre domaine. Le type de contenu, lui, est déjà
+        # verrouillé par la liste blanche de services/storage.py.
+        response.headers["Content-Security-Policy"] = (
+            "script-src 'none'; frame-ancestors 'none'"
+        )
+    else:
+        # API renvoie du JSON : un CSP verrouillé n'a aucun effet de bord ici.
+        response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
     if IS_PROD:
         response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
     # Starlette MutableHeaders n'a pas .pop() — suppression sûre du header Server.
@@ -82,7 +95,7 @@ async def _unhandled(request: Request, exc: Exception):
     # Rend le 500 visible dans la console admin (GET /admin/errors).
     record("http", f"{request.method} {request.url.path}", exc=exc, path=request.url.path)
     resp = JSONResponse(status_code=500, content={"detail": "Erreur interne du serveur."})
-    _apply_security_headers(resp)
+    _apply_security_headers(resp, request.url.path)
     return resp
 
 # ── CORS middleware with dynamic origin checking ──────────────
@@ -111,7 +124,7 @@ async def cors_middleware(request: Request, call_next):
         response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Credentials"] = "true"
 
-    _apply_security_headers(response)
+    _apply_security_headers(response, request.url.path)
     return response
 
 # ── Routers ───────────────────────────────────────────────────
@@ -134,6 +147,9 @@ app.include_router(gdpr.router)
 app.include_router(cartography.router)
 app.include_router(notifications.router)
 app.include_router(email_templates.router)
+# Service des fichiers du disque local (STORAGE_BACKEND=local). Les routes
+# répondent 404 sur un déploiement Supabase/S3 : voir routers/files.py.
+app.include_router(files.router)
 
 @app.get("/")
 def root():

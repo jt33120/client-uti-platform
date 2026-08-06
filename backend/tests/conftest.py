@@ -9,7 +9,16 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 # Config minimale : les modules de services importent `config.settings` au chargement.
 os.environ.setdefault("APP_ENV", "dev")
 os.environ.setdefault("SUPABASE_URL", "https://example.supabase.co")
-os.environ.setdefault("SUPABASE_SERVICE_KEY", "test-key")
+# Clé factice, mais de FORME valide. supabase-py vérifie que la clé ressemble à
+# un JWT (trois segments) avant de construire le client : avec « test-key », tout
+# module qui importe services.supabase_client échouait à la COLLECTE — mais
+# seulement là où le paquet `supabase` est réellement installé, donc pas sous le
+# bouchon ci-dessous. Quatre fichiers de tests ne s'exécutaient ainsi jamais en
+# local tout en passant en CI. La forme suffit : aucune requête n'est émise.
+os.environ.setdefault(
+    "SUPABASE_SERVICE_KEY",
+    "eyJhbGciOiJIUzI1NiJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIn0.signature-de-test",
+)
 
 # `supabase` n'est pas toujours installé hors CI. On ne pose le bouchon QUE s'il
 # manque : là où le vrai paquet existe (CI, prod), rien n'est masqué — un import

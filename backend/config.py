@@ -21,7 +21,8 @@ class Settings(BaseSettings):
     smtp_from: Optional[str] = None  # defaults to smtp_user when unset
     smtp_from_name: str = "Plateforme GRP-IT"
 
-    # File storage backend: "supabase" (default) or "s3" (OVH Object Storage)
+    # File storage backend: "supabase", "s3" (OVH Object Storage) ou "local"
+    # (disque du VPS). Voir services/storage.py.
     storage_backend: str = "supabase"
     s3_endpoint_url: Optional[str] = None  # e.g. https://s3.gra.io.cloud.ovh.net
     s3_region: str = "gra"
@@ -29,6 +30,25 @@ class Settings(BaseSettings):
     s3_secret_key: Optional[str] = None
     s3_bucket: Optional[str] = None  # single OVH bucket; "cvs"/"avatars" become key prefixes
     s3_public_base_url: Optional[str] = None  # public base URL for stored objects
+
+    # ── Stockage LOCAL (STORAGE_BACKEND=local) ──────────────────────
+    # Racine des fichiers sur le disque du VPS. HORS de ~/app : ce répertoire
+    # est le dépôt git redéployé par deploy.sh, et des données de production
+    # n'ont rien à faire dans un arbre que l'on remplace à chaque mise à jour.
+    # Hors de /home aussi : /var/lib est l'emplacement prévu par la FHS pour
+    # l'état applicatif persistant, et c'est ce que les sauvegardes visent.
+    local_storage_dir: str = "/var/lib/uti/files"
+    # Origine publique du BACKEND (façade nginx en HTTPS), pas celle du frontend.
+    # Les URLs de fichiers sont ouvertes depuis Vercel et depuis des clients de
+    # messagerie : une URL relative n'y veut rien dire. Obligatoire en mode local
+    # (garde ci-dessous), inutile ailleurs.
+    public_base_url: Optional[str] = None
+    # Secret DÉDIÉ à la signature des URLs de fichiers. Laisser vide : la clé est
+    # alors dérivée de jwt_secret par HMAC (services/storage.py:_cle_de_signature),
+    # ce qui donne la séparation de domaine sans un secret de plus à faire tourner.
+    # Le renseigner permet d'invalider d'un coup toutes les URLs de fichiers
+    # émises sans déconnecter personne.
+    file_url_secret: Optional[str] = None
 
     # ── Modèles LLM (tous via OpenRouter) — dimensionnés par usage ──
     # Configurables par .env pour qu'un retrait de modèle upstream soit une
@@ -128,3 +148,52 @@ if settings.jwt_secret == INSECURE_JWT_DEFAULT:
         )
     print("[CONFIG] ⚠️  JWT_SECRET par défaut — OK en dev, à NE JAMAIS utiliser en prod.")
 
+# ── Stockage : refuser une configuration à moitié posée ────────────
+BACKENDS_STOCKAGE = ("supabase", "s3", "local")
+
+# Fail-closed n°1 : jusqu'ici, toute valeur autre que "s3" retombait
+# silencieusement sur Supabase. Avec un TROISIÈME backend, une faute de frappe
+# (« locale », « Local ») écrirait les fichiers dans le projet Supabase — celui
+# qu'on s'apprête justement à supprimer. On préfère ne pas démarrer.
+if settings.storage_backend not in BACKENDS_STOCKAGE:
+    raise RuntimeError(
+        f"STORAGE_BACKEND={settings.storage_backend!r} inconnu. "
+        f"Valeurs acceptées : {', '.join(BACKENDS_STOCKAGE)}.\n"
+        "Une valeur non reconnue retombait autrefois sur Supabase sans le dire : "
+        "les fichiers seraient écrits dans le projet destiné à la suppression."
+    )
+
+# Fail-closed n°2 : sans origine publique, services/storage.py fabriquerait des
+# URLs commençant par « /files/… ». Le frontend est sur Vercel et les liens de CV
+# partent par e-mail : ces URLs seraient résolues sur le mauvais domaine, et la
+# panne se verrait au premier clic d'un CLIENT, pas au démarrage.
+if settings.storage_backend == "local" and not settings.public_base_url:
+    raise RuntimeError(
+        "STORAGE_BACKEND=local exige PUBLIC_BASE_URL (origine HTTPS publique du "
+        "backend, ex. https://vps-cc93f2a8.vps.ovh.net).\n"
+        "Sans elle, les liens de CV et d'avatars seraient relatifs — donc résolus "
+        "sur le domaine Vercel du frontend, où rien ne répond."
+    )
+
+
+# Fail-closed n°3 : la clé qui signe les URLs de FICHIERS ne doit jamais être
+# celle qui signe les SESSIONS.
+#
+# Les deux jetons n'ont pas la même exposition. Un jeton de session voyage dans
+# un en-tête Authorization ; un jeton de fichier voyage DANS L'URL — donc dans
+# les journaux, l'historique du navigateur, et, pour le lien de CV transmis au
+# client final (services/cv_notifications.py, 7 jours de validité), dans une
+# boîte mail que nous ne maîtrisons pas.
+#
+# Laisser FILE_URL_SECRET vide est le cas NORMAL : la clé est alors dérivée de
+# jwt_secret par HMAC, ce qui donne la séparation sans un secret de plus à faire
+# tourner. Ce garde-fou ne vise que le geste « pour simplifier, je mets la même
+# valeur », qui annulerait la séparation sans que rien ne le signale.
+if settings.file_url_secret and settings.file_url_secret == settings.jwt_secret:
+    raise RuntimeError(
+        "FILE_URL_SECRET est identique à JWT_SECRET. Ces deux jetons n'ont pas "
+        "la même exposition : celui des fichiers circule dans des URLs, donc "
+        "dans des journaux et des boîtes mail.\n"
+        "Laissez FILE_URL_SECRET vide (la clé sera dérivée de JWT_SECRET par "
+        "HMAC), ou donnez-lui une valeur distincte : openssl rand -hex 32"
+    )

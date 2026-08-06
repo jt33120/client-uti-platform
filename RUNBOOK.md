@@ -137,7 +137,10 @@ rebascule le trafic API immédiatement.
 | `/health` ne répond pas | `systemctl status uti-backend` ; logs journald ; nginx up ? (`systemctl status nginx`) |
 | L'appli répond 500 partout | base joignable ? `curl localhost:8000/health/db` ; logs `[ERROR]` |
 | Le service refuse de démarrer | `.env` cassé ou `JWT_SECRET` par défaut en prod (fail-closed voulu) → voir logs, corriger `.env`, `reset-failed` |
-| Upload de CV en échec | taille > 25 Mo (limite nginx `client_max_body_size`) ; storage OVH OK ? |
+| Upload de CV en échec | taille > 25 Mo (limite nginx `client_max_body_size`) ; en mode local : `/var/lib/uti/files` existe et appartient à `julian.talou` ? disque plein ? |
+| **Un CV / une pièce d'AO ne s'ouvre plus (404)** | Le fichier a disparu du disque, ou `LOCAL_STORAGE_DIR` a changé. `ls /var/lib/uti/files/cvs/<ao_id>/` ; §9.7 |
+| **« Ce lien a expiré » (410)** | Normal : une URL de fichier dure 1 h (7 j pour un CV envoyé à un client). Rouvrir la fiche depuis la plateforme régénère le lien. |
+| **Un CV répond 403** | Lien tronqué par le client de messagerie, ou `JWT_SECRET` / `FILE_URL_SECRET` changé depuis l'envoi : cela change la clé de signature, donc invalide tous les liens émis avant. |
 | Matching IA très lent / timeout | clé OpenRouter/OpenAI valide ? quotas ? le proxy coupe à 120 s |
 | Pas d'e-mails envoyés | SMTP Infomaniak : `SMTP_USER`/`SMTP_PASSWORD` ; tester `python scripts/test_smtp.py` |
 | RAM du VPS saturée | activer les garde-fous `MemoryHigh`/`MemoryMax` dans `uti-backend.service` |
@@ -166,6 +169,14 @@ Uniquement dans `~/app/backend/.env` sur le VPS (jamais commités) :
 `SMTP_PASSWORD`, et le cas échéant `S3_ACCESS_KEY` / `S3_SECRET_KEY`.
 En prod, `APP_ENV=production` (durcit `/docs`, headers, garde JWT).
 
+**`FILE_URL_SECRET`** (facultatif) signe les URLs de fichiers. Laissé vide, la
+clé est **dérivée** de `JWT_SECRET` par HMAC : la séparation de domaine est
+assurée sans secret supplémentaire à gérer. Le renseigner sert à **invalider
+d'un coup toutes les URLs de fichiers déjà émises sans déconnecter personne** —
+c'est le geste à faire si un lien de CV a fuité. Ne jamais y recopier
+`JWT_SECRET` : un jeton d'URL voyage dans les journaux nginx, l'historique du
+navigateur et la boîte mail du client ; un jeton de session, non.
+
 Deux fichiers **hors dépôt et hors `.env`**, en `600`, root :
 
 | Fichier | Contenu | Pourquoi séparé |
@@ -182,6 +193,7 @@ Deux fichiers **hors dépôt et hors `.env`**, en `600`, root :
 | Quand | Unité systemd | Ce que ça fait |
 |---|---|---|
 | Toutes les heures | `uti-backup.timer` | `pg_dump` → chiffrement `age` → dépôt hors-site OVH → rotation locale |
+| Toutes les heures, **si le contenu a changé** | la même | `tar` de `/var/lib/uti/files` → chiffrement `age` → dépôt hors-site (§9.7) |
 | Tous les jours à 03:xx UTC | la même | + copie quotidienne locale (14 j), + `.env` et `/etc/postgrest` chiffrés hors-site, + vérification octet par octet de l'objet distant |
 | Le dimanche à 03:xx UTC | la même | + copie hebdomadaire locale (8 semaines) |
 | Le lundi à 04:15 UTC | `uti-restore-drill.timer` | **restaure** la dernière archive dans une base jetable et **compare** les lignes à la base vivante |
@@ -191,6 +203,7 @@ Deux fichiers **hors dépôt et hors `.env`**, en `600`, root :
 systemctl list-timers 'uti-*' --no-pager      # les trois, avec leur prochaine échéance
 journalctl -u uti-backup -n 30 --no-pager
 cat /var/backups/uti/.dernier_succes          # date + clé S3 + taille de la dernière réussie
+cat /var/backups/uti/.dernier_succes_fichiers # idem pour l'archive des FICHIERS
 cat /var/backups/uti/.derniere_repetition     # date de la dernière restauration prouvée
 ```
 
@@ -366,6 +379,65 @@ Elle télécharge le dernier objet OVH, le déchiffre, le restaure et le compare
 C'est le seul contrôle qui prouve que **la clé papier ouvre bien les archives**.
 Ne jamais laisser `AGE_IDENTITY` traîner sur le VPS après coup.
 
+La répétition restaure **aussi l'archive des fichiers** et vérifie que **chaque
+référence de la base restaurée désigne un fichier réellement présent**
+(`submissions.cv_url`, `profiles.avatar_url`,
+`partner_compliance_docs.file_url`, `appels_offres.source_files`). C'est le seul
+contrôle qui distingue « la base revient » de « la plateforme revient ».
+
+### 9.7 Les fichiers, depuis qu'ils vivent sur ce disque
+
+Les CV, les pièces jointes d'appel d'offres, les attestations de vigilance
+URSSAF et les KBIS ne sont plus chez un hébergeur qui les réplique : ils sont
+dans **`/var/lib/uti/files`**, sur le même disque que la base. **C'est la
+contrepartie de la décision de rapatrier le stockage, et elle n'est pas
+optionnelle** : sans le dispositif ci-dessous, un `rm -rf` ou un rançongiciel
+emporte la base *et* les fichiers, et seule la base revient.
+
+| Question | Réponse |
+|---|---|
+| Où ? | `/var/lib/uti/files/{cvs,avatars,ao-sources,compliance,email-assets}` |
+| Droits | Répertoires `0700`, fichiers `0600`, propriétaire `julian.talou` |
+| Qui écrit ? | Le backend (`uti-backend.service`, `User=julian.talou`) |
+| Qui lit ? | **Lui seul.** `nginx` (`www-data`) n'ouvre jamais ces fichiers : il relaie, le backend sert (§9.7 « pourquoi pas X-Accel-Redirect »). |
+| Sauvegarde | `tar` → `age` → `uti/fichiers/AAAA/MM/uti-fichiers-*.tar.age` chez OVH, **uniquement quand le contenu a changé** |
+| Restauration | Vérifiée chaque lundi par `restore_drill.sh` (§9.6) |
+
+**Pourquoi « quand le contenu a changé » et pas à chaque heure.** 38 objets,
+~50 Mo. Redéposer 50 Mo par heure, c'est 1,2 Go par jour dans un conteneur à
+**verrou d'objet**, où rien ne s'efface : la facture monte sans fin pour un
+contenu identique 23 heures sur 24. Un dépôt quotidien, à l'inverse, donnerait
+aux fichiers un RPO de 24 h contre 1 h à la base — un CV déposé le matin et
+perdu le soir serait référencé par une ligne restaurée pointant sur un fichier
+absent. Le script compare donc chaque heure une empreinte (chemin + taille +
+date de chaque fichier) et n'envoie que si elle a bougé.
+
+**Pourquoi le backend sert les fichiers, et pas nginx.** `X-Accel-Redirect`
+obligerait `www-data` à pouvoir **lire** le répertoire — un second lecteur pour
+des CV et des attestations URSSAF — et scinderait la décision « qui a le droit
+de lire » entre deux systèmes. C'est exactement le montage qui avait laissé les
+CV en `public-read`. Le gain, à 50 Mo, est nul. *Seuil de bascule, écrit pour ne
+pas être décidé à l'instinct :* le jour où un objet unique dépasse ~100 Mo, ou
+si les téléchargements concurrents saturent l'unique worker uvicorn.
+
+**Comment un fichier privé est servi.** Le backend émet une URL
+`https://…/files/d/<jeton>` où le **bucket et le chemin sont à l'intérieur du
+jeton signé** — il n'existe aucun chemin hors de la signature. Durée : 1 h, ou
+7 j pour un CV envoyé à un client (plafond absolu). Les avatars et les images de
+modèles d'e-mail, eux, ont une URL stable `…/files/public/<bucket>/<chemin>` :
+une balise `<img>` et un client de messagerie ne savent pas renouveler un lien
+expiré. La liste blanche `PUBLIC_BUCKETS` (`services/storage.py`) est la seule
+autorité — tout le reste tombe en 404 sur cette entrée.
+
+```bash
+# Inventaire et volume
+find /var/lib/uti/files -type f | wc -l && du -sh /var/lib/uti/files
+# Droits (doit être drwx------ julian.talou)
+ls -ld /var/lib/uti/files /var/lib/uti/files/cvs
+# Ce que le backend voit (staff authentifié)
+curl -s -H "Authorization: Bearer <jeton>" localhost:8000/files/_diagnostic
+```
+
 ---
 
 ## 10. Reprise après sinistre — « le VPS a brûlé »
@@ -376,7 +448,15 @@ Ne jamais laisser `AGE_IDENTITY` traîner sur le VPS après coup.
 |---|---|---|
 | **RPO** (données perdues au pire) | **≤ 1 h 05** | Sauvegarde horaire + `RandomizedDelaySec=300`. Concrètement : les CV déposés et les décisions saisies dans l'heure écoulée. |
 | **RTO** (retour en service) | **3 h à 4 h**, estimé | Détail au §10.3. |
-| **RTO des fichiers** (CV, pièces jointes) | **0** | Ils ne sont pas dans la base : ils vivent déjà chez OVH Object Storage (`STORAGE_BACKEND=s3`). Un VPS mort ne les touche pas. |
+| **RPO des fichiers** (CV, pièces jointes, URSSAF, KBIS) | **≤ 1 h 05** | Même fenêtre que la base : le dépôt hors-site est déclenché à l'heure, dès que le contenu du répertoire a changé (§9.7). |
+| **RTO des fichiers** | **+10 min** sur le RTO ci-dessus | Étape 7 bis du §10.3 : télécharger, déchiffrer, extraire, reposer les droits. |
+
+> ⚠️ **Cette ligne a changé de sens.** Tant que `STORAGE_BACKEND=s3` était visé,
+> le RTO des fichiers était **0** : ils vivaient chez OVH et un VPS mort ne les
+> touchait pas. Depuis qu'ils sont sur le disque du VPS, **ils meurent avec
+> lui** — et ne reviennent que par la sauvegarde. C'est le prix, entièrement
+> assumé, de ne plus dépendre d'un compte OVH qu'on ne possède pas. Il se paie
+> une fois, à l'étape 7 bis, à condition de ne pas l'oublier.
 
 > ⚠️ **Le RTO ci-dessus est une estimation, pas une mesure.** Il le restera
 > jusqu'à la première reprise réelle. Chronométrer la première vraie exécution
@@ -410,7 +490,8 @@ choix assumé du §9.2.
 | 4 | Installer la pile base | 25 min | `sudo bash ~/app/backend/deploy/install_db.sh` |
 | 5 | **Récupérer la configuration** | 10 min | Voir l'encadré ci-dessous — c'est l'étape qui décide du RTO |
 | 6 | **Récupérer et déchiffrer la dernière archive** | 10 min | Voir l'encadré ci-dessous |
-| 7 | Restaurer | 5 min | `pg_restore --exit-on-error --no-owner --no-privileges -d uti archive.pgcustom` |
+| 7 | Restaurer la base | 5 min | `pg_restore --exit-on-error --no-owner --no-privileges -d uti archive.pgcustom` |
+| 7 bis | **Restaurer les FICHIERS** | 10 min | Voir l'encadré ci-dessous. **Sauter cette étape donne une base parfaite dont tous les liens de CV sont morts.** |
 | 8 | Rôles et privilèges (objets de **cluster**, absents du dump) | 5 min | `cd ~/app/backend/deploy && sudo -u postgres psql < roles_postgrest.sql` |
 | 9 | Démarrer les services | 10 min | `sudo systemctl enable --now postgrest nginx uti-backend` |
 | 10 | HTTPS sur la nouvelle machine | 15 min | `sudo certbot --nginx` (⚠️ si l'IP change, **attendre la propagation DNS** : jusqu'au TTL de la zone) |
@@ -445,6 +526,32 @@ attentes (provisioning, `apt`, DNS) et le fait qu'on fait ça en état de stress
 > ```
 > Le nom des objets est horodaté **UTC ISO-8601** : le dernier au sens
 > alphabétique est le plus récent au sens chronologique.
+
+> **Étape 7 bis — les fichiers.** La base restaurée référence des CV, des pièces
+> jointes d'AO et des attestations URSSAF qui ne sont **nulle part** tant que
+> cette étape n'est pas faite. L'application démarrera, les écrans s'afficheront,
+> et c'est en cliquant sur un CV qu'on découvrira le problème.
+> ```bash
+> venv/bin/python deploy/s3_backup.py lister uti/fichiers/ | tail -1
+> venv/bin/python deploy/s3_backup.py recuperer <cle> /tmp/fichiers.age
+> age -d -i /media/cle-usb/uti-backup.age-key -o /tmp/fichiers.tar /tmp/fichiers.age
+>
+> sudo install -d -m 750 -o julian.talou -g julian.talou /var/lib/uti
+> sudo install -d -m 700 -o julian.talou -g julian.talou /var/lib/uti/files
+> sudo tar -xf /tmp/fichiers.tar -C /var/lib/uti/files
+> # tar restaure les modes de l'archive, mais PAS le propriétaire quand on
+> # n'extrait pas en root, et l'inverse quand on l'est. On tranche explicitement :
+> sudo chown -R julian.talou:julian.talou /var/lib/uti/files
+> sudo find /var/lib/uti/files -type d -exec chmod 700 {} +
+> sudo find /var/lib/uti/files -type f -exec chmod 600 {} +
+> shred -u /tmp/fichiers.tar /tmp/fichiers.age
+>
+> # Contrôle : autant de fichiers que la base en référence
+> psql -d uti -tAc "SELECT count(*) FROM submissions WHERE cv_url IS NOT NULL;"
+> find /var/lib/uti/files/cvs -type f | wc -l
+> ```
+> Le contrôle complet (chaque référence ↔ chaque fichier, les quatre familles)
+> est celui que fait `restore_drill.sh` : le relancer une fois la machine debout.
 
 ### 10.4 Les trois façons dont cette procédure échoue
 

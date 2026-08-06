@@ -16,6 +16,10 @@ User=julian.talou
 Group=julian.talou
 Environment=BACKEND_DIR=/home/julian.talou/app/backend
 Environment=BACKUP_DIR=/var/backups/uti
+# Le dépôt VIVANT, lu en seule lecture pour comparer son volume à celui de
+# l'archive restaurée. La répétition n'écrit JAMAIS dedans : elle extrait dans
+# un répertoire jetable sous /tmp.
+Environment=FILES_DIR=/var/lib/uti/files
 Environment=PATH=/usr/lib/postgresql/18/bin:/usr/local/bin:/usr/bin:/bin
 # Sonde DISTINCTE de celle de la sauvegarde : « la sauvegarde tourne » et « la
 # sauvegarde est restaurable » sont deux affirmations différentes, et confondre

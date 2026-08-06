@@ -83,6 +83,25 @@ _DEFAULT_RESET = (
     '<p style="margin:0;font-size:13px;color:#6e6e73;">Ce lien est à usage '
     "unique et expire dans 1 heure.</p>"
 )
+# Migration de l'authentification. VOLONTAIREMENT DISTINCT de _DEFAULT_RESET :
+# celui-ci s'ouvre sur « vous avez demandé », ce qui serait faux ici — personne
+# n'a rien demandé. Un utilisateur qui reçoit un lien de mot de passe qu'il n'a
+# pas sollicité pense d'abord à une tentative d'hameçonnage, et il a raison de le
+# penser. L'email doit donc dire POURQUOI il arrive, et ce qui NE change pas.
+_DEFAULT_MIGRATION = (
+    '<p style="margin:0 0 14px;">La plateforme Groupement-IT gère désormais '
+    "elle-même les mots de passe, sur nos propres serveurs. Pour des raisons de "
+    "sécurité, aucun mot de passe n'a été repris de l'ancien système : il vous "
+    "faut en choisir un nouveau, une seule fois.</p>"
+    '<p style="margin:0 0 14px;"><strong>Votre compte et vos données sont '
+    "intacts</strong> — appels d'offres, consultants, historique. Seule la façon "
+    "de vous connecter change.</p>"
+    '<p style="margin:0 0 14px;">Si la double authentification était déjà active '
+    "sur votre compte, votre application d'authentification continue de "
+    "fonctionner : aucun nouveau QR code à scanner.</p>"
+    '<p style="margin:0;font-size:13px;color:#6e6e73;">Ce lien est à usage unique '
+    "et expire dans {validite}.</p>"
+)
 
 # `placeholders` : variables proposées dans l'éditeur.
 # `email_title`  : H1 court de l'email (≠ corps), peut utiliser des variables.
@@ -130,6 +149,21 @@ DEFAULTS = {
         "email_title": "Réinitialisation du mot de passe",
         "cta_label": "Réinitialiser mon mot de passe",
         "footer": "Si vous n'êtes pas à l'origine de cette demande, ignorez cet email, votre mot de passe reste inchangé.",
+    },
+    "password_migration": {
+        "label": "Migration de l'authentification — définir son mot de passe",
+        "subject": "Action requise : définissez votre mot de passe Groupement-IT",
+        "body": _DEFAULT_MIGRATION,
+        "format": "html",
+        "placeholders": ["name", "link", "validite"],
+        "email_title": "Bonjour {name},",
+        "cta_label": "Définir mon mot de passe",
+        # Le pied de page d'un e-mail de réinitialisation dit « ignorez, votre
+        # mot de passe reste inchangé ». Ici ce serait un contresens : ignorer
+        # l'e-mail, c'est rester dehors. On dit donc l'inverse, et on donne un
+        # recours — sans quoi le seul réflexe possible est d'écrire à un
+        # expéditeur qu'on soupçonne déjà d'être un imposteur.
+        "footer": "Sans ce mot de passe, vous ne pourrez plus vous connecter. Si le lien a expiré, utilisez « Mot de passe oublié » sur la page de connexion.",
     },
     # ── Annonce / communication aux partenaires (demande Sullyvan) ────────────
     "annonce_pilote": {

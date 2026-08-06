@@ -8,7 +8,18 @@
 #  sauvegarde éprouvée n'autorise pas la suppression du filet de sécurité qu'est
 #  encore le projet Supabase : c'est le premier des critères de suppression.
 #
+#  ET DEPUIS QUE LES FICHIERS SONT SUR CE DISQUE
+#  Les CV, les pièces jointes d'appel d'offres, les attestations de vigilance
+#  URSSAF et les KBIS ne sont plus chez un hébergeur qui les réplique : ils sont
+#  sur CE disque, à côté de la base. Ce script les embarque donc dans la même
+#  chaîne — même chiffrement, même destination, même alerte. Sans cela, la
+#  décision de les rapatrier serait une perte de données déguisée en
+#  simplification : un `rm -rf` emporterait la base ET les fichiers, et seule la
+#  base reviendrait.
+#
 #  CE QUE ÇA FAIT
+#   0. sauvegarde du RÉPERTOIRE DES FICHIERS quand son contenu a changé
+#      (voir « pourquoi pas à chaque heure » plus bas) ;
 #   1. pg_dump au format custom (rejouable table par table) ;
 #   2. CHIFFREMENT age avec une clé PUBLIQUE : cette machine peut écrire une
 #      sauvegarde, elle ne peut PAS la relire (voir « chiffrement » plus bas) ;
@@ -74,6 +85,10 @@ set -uo pipefail
 DEST="${BACKUP_DIR:-/var/backups/uti}"
 BASE="${PGDATABASE:-uti}"
 BACKEND="${BACKEND_DIR:-/home/julian.talou/app/backend}"
+# Doit correspondre à LOCAL_STORAGE_DIR de backend/.env (config.py). Deux valeurs
+# qui divergent produiraient une sauvegarde parfaitement verte d'un répertoire
+# vide — la panne la plus discrète de tout ce dispositif.
+FICHIERS="${FILES_DIR:-/var/lib/uti/files}"
 JOUR=$(date -u +%F)
 # Horodatage UTC dans le nom : l'ordre alphabétique des objets S3 devient
 # l'ordre chronologique, ce sur quoi s'appuie « la dernière sauvegarde ».
@@ -93,6 +108,22 @@ alerte() { crie "sauvegarde" "$1"; }
 ping_garde "/start"
 
 mkdir -p "$DEST" || alerte "répertoire $DEST inaccessible"
+
+# ── Contrôle de CONFIGURATION, avant toute chose ────────────────────────────
+# Si l'application écrit ses fichiers en local et que le répertoire à
+# sauvegarder n'existe pas, ce script produirait chaque heure une sauvegarde
+# verte de la MOITIÉ des données. Il doit donc refuser de commencer.
+#
+# Placé ICI et pas au moment de traiter les fichiers : plus loin, le dump de la
+# base est déjà fait et déposé, et un exit à ce stade sauterait la rotation
+# locale et le marqueur de succès — la supervision annoncerait alors que la
+# sauvegarde de la BASE ne tourne plus, ce qui est faux et envoie chercher au
+# mauvais endroit. Un défaut de configuration se refuse avant de travailler,
+# pas au milieu.
+if grep -qE '^[[:space:]]*STORAGE_BACKEND=local' "$BACKEND/.env" 2>/dev/null \
+   && [ ! -d "$FICHIERS" ]; then
+  alerte "STORAGE_BACKEND=local mais $FICHIERS est absent : les CV, pièces d'AO et attestations URSSAF ne sont sauvegardés NULLE PART"
+fi
 
 # Refuser de sauvegarder s'il ne reste presque rien : un dump tronqué par un
 # disque plein est pire qu'une absence de dump, parce qu'il rassure.
@@ -169,6 +200,131 @@ fi
 # répétitions, le chiffré est hors-site).
 rm -f "$CHIFFRE"
 
+# ── Les FICHIERS (CV, pièces jointes d'AO, URSSAF, KBIS) ────────────────────
+# POURQUOI PAS À CHAQUE HEURE, ET POURQUOI PAS UNE FOIS PAR JOUR NON PLUS
+# 38 objets, ~50 Mo. Envoyer 50 Mo toutes les heures, c'est 1,2 Go par jour dans
+# un conteneur À VERROU D'OBJET où rien ne s'efface : la facture monterait sans
+# fin pour un contenu identique 23 heures sur 24. Une fois par jour, à l'inverse,
+# donnerait aux fichiers un RPO de 24 h contre 1 h à la base — et un CV déposé à
+# 10 h, perdu à 23 h, serait référencé par une ligne restaurée pointant sur un
+# fichier absent. C'est la panne la plus pénible à diagnostiquer : la
+# restauration « réussit ».
+# D'où : contrôle horaire, envoi UNIQUEMENT si le contenu a changé. Les fichiers
+# sont immuables (on dépose et on supprime, on ne modifie pas), donc la plupart
+# des heures ne coûtent qu'un `find`.
+# ── Le leg FICHIERS ne doit pas faire passer la BASE pour morte ────────────
+# `crie` termine le script (exit 1). Utilisé ici, un échec sur les fichiers
+# sautait la rotation locale ET l'écriture de .dernier_succes — donc la
+# supervision aurait annoncé « la sauvegarde de la BASE ne tourne plus », ce qui
+# est faux et envoie chercher au mauvais endroit. Pire : la rotation étant
+# sautée, ~100 Mo d'archives horaires s'accumuleraient chaque jour jusqu'à
+# remplir le disque, et un disque plein corrompt le VPS entier.
+#
+# La base est intégralement sauvegardée et déposée AVANT ce bloc. Un échec ici
+# est donc grave mais PARTIEL : il se signale, il laisse une trace que
+# supervision.sh relève, et il n'annule pas ce qui a réussi.
+echec_fichiers() {
+  printf '%s %s\n' "$(date -uIs)" "$1" > "$DEST/.echec_fichiers"
+  previens "sauvegarde" "leg FICHIERS en échec : $1
+La sauvegarde de la BASE, elle, a réussi et a été déposée hors-site.
+Les fichiers du disque ne sont donc PAS protégés depuis $(cat "$DEST/.dernier_succes_fichiers" 2>/dev/null | cut -d" " -f1 || echo 'jamais')."
+}
+
+FICHIERS_ENVOYES=0
+if [ -d "$FICHIERS" ]; then
+  # Empreinte du contenu : chemin + taille + date de modification. PAS le
+  # contenu lui-même — relire 50 Mo chaque heure pour découvrir que rien n'a
+  # bougé coûterait plus que ce qu'on économise.
+  EMPREINTE=$(find "$FICHIERS" -type f -printf '%P %s %T@\n' 2>/dev/null \
+              | LC_ALL=C sort | sha256sum | cut -d' ' -f1)
+  MARQUEUR_F="$DEST/.empreinte_fichiers"
+
+  # ── Redépôt PÉRIODIQUE, même sans changement ──────────────────────────────
+  # Le seul test d'empreinte annulait silencieusement toute la garantie.
+  #
+  # En régime de croisière — 11 utilisateurs, des fichiers qui ne bougent plus —
+  # l'empreinte ne change jamais. Aucun redépôt, donc. Or le conteneur hors-site
+  # a un verrou d'objet de 30 jours et une politique de cycle de vie : passé ce
+  # délai, la dernière archive de fichiers EXPIRE et disparaît. Les CV
+  # n'existeraient alors plus qu'en un seul exemplaire, sur le VPS, exactement
+  # ce que la décision « les fichiers vivent sur le disque » avait promis
+  # d'éviter. Et rien ne l'aurait signalé : la sauvegarde serait restée verte.
+  #
+  # On redépose donc aussi quand le dernier succès date de plus de REDEPOT_MAX_J
+  # jours — valeur très en deçà de l'expiration, pour qu'un incident de quelques
+  # jours ne mange pas la marge. Coût : une archive de ~50 Mo par semaine.
+  REDEPOT_MAX_J="${REDEPOT_MAX_J:-7}"
+  SUCCES_F="$DEST/.dernier_succes_fichiers"
+  redepot_du=0
+  if [ ! -f "$SUCCES_F" ]; then
+    redepot_du=1
+  elif [ -n "$(find "$SUCCES_F" -mtime "+${REDEPOT_MAX_J}" 2>/dev/null)" ]; then
+    redepot_du=1
+  fi
+
+  if [ "$EMPREINTE" != "$(cat "$MARQUEUR_F" 2>/dev/null)" ] || [ "$redepot_du" = "1" ]; then
+    ARCHIVE_F="$DEST/uti-fichiers-$HORODATE.tar"
+    # -C "$FICHIERS" . : l'archive contient « ./cvs/… », donc elle se restaure
+    # dans n'importe quel répertoire. Une archive qui embarquerait le chemin
+    # absolu ne se restaurerait qu'au même endroit — inutilisable pour une
+    # répétition, qui extrait justement AILLEURS.
+    tar -cf "$ARCHIVE_F.partiel" -C "$FICHIERS" . \
+      || { echec_fichiers "tar a échoué sur $FICHIERS"; false; } || true
+    mv "$ARCHIVE_F.partiel" "$ARCHIVE_F"
+    chmod 600 "$ARCHIVE_F"
+
+    nb_fichiers=$(tar -tf "$ARCHIVE_F" | grep -vc '/$' || true)
+    # Contrôle de COHÉRENCE avec la base, pas seulement de volume : une archive
+    # vide alors que la base référence des CV signifie que le répertoire a été
+    # vidé ou que FILES_DIR ne pointe pas où le backend écrit. Rien ne casse
+    # aujourd'hui — on ne s'en apercevrait qu'en restaurant.
+    refs=$(psql -d "$BASE" -tAc \
+      "SELECT count(*) FROM public.submissions WHERE cv_url IS NOT NULL;" 2>/dev/null \
+      | tr -d '[:space:]')
+    if [ "${refs:-0}" -gt 0 ] && [ "${nb_fichiers:-0}" -eq 0 ]; then
+      previens "sauvegarde" "l'archive des fichiers est VIDE alors que la base référence $refs CV.
+Vérifier que FILES_DIR ($FICHIERS) est bien LOCAL_STORAGE_DIR de backend/.env.
+La base est sauvegardée ; les fichiers qu'elle référence ne le sont pas."
+    fi
+
+    age -r "$AGE_RECIPIENT" -o "$ARCHIVE_F.age.partiel" "$ARCHIVE_F" \
+      || { echec_fichiers "le chiffrement age des fichiers a échoué"; false; } || true
+    mv "$ARCHIVE_F.age.partiel" "$ARCHIVE_F.age"
+    chmod 600 "$ARCHIVE_F.age"
+
+    CLE_S3_F="uti/fichiers/$(date -u +%Y/%m)/uti-fichiers-$HORODATE.tar.age"
+    taille_f_distante=$("$BACKEND/venv/bin/python" "$BACKEND/deploy/s3_backup.py" \
+                        envoyer "$ARCHIVE_F.age" "$CLE_S3_F") \
+      || { echec_fichiers "dépôt hors-site des FICHIERS impossible ($CLE_S3_F) — les CV ne survivraient pas au VPS"; false; } || true
+    taille_f_chiffree=$(stat -c%s "$ARCHIVE_F.age")
+    [ "$taille_f_distante" = "$taille_f_chiffree" ] \
+      || echec_fichiers "l'archive de fichiers déposée fait $taille_f_distante octets, la locale $taille_f_chiffree"
+
+    rm -f "$ARCHIVE_F.age"
+    # L'empreinte n'est écrite qu'APRÈS un dépôt réussi : un échec laisse
+    # l'ancienne valeur, donc la tentative recommence à l'heure suivante au lieu
+    # d'être considérée comme faite.
+    printf '%s\n' "$EMPREINTE" > "$MARQUEUR_F"
+    printf '%s %s %s\n' "$(date -uIs)" "$CLE_S3_F" "$taille_f_chiffree" \
+      > "$DEST/.dernier_succes_fichiers"
+    # Le marqueur d'échec ne disparaît qu'à un succès COMPLET : tant qu'il est
+    # là, supervision.sh le signale.
+    rm -f "$DEST/.echec_fichiers"
+    FICHIERS_ENVOYES=$nb_fichiers
+    # L'archive CLAIRE reste en local : c'est elle que restore_drill.sh extrait
+    # chaque semaine, sans avoir besoin de la clé privée. Rotation à 14 jours,
+    # alignée sur les quotidiennes de la base.
+    find "$DEST" -name 'uti-fichiers-*.tar' -mtime +14 -delete
+  fi
+elif grep -qE '^[[:space:]]*STORAGE_BACKEND=local' "$BACKEND/.env" 2>/dev/null; then
+  # Ne devrait jamais arriver : le contrôle de configuration en tête de script
+  # a déjà refusé de démarrer dans ce cas. Conservé comme filet, non fatal ici
+  # pour la même raison que le reste du bloc.
+  echec_fichiers "$FICHIERS a disparu en cours d'exécution"
+else
+  echo "[sauvegarde] $FICHIERS absent — attendu tant que STORAGE_BACKEND n'est pas « local »."
+fi
+
 # ── Configuration, une fois par jour ────────────────────────────────────────
 # POURQUOI : restaurer la base ne remet pas la plateforme en service. Le .env
 # porte une vingtaine de secrets (JWT_SECRET, SMTP_PASSWORD, clés LLM, clés S3)
@@ -235,4 +391,9 @@ printf '%s %s %s\n' "$(date -uIs)" "$CLE_S3" "$taille_chiffree" > "$DEST/.dernie
 # sur son ABSENCE — donc y compris quand le VPS ne peut plus rien émettre.
 ping_garde ""
 
-echo "[sauvegarde] OK $FICHIER ($((taille/1024)) Ko) → $CLE_S3 ($((taille_chiffree/1024)) Ko chiffrés) — $(find "$DEST" -name 'uti-*.pgcustom' | wc -l) archive(s) locale(s)"
+if [ "$FICHIERS_ENVOYES" -gt 0 ]; then
+  suffixe_fichiers=" + $FICHIERS_ENVOYES fichier(s) déposé(s)"
+else
+  suffixe_fichiers=" (fichiers inchangés, rien à redéposer)"
+fi
+echo "[sauvegarde] OK $FICHIER ($((taille/1024)) Ko) → $CLE_S3 ($((taille_chiffree/1024)) Ko chiffrés)$suffixe_fichiers — $(find "$DEST" -name 'uti-*.pgcustom' | wc -l) archive(s) locale(s)"

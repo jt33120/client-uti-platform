@@ -2,7 +2,14 @@
 --  UTI / Groupement-IT — données indispensables au fonctionnement.
 --
 --  À jouer APRÈS schema.sql, sur une base neuve :
---      psql -d uti -v ON_ERROR_STOP=1 -f backend/migrations/seed.sql
+--      cd backend/migrations && sudo -u postgres psql -d uti -v ON_ERROR_STOP=1 < seed.sql
+--
+--  ⚠️  L'utilisateur `postgres` ne peut pas lire un fichier sous /home : les
+--  répertoires personnels sont en 750, il ne peut même pas les traverser.
+--  `sudo -u postgres psql -f ~/app/...` échoue donc sur « Permission denied ».
+--  On REDIRIGE depuis son propre shell, qui a le droit de lire le fichier et
+--  passe le descripteur au processus sudo. Résultat identique à -f, sans avoir
+--  à copier les fichiers ni à ouvrir les droits du répertoire personnel.
 --
 --  CE QUI EST ICI, ET CE QUI N'Y EST PAS
 --

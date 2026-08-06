@@ -49,9 +49,17 @@
 --  approximative sur les noms de clients). Toutes deux dans postgresql-contrib.
 --
 --  USAGE
---      createdb uti
---      psql -d uti -v ON_ERROR_STOP=1 -f backend/migrations/schema.sql
---      psql -d uti -v ON_ERROR_STOP=1 -f backend/migrations/seed.sql
+--      sudo -u postgres createdb uti
+--      cd backend/migrations
+--      sudo -u postgres psql -d uti -v ON_ERROR_STOP=1 < schema.sql
+--      sudo -u postgres psql -d uti -v ON_ERROR_STOP=1 < seed.sql
+--
+--  ⚠️  L'utilisateur `postgres` ne peut pas lire un fichier sous /home : les
+--  répertoires personnels sont en 750, il ne peut même pas les traverser.
+--  `sudo -u postgres psql -f ~/app/...` échoue donc sur « Permission denied ».
+--  On REDIRIGE depuis son propre shell, qui a le droit de lire le fichier et
+--  passe le descripteur au processus sudo. Résultat identique à -f, sans avoir
+--  à copier les fichiers ni à ouvrir les droits du répertoire personnel.
 --
 --  Les données de référence ne sont PAS ici : voir seed.sql. Un schéma qui crée
 --  des lignes métier n'est pas un schéma — c'est ce qui faisait apparaître deux

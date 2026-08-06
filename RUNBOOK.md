@@ -411,7 +411,7 @@ choix assumé du §9.2.
 | 5 | **Récupérer la configuration** | 10 min | Voir l'encadré ci-dessous — c'est l'étape qui décide du RTO |
 | 6 | **Récupérer et déchiffrer la dernière archive** | 10 min | Voir l'encadré ci-dessous |
 | 7 | Restaurer | 5 min | `pg_restore --exit-on-error --no-owner --no-privileges -d uti archive.pgcustom` |
-| 8 | Rôles et privilèges (objets de **cluster**, absents du dump) | 5 min | `sudo -u postgres psql -f ~/app/backend/deploy/roles_postgrest.sql` |
+| 8 | Rôles et privilèges (objets de **cluster**, absents du dump) | 5 min | `cd ~/app/backend/deploy && sudo -u postgres psql < roles_postgrest.sql` |
 | 9 | Démarrer les services | 10 min | `sudo systemctl enable --now postgrest nginx uti-backend` |
 | 10 | HTTPS sur la nouvelle machine | 15 min | `sudo certbot --nginx` (⚠️ si l'IP change, **attendre la propagation DNS** : jusqu'au TTL de la zone) |
 | 11 | Rebrancher le frontend | 10 min | `vercel.json` → nouvelle destination `/api/*` → push `master` → build Vercel |

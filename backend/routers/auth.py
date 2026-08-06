@@ -305,8 +305,28 @@ def _parse_supabase_error(error_msg: str) -> tuple[int, str]:
 
 
 @router.post("/register")
-async def register(body: RegisterRequest):
-    # ── Validate and consume invite token (if provided) ───────────
+async def register(body: RegisterRequest, request: Request):
+    # ── L'invitation est OBLIGATOIRE ──────────────────────────────
+    # Le front l'impose déjà (RegisterPage n'affiche aucun formulaire sans
+    # jeton, et son commentaire dit « the role always comes from the invitation
+    # server-side »), mais le serveur, lui, ne l'exigeait pas : sans
+    # `invite_token`, le bloc ci-dessous était sauté et `body.role` — envoyé par
+    # l'appelant — était retenu tel quel. Le seul contrôle restant étant
+    # « le rôle fait-il partie des rôles connus ? », un simple
+    #
+    #     POST /auth/register {"email":…, "password":…, "name":…, "role":"admin"}
+    #
+    # créait un administrateur de la plateforme, sur une route publique et sans
+    # limitation de débit. Une règle qui n'existe que dans le navigateur n'est
+    # pas une règle : elle ne protège que les gens qui utilisent le navigateur.
+    _throttle(f"register:ip:{_client_ip(request)}", 10, 600)
+    if not body.invite_token:
+        raise HTTPException(
+            status_code=403,
+            detail="La création de compte se fait uniquement sur invitation.",
+        )
+
+    # ── Validate and consume invite token ─────────────────────────
     invitation = None
     if body.invite_token:
         try:

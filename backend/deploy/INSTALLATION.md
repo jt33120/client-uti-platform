@@ -279,6 +279,54 @@ URL Supabase héritée ou un chemin nu : le retour est immédiat et complet.
 
 ---
 
+## 4 ter. La migration 0019 doit atteindre la base que la PRODUCTION interroge
+
+Le code d'authentification maison a été fusionné et déployé pendant que
+`SUPABASE_URL` désignait encore Supabase. Le schéma neuf de la migration 0019
+avait été chargé sur le VPS — pas sur la base que la production interrogeait.
+Résultat : `credentials.by_email()` cherchait une table `user_credentials` qui
+n'existait pas, et **toute connexion renvoyait 503** pendant des heures. Le
+processus vivait, `/health/db` était vert, aucun rollback ne pouvait se
+déclencher (`deploy.sh` a depuis une troisième sonde pour ça).
+
+La règle qui en découle tient en une phrase : **une migration doit atteindre la
+base que la production interroge AUJOURD'HUI, pas celle qu'elle interrogera
+après la bascule.** Tant que `SUPABASE_URL` pointe sur Supabase, c'est Supabase
+qu'il faut migrer.
+
+**Appliquer 0019 à Supabase** — tableau de bord → SQL Editor → coller le contenu
+de `backend/migrations/0019_auth_maison.sql`. Le fichier est idempotent :
+
+```bash
+cat ~/app/backend/migrations/0019_auth_maison.sql   # à copier tel quel
+```
+
+**Rouvrir un compte existant.** 0019 ne reprend aucun hachage bcrypt : les
+profils survivent, les mots de passe non. Sur une base peuplée, on pose donc un
+mot de passe **sur le profil existant** — sans quoi `--force` créerait un second
+profil, et les AO, matchings et décisions de l'ancien continueraient de désigner
+un compte auquel plus personne ne peut se connecter :
+
+```bash
+cd ~/app/backend && source venv/bin/activate
+python scripts/bootstrap_admin.py --profil-existant \
+    --email <adresse de l'admin> --name "<nom affiché>"
+```
+
+**Vérifier** — 401 attendu (adresse inconnue), et surtout **pas** 503 :
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8000/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"sonde@sonde-interne-uti.fr","password":"sonde"}'
+```
+
+Les autres comptes se recréent ensuite par invitation depuis l'écran « Comptes ».
+La double authentification étant obligatoire par défaut, la première connexion
+impose l'enrôlement TOTP : garder le téléphone à portée.
+
+---
+
 ## 5. BASCULE (uniquement quand le schéma, les données ET l'auth maison sont en place)
 
 ```bash

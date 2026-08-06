@@ -25,6 +25,13 @@ from collections import defaultdict, deque
 router = APIRouter(prefix="/auth", tags=["auth"])
 security = HTTPBearer()
 
+#: Validité, en jours, du lien envoyé à un compte HÉRITÉ (migration Supabase).
+#: Sans rapport avec l'heure d'un « mot de passe oublié » ordinaire : celui-là
+#: est demandé à l'instant, celui-ci s'adresse à quelqu'un qui découvre qu'il ne
+#: peut plus entrer et qui traitera peut-être le sujet le lendemain. Aligné sur
+#: scripts/migrer_identifiants.JOURS_PAR_DEFAUT.
+MIGRATION_LIEN_JOURS = 7
+
 # ── Anti brute-force (mono-worker, en mémoire) ──────────────────────────────
 # Fenêtre glissante par clé (IP ou user). Protège login / MFA / reset : sans
 # elle, un code TOTP (10^6 possibilités, fenêtre de 10 min) se brute-force.
@@ -810,16 +817,23 @@ class ResetTokenRequest(BaseModel):
     token: str
 
 
-def _send_reset_email(to_email: str, reset_url: str) -> tuple[bool, Optional[str]]:
+def _send_reset_email(to_email: str, reset_url: str, cle: str = "password_reset",
+                      contexte_sup: Optional[dict] = None) -> tuple[bool, Optional[str]]:
     """
     Send the password-reset email via our own SMTP (Infomaniak), branded as
     Groupement-IT — instead of letting Supabase send it from
     "Supabase Auth <noreply@mail.app.supabase.io>", which alarms users and
     trips spam filters. Returns (success, error); never raises.
+
+    `cle` sélectionne le modèle. « password_migration » pour un compte venu de
+    Supabase qui n'avait encore aucun mot de passe chez nous : lui envoyer
+    « vous avez demandé à réinitialiser » serait faux, et surtout inquiétant —
+    il n'a jamais eu de mot de passe à réinitialiser ici.
     """
     # Sujet + corps + coquille via la source unique (= aperçu admin fidèle).
     context = {"link": reset_url}
-    subject, html, text = email_templates.build_email("password_reset", context)
+    context.update(contexte_sup or {})
+    subject, html, text = email_templates.build_email(cle, context)
     # Via la file : un échec SMTP transitoire perdait définitivement le lien, et
     # l'utilisateur restait bloqué sans recours. La file réessaie, et l'envoyeur
     # tourne toutes les 20 s — le délai reste sous le seuil de perception d'un
@@ -827,9 +841,28 @@ def _send_reset_email(to_email: str, reset_url: str) -> tuple[bool, Optional[str
     from services import email_outbox
     row = email_outbox.enqueue(
         to_email=to_email, subject=subject, html=html, text=text,
-        category="password_reset", template_key="password_reset",
+        category=cle, template_key=cle,
     )
     return (row is not None), None if row else "Dépôt en file impossible"
+
+
+def _profil_a_migrer(email: str) -> Optional[dict]:
+    """Profil existant SANS identifiants — un compte hérité de Supabase.
+
+    `ilike` sans joker : `profiles.email` conserve la casse d'origine, une
+    égalité stricte raterait « Julian.Talou@… ». Les comptes suspendus ou
+    désactivés sont exclus : la suspension est une décision d'administration, et
+    ce n'est pas à un formulaire public de la défaire.
+    """
+    lignes = supabase.table("profiles").select("id, email, name, status").ilike(
+        "email", (email or "").strip().lower()
+    ).limit(2).execute().data or []
+    if len(lignes) != 1:
+        return None
+    profil = lignes[0]
+    if (profil.get("status") or "active") in ("suspended", "disabled"):
+        return None
+    return profil
 
 
 @router.post("/forgot-password")
@@ -850,16 +883,56 @@ async def forgot_password(body: ForgotPasswordRequest, request: Request):
     _throttle(f"fp:email:{body.email.lower()}", 3, 900)
     try:
         cred = credentials.by_email(body.email)
+
+        # ── Compte hérité de Supabase, encore sans identifiants ──────────
+        #
+        # Sans ce rattrapage, ce point d'entrée est une IMPASSE pour exactement
+        # les gens qu'il devrait servir : la migration 0019 ne reprend aucun
+        # hachage, donc les comptes existants n'ont pas de ligne
+        # `user_credentials`, donc `by_email` renvoie None, donc l'endpoint
+        # répond « un lien a été envoyé » et n'envoie rien. La personne attend
+        # un e-mail qui n'arrivera jamais, et le seul recours restant est
+        # d'appeler quelqu'un.
+        #
+        # On provisionne donc la ligne à la demande, avec un hachage que
+        # personne ne connaît : aucun compte n'est créé, aucun accès n'est
+        # ouvert — on rend simplement joignable un compte qui existe déjà.
+        migre = False
+        if not cred:
+            profil = _profil_a_migrer(body.email)
+            if profil:
+                credentials.provision_for_migration(
+                    profil["id"], (profil.get("email") or body.email).strip().lower()
+                )
+                cred = credentials.by_email(body.email)
+                migre = bool(cred)
+
         if cred:
             clear, token_hash = passwords.new_reset_token()
-            if credentials.issue_reset(
-                cred["user_id"], token_hash, passwords.reset_token_expiry()
-            ):
+            # Un compte migré reçoit une validité plus longue : il ne « demande »
+            # pas un lien au sens habituel — il découvre, souvent au pire moment,
+            # qu'il ne peut plus entrer. Une heure suffit à qui vient de cliquer
+            # sur « mot de passe oublié » ; elle ne suffit pas à qui s'y prend
+            # depuis un téléphone en réunion.
+            echeance = (
+                datetime.now(timezone.utc) + timedelta(days=MIGRATION_LIEN_JOURS)
+                if migre else passwords.reset_token_expiry()
+            )
+            if credentials.issue_reset(cred["user_id"], token_hash, echeance):
                 # Le clair ne va QUE dans l'e-mail. Il n'est ni journalisé, ni
                 # stocké — le journaliser reviendrait à écrire un mot de passe
                 # temporaire dans journalctl.
                 reset_url = f"{settings.frontend_url}/reset-password?token={clear}"
-                sent, err = _send_reset_email(cred["email"], reset_url)
+                if migre:
+                    sent, err = _send_reset_email(
+                        cred["email"], reset_url, cle="password_migration",
+                        contexte_sup={
+                            "name": (profil.get("name") or "").split(" ")[0] or "bonjour",
+                            "validite": f"{MIGRATION_LIEN_JOURS} jours",
+                        },
+                    )
+                else:
+                    sent, err = _send_reset_email(cred["email"], reset_url)
                 if not sent:
                     print(f"[AUTH] lien de réinitialisation non déposé en file: {err}")
             else:

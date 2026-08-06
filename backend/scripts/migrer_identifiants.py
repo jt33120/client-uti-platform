@@ -18,8 +18,9 @@ COMMENT
 
 Pour chaque profil sans identifiants :
   1. une ligne `user_credentials` est créée avec un hachage INCONNU DE TOUS
-     (voir `_hachage_inaccessible`) — la colonne est NOT NULL, et le compte doit
-     exister pour que le circuit de réinitialisation le retrouve par son adresse ;
+     (`credentials.provision_for_migration`) — la colonne est NOT NULL, et le
+     compte doit exister pour que le circuit de réinitialisation le retrouve par
+     son adresse ;
   2. un jeton opaque de 256 bits est armé, dont seule l'empreinte SHA-256 est
      écrite en base ;
   3. l'e-mail « password_migration » est déposé dans la file d'envoi.
@@ -52,7 +53,6 @@ personnes. Un envoi de masse déclenché par une commande tapée trop vite ne se
 rattrape pas — on ne rappelle pas un e-mail.
 """
 import argparse
-import secrets
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -74,24 +74,6 @@ JOURS_PAR_DEFAUT = 7
 #: recevoir d'invitation à revenir : la suspension est une décision
 #: d'administration, et la migration n'est pas le moment de la défaire.
 STATUTS_EXCLUS = ("suspended", "disabled")
-
-
-def _hachage_inaccessible() -> str:
-    """Hachage argon2id d'un secret aléatoire immédiatement oublié.
-
-    `user_credentials.password_hash` est NOT NULL et la ligne doit exister avant
-    l'envoi : c'est elle que `credentials.by_email` retrouve, et c'est sur elle
-    que le jeton est armé.
-
-    Ce qu'il ne faut SURTOUT pas faire ici : poser une valeur fixe (« ! », une
-    chaîne vide, un hachage constant). Elle finirait identique sur tous les
-    comptes, et la première personne qui la reconnaîtrait dans une copie de la
-    base saurait quels comptes sont encore en attente — et pourrait tenter le
-    mot de passe correspondant sur chacun. Un secret aléatoire de 256 bits par
-    compte, jamais écrit nulle part, ne peut être deviné par personne, pas même
-    par nous.
-    """
-    return passwords.hash_password(secrets.token_urlsafe(32))
 
 
 def _validite_humaine(jours: int) -> str:
@@ -219,8 +201,11 @@ def main() -> int:
     for profil in a_traiter:
         if profil["id"] not in pourvus:
             try:
-                credentials.create(profil["id"], (profil.get("email") or "").strip().lower(),
-                                   _hachage_inaccessible())
+                # Même geste que le rattrapage de /auth/forgot-password : une
+                # seule définition de « ce qu'est un compte migré en attente ».
+                credentials.provision_for_migration(
+                    profil["id"], (profil.get("email") or "").strip().lower()
+                )
             except Exception as e:  # noqa: BLE001
                 print(f"  ❌ {profil['email']:<45} identifiants non créés : {e}")
                 echecs += 1

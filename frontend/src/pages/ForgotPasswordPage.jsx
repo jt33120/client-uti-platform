@@ -1,11 +1,14 @@
 import { useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import api from '../lib/api'
 import { ArrowLeft, Mail } from 'lucide-react'
 import AuthBrand from '../components/AuthBrand'
 
 export default function ForgotPasswordPage() {
-  const [email, setEmail] = useState('')
+  // Adresse reportée depuis l'écran de connexion : la personne vient de la
+  // saisir, la lui redemander n'apporte rien qu'une occasion de se tromper.
+  const [searchParams] = useSearchParams()
+  const [email, setEmail] = useState(searchParams.get('email') || '')
   const [loading, setLoading] = useState(false)
   const [sent, setSent] = useState(false)
   const [error, setError] = useState('')

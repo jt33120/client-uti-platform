@@ -187,6 +187,28 @@ def dummy_hash() -> str:
     return _hasher.hash(secrets.token_urlsafe(32))
 
 
+def placeholder_hash() -> str:
+    """Hachage d'un secret aléatoire immédiatement oublié, destiné à être STOCKÉ.
+
+    Sert aux comptes migrés depuis Supabase : `user_credentials.password_hash`
+    est NOT NULL et la ligne doit exister avant l'envoi du lien — c'est elle que
+    `by_email` retrouve, et c'est sur elle que le jeton est armé. Aucun mot de
+    passe ne peut donc correspondre tant que la personne n'a pas cliqué.
+
+    Ce qu'il ne faut SURTOUT pas mettre ici : une valeur fixe (« ! », une chaîne
+    vide, un hachage constant). Elle serait identique sur tous les comptes en
+    attente, ce qui les DÉSIGNERAIT à qui lit une copie de la base — et la
+    première personne à retrouver le clair correspondant les ouvrirait tous d'un
+    coup. Un secret de 256 bits par compte, jamais écrit nulle part, n'est
+    devinable par personne, pas même par nous.
+
+    Calcul identique à `dummy_hash`, intention opposée : celui-là est vérifié
+    puis jeté, celui-ci est écrit en base. Deux fonctions pour que faire évoluer
+    l'une ne change pas l'autre par accident.
+    """
+    return _hasher.hash(secrets.token_urlsafe(32))
+
+
 # ── Jetons de réinitialisation ──────────────────────────────────────────────
 
 def new_reset_token() -> Tuple[str, str]:

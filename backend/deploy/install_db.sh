@@ -551,19 +551,49 @@ echo
   && printf '\033[32mInstallation terminée.\033[0m\n' \
   || printf '\033[31mDes contrôles ont échoué — ne rien basculer.\033[0m\n'
 
+# ── Port SSH RÉEL, pas le 22 supposé ────────────────────────────────────────
+# Une version antérieure imprimait « sudo ufw allow OpenSSH », qui est le profil
+# ufw du port 22. Sur une machine dont sshd écoute ailleurs — ce qui est le cas
+# ici, 1622 — cette commande ouvre un port où rien n'écoute et laisse le vrai
+# fermé. La session en cours survit (ufw laisse passer les connexions ÉTABLIES),
+# donc rien ne se voit ; c'est à la reconnexion suivante qu'on découvre qu'on est
+# dehors. Et ufw JETTE les paquets au lieu de les rejeter, donc le ssh reste
+# suspendu sans message : on cherche du côté du réseau avant de penser au
+# pare-feu. Sur un VPS distant sans console, ça se paie en accès perdu.
+#
+# On lit donc les ports d'écoute réels de sshd. Plusieurs sont possibles ; on les
+# ouvre tous, quitte à en retirer un ensuite.
+SSH_PORTS="$(ss -ltnp 2>/dev/null | awk '/sshd/ {split($4,a,":"); print a[length(a)]}' | sort -un | tr '\n' ' ')"
+[ -n "${SSH_PORTS}" ] || SSH_PORTS="$(sed -n 's/^[[:space:]]*Port[[:space:]]\+\([0-9]\+\).*/\1/p' /etc/ssh/sshd_config 2>/dev/null | tr '\n' ' ')"
+[ -n "${SSH_PORTS}" ] || SSH_PORTS="22"
+
+REGLES_SSH=""
+for p in ${SSH_PORTS}; do
+  REGLES_SSH="${REGLES_SSH}  sudo ufw allow ${p}/tcp comment 'SSH'
+"
+done
+
+IP_PUBLIQUE="$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.*src \([0-9.]*\).*/\1/p' | head -1)"
+[ -n "${IP_PUBLIQUE}" ] || IP_PUBLIQUE="<IP du VPS>"
+
 cat <<EOF
 
 À FAIRE À LA MAIN, DANS CET ORDRE (le script ne touche pas au pare-feu) :
 
-  sudo ufw allow OpenSSH          # AVANT tout le reste, sinon perte du SSH
-  sudo ufw allow 'Nginx Full'
+${REGLES_SSH}  sudo ufw allow 'Nginx Full'
   sudo ufw enable
   sudo ufw status verbose
+
+  ⚠️  La ou les règles SSH ci-dessus portent le port RÉELLEMENT en écoute
+      (détecté : ${SSH_PORTS}), et NON le profil « OpenSSH » qui vaut 22.
+      Après « ufw enable », OUVRIR UNE SECONDE CONNEXION pour vérifier
+      AVANT de fermer celle en cours : la session courante survit même si
+      la règle est fausse, donc elle ne prouve rien.
 
 Puis DEPUIS UNE AUTRE MACHINE, vérifier qu'aucun de ces ports ne répond :
 
   for p in 5432 ${PGRST_PORT} ${PGRST_ADMIN_PORT} ${REST_PORT}; do
-    nc -z -w3 164.132.44.212 \$p && echo "\$p OUVERT — À CORRIGER" || echo "\$p fermé (attendu)"
+    nc -z -w3 ${IP_PUBLIQUE} \$p && echo "\$p OUVERT — À CORRIGER" || echo "\$p fermé (attendu)"
   done
 
 Le schéma et les données ne sont PAS chargés : c'est l'objet du chantier

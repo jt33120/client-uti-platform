@@ -51,13 +51,24 @@ INSERT INTO public.app_settings (key, value) VALUES (
   '{"enabled": false, "months": 24}'::jsonb
 ) ON CONFLICT (key) DO NOTHING;
 
--- Budgets IA. À 0, aucune alerte de dépassement ne part : la surveillance
--- existe mais ne se déclenche jamais. Renseigner un plafond hebdomadaire et
--- mensuel dès qu'il y a du trafic réel — sinon une boucle d'appels LLM peut
--- courir un mois entier sans que rien ne le signale.
+-- Budgets IA — ARMÉS, et c'est tout l'intérêt.
+--
+-- Une ligne à 0/0 reproduisait l'incident `data_retention` sous une autre forme :
+-- services/ai_budget.py sort immédiatement quand les deux plafonds sont nuls
+-- (« aucune limite active »). La ligne existe, l'écran d'administration
+-- l'affiche, et aucune alerte ne part jamais. « Présent mais inerte » se
+-- diagnostique encore plus mal qu'« absent », parce que l'écran a l'air normal.
+--
+-- Les valeurs ci-dessous ne sont pas une estimation de budget : ce sont des
+-- plafonds d'ALARME. La dépense observée en production est de 3,39 $ sur un mois
+-- pour 426 appels ; 60 $/mois est donc environ dix-huit fois le trafic réel. Ce
+-- n'est pas une contrainte, c'est le seuil au-delà duquel quelque chose ne
+-- tourne manifestement plus rond — une boucle d'appels, un traitement en
+-- rafale. Une alerte coûte un e-mail ; une boucle non surveillée peut courir un
+-- mois. À resserrer une fois le trafic réel connu (Supervision → Usage IA).
 INSERT INTO public.app_settings (key, value) VALUES (
   'ai_budget',
-  '{"enabled": true, "weekly_usd": 0.0, "monthly_usd": 0.0}'::jsonb
+  '{"enabled": true, "weekly_usd": 20.0, "monthly_usd": 60.0}'::jsonb
 ) ON CONFLICT (key) DO NOTHING;
 
 -- ── Grille de scoring ───────────────────────────────────────────────

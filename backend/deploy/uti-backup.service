@@ -1,0 +1,28 @@
+# Sauvegarde quotidienne de la base « uti ». Déclenchée par uti-backup.timer.
+#
+#   sudo cp ~/app/backend/deploy/uti-backup.{service,timer} /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now uti-backup.timer
+#   sudo systemctl start uti-backup          # première exécution, tout de suite
+#   journalctl -u uti-backup -n 20 --no-pager
+[Unit]
+Description=Sauvegarde quotidienne de la base UTI
+# La base doit être debout : sans cette dépendance, un déclenchement au reboot
+# produirait un échec (et donc une alerte) purement dû à l'ordre de démarrage.
+After=postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=oneshot
+# Pas de root : le dump n'a besoin que d'un accès en lecture à la base, et le
+# répertoire de sauvegarde appartient à cet utilisateur.
+User=julian.talou
+Group=julian.talou
+Environment=BACKEND_DIR=/home/julian.talou/app/backend
+Environment=BACKUP_DIR=/var/backups/uti
+# PostgreSQL 18 : le binaire de la distribution n'est pas toujours en tête du PATH.
+Environment=PATH=/usr/lib/postgresql/18/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/local/bin/uti-backup
+# Un dump de 16 Mo prend quelques secondes ; au-delà de 10 min, quelque chose
+# est bloqué et il vaut mieux échouer (donc alerter) que rester suspendu.
+TimeoutStartSec=600

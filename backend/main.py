@@ -175,8 +175,43 @@ def health():
     `commit` rend une recette vérifiable en une requête : sans lui, impossible de
     savoir depuis le front si le backend tourne bien la version qu'on teste.
     Le dépôt étant public, le SHA ne révèle rien qui ne le soit déjà.
+
+    Cette sonde ne touche VOLONTAIREMENT pas la base : c'est une sonde de
+    vivacité pour nginx et systemd, qui doivent redémarrer le processus s'il est
+    mort — pas s'il ne peut pas joindre la base, cas où redémarrer n'arrange
+    rien et où mieux vaut répondre en erreur que ne pas répondre.
+
+    Pour savoir si la BASE répond, voir /health/db ci-dessous. La distinction
+    n'est pas théorique : `deploy.sh` validait ses déploiements sur cette
+    sonde-ci, donc son rollback automatique ne pouvait pas voir une base
+    injoignable — et c'est précisément le mode de panne qu'un changement de
+    SUPABASE_URL peut provoquer.
     """
     return {"status": "ok", "commit": APP_COMMIT, "deployed_at": STARTED_AT}
+
+
+@app.get("/health/db")
+def health_db():
+    """Sonde de la BASE, distincte de la vivacité du processus.
+
+    Utilisée par `deploy.sh` après un déploiement et par
+    `scripts/post_bascule_check.sh` pendant la période d'observation : elle est
+    la seule à pouvoir dire « le backend tourne mais ne voit plus ses données ».
+
+    Réponse 503 si la base ne répond pas — un code d'erreur, pas une exception :
+    la sonde doit rester interrogeable même quand tout va mal.
+    """
+    from fastapi.responses import JSONResponse
+    from services.supabase_client import supabase
+
+    try:
+        supabase.table("profiles").select("id").limit(1).execute()
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(
+            status_code=503,
+            content={"status": "db_unreachable", "detail": str(e)[:200]},
+        )
+    return {"status": "ok", "db": "reachable"}
 
 
 # ── Contrôle de connexion à la base au démarrage (non bloquant) ───

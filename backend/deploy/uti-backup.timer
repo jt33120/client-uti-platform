@@ -1,0 +1,15 @@
+[Unit]
+Description=Déclenche la sauvegarde quotidienne de la base UTI
+
+[Timer]
+# 03:30, hors des heures d'usage. RandomizedDelaySec évite de tomber exactement
+# à la même seconde que d'autres tâches système.
+OnCalendar=*-*-* 03:30:00
+RandomizedDelaySec=300
+# Rattrape l'exécution manquée si le VPS était éteint à l'heure dite. Sans ça,
+# un reboot nocturne fait sauter une sauvegarde en silence — et le trou ne se
+# découvre que le jour où on en a besoin.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

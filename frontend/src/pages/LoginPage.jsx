@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
-import { Eye, EyeOff, ArrowRight, ShieldCheck, ArrowLeft, Loader2, Clock, CheckCircle } from 'lucide-react'
+import { Eye, EyeOff, ArrowRight, ShieldCheck, ArrowLeft, Loader2, Clock, CheckCircle, KeyRound } from 'lucide-react'
 import AuthBrand from '../components/AuthBrand'
 
 function CodeInput({ value, onChange, autoFocus }) {
@@ -102,6 +102,8 @@ export default function LoginPage() {
   const [form, setForm] = useState({ email: searchParams.get('email') || '', password: '' })
   const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState('')
+  // Migration Supabase → VPS : affiché après un échec d'identifiants.
+  const [heritage, setHeritage] = useState(false)
   const [mfa, setMfa] = useState(null) // { mode, challenge, qr, secret }
 
   const handleSubmit = async (e) => {
@@ -117,6 +119,21 @@ export default function LoginPage() {
       }
     } catch (err) {
       setError(err.response?.data?.detail || 'Identifiants incorrects')
+      // Un échec d'identifiants est, pendant la migration, bien plus souvent un
+      // compte hérité qu'une faute de frappe : les mots de passe vivaient chez
+      // Supabase et n'ont pas été repris. On explique donc AU MOMENT où la
+      // personne est bloquée, plutôt que de compter sur un e-mail qu'elle n'a
+      // peut-être pas lu.
+      //
+      // POURQUOI PAS UNE FENÊTRE APRÈS CONNEXION : elle ne s'afficherait que
+      // pour les gens qui arrivent à se connecter, c'est-à-dire exactement ceux
+      // qui n'ont pas le problème.
+      //
+      // Affiché seulement après un 401, jamais en permanence : le message
+      // disparaît de lui-même quand tout le monde a repris la main, sans qu'il
+      // faille penser à l'enlever. Et il ne révèle rien — il est identique que
+      // l'adresse existe ou non.
+      if (err.response?.status === 401) setHeritage(true)
     }
   }
 
@@ -220,6 +237,30 @@ export default function LoginPage() {
                   style={{ background: 'var(--danger-soft)', color: 'var(--danger)' }}
                 >
                   {error}
+                </div>
+              )}
+
+              {heritage && (
+                <div
+                  className="flex items-start gap-2.5 rounded-lg px-3.5 py-3 text-[13px]"
+                  style={{ background: 'var(--accent-soft)', color: 'var(--accent-text)', border: '1px solid var(--border)' }}
+                >
+                  <KeyRound size={15} className="shrink-0 mt-0.5" />
+                  <span>
+                    <strong className="font-semibold">Votre mot de passe a peut-être changé de main.</strong><br />
+                    Nous hébergeons désormais nous-mêmes les comptes, et aucun mot de
+                    passe n'a été repris de l'ancien système. <strong className="font-semibold">Votre compte et
+                    vos données sont intacts</strong> — il suffit de choisir un nouveau mot de
+                    passe.{' '}
+                    <Link
+                      to={`/forgot-password${form.email ? `?email=${encodeURIComponent(form.email)}` : ''}`}
+                      className="font-semibold underline underline-offset-2"
+                    >
+                      Recevoir un lien par e-mail
+                    </Link>.
+                    {' '}Si la double authentification était déjà active, votre application
+                    d'authentification continue de fonctionner.
+                  </span>
                 </div>
               )}
 

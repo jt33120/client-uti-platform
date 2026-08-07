@@ -183,6 +183,31 @@ def existing_user_ids() -> set:
     return {r["user_id"] for r in rows if r.get("user_id")}
 
 
+def provision_for_migration(user_id: str, email: str) -> Optional[dict]:
+    """Crée la ligne d'identifiants d'un compte MIGRÉ, sans mot de passe utilisable.
+
+    Un profil venu de Supabase n'a pas de ligne ici : la migration 0019 ne
+    reprend aucun hachage bcrypt. Or `by_email` est la porte d'entrée de tout le
+    circuit de réinitialisation — sans ligne, « Mot de passe oublié » répond
+    « un lien a été envoyé » et n'envoie rien. C'est cette fonction qui ferme
+    cette impasse.
+
+    Le hachage posé n'est connu de personne (cf. passwords.placeholder_hash) :
+    le compte reste fermé jusqu'à ce que la personne suive son lien.
+
+    Retourne la ligne créée, ou None si elle existait déjà (course entre deux
+    demandes simultanées — le second appel n'est pas une erreur, il constate
+    simplement que le travail est fait).
+    """
+    try:
+        return create(user_id, email, passwords.placeholder_hash())
+    except Exception as e:  # noqa: BLE001
+        msg = str(e).lower()
+        if "23505" in msg or "duplicate key" in msg or "violates unique constraint" in msg:
+            return None
+        raise
+
+
 def create(user_id: str, email: str, password_hash: str) -> dict:
     """Crée la ligne d'identifiants d'un compte neuf.
 

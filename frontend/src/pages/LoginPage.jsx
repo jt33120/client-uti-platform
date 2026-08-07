@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
-import { Eye, EyeOff, ArrowRight, ShieldCheck, ArrowLeft, Loader2, Clock, CheckCircle, KeyRound } from 'lucide-react'
+import { Eye, EyeOff, ArrowRight, ShieldCheck, ArrowLeft, Loader2, Clock, CheckCircle, KeyRound, Mail } from 'lucide-react'
 import AuthBrand from '../components/AuthBrand'
 
 function CodeInput({ value, onChange, autoFocus }) {
@@ -231,36 +231,46 @@ export default function LoginPage() {
                 </div>
               </div>
 
+              {/* L'EXPLICATION PASSE DEVANT L'ERREUR, et ce n'est pas cosmétique.
+                  Un utilisateur hérité n'a pas « fait une faute de frappe » : il
+                  subit une migration. Laisser « Email ou mot de passe incorrect »
+                  dominer l'écran l'invite à conclure qu'il s'est trompé et à
+                  réessayer le même mot de passe — indéfiniment. */}
+              {heritage && (
+                <div
+                  className="rounded-lg px-3.5 py-3 text-[13px]"
+                  style={{ background: 'var(--accent-soft)', color: 'var(--accent-text)', border: '1px solid var(--border)' }}
+                >
+                  <div className="flex items-start gap-2.5">
+                    <KeyRound size={15} className="shrink-0 mt-0.5" />
+                    <span>
+                      {/* « Changer de main » signifie PASSER À QUELQU'UN D'AUTRE.
+                          La phrase disait donc littéralement l'inverse de ce
+                          qu'elle voulait rassurer, en première ligne. */}
+                      <strong className="font-semibold">
+                        Les mots de passe n'ont pas été conservés lors de notre changement de serveur.
+                      </strong><br />
+                      <strong className="font-semibold">Votre compte et vos données sont intacts</strong> —
+                      il suffit d'en choisir un nouveau. Si la double authentification était
+                      déjà active, votre application d'authentification continue de fonctionner.
+                    </span>
+                  </div>
+                  {/* Un lien noyé dans cinq lignes de texte ne se voit pas. */}
+                  <Link
+                    to={`/forgot-password${form.email ? `?email=${encodeURIComponent(form.email)}` : ''}`}
+                    className="btn-primary w-full justify-center !h-9 mt-3 flex items-center gap-1.5"
+                  >
+                    <Mail size={14} /> Recevoir un lien par e-mail
+                  </Link>
+                </div>
+              )}
+
               {error && (
                 <div
                   className="text-[13px] rounded-md px-3 py-2"
                   style={{ background: 'var(--danger-soft)', color: 'var(--danger)' }}
                 >
                   {error}
-                </div>
-              )}
-
-              {heritage && (
-                <div
-                  className="flex items-start gap-2.5 rounded-lg px-3.5 py-3 text-[13px]"
-                  style={{ background: 'var(--accent-soft)', color: 'var(--accent-text)', border: '1px solid var(--border)' }}
-                >
-                  <KeyRound size={15} className="shrink-0 mt-0.5" />
-                  <span>
-                    <strong className="font-semibold">Votre mot de passe a peut-être changé de main.</strong><br />
-                    Nous hébergeons désormais nous-mêmes les comptes, et aucun mot de
-                    passe n'a été repris de l'ancien système. <strong className="font-semibold">Votre compte et
-                    vos données sont intacts</strong> — il suffit de choisir un nouveau mot de
-                    passe.{' '}
-                    <Link
-                      to={`/forgot-password${form.email ? `?email=${encodeURIComponent(form.email)}` : ''}`}
-                      className="font-semibold underline underline-offset-2"
-                    >
-                      Recevoir un lien par e-mail
-                    </Link>.
-                    {' '}Si la double authentification était déjà active, votre application
-                    d'authentification continue de fonctionner.
-                  </span>
                 </div>
               )}
 

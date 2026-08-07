@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import api from '../lib/api'
 import { useAuth } from '../contexts/AuthContext'
-import { Eye, EyeOff, CheckCircle, ArrowLeft } from 'lucide-react'
+import { Eye, EyeOff, CheckCircle, ArrowLeft, AlertCircle, RefreshCw } from 'lucide-react'
 import AuthBrand from '../components/AuthBrand'
 
 export default function ResetPasswordPage() {
@@ -91,6 +91,39 @@ export default function ResetPasswordPage() {
             </div>
             <Link to="/login" className="btn-ghost w-full justify-center flex items-center gap-1.5">
               <ArrowLeft size={14} /> Se connecter
+            </Link>
+          </div>
+        ) : (!token && error) ? (
+          // Lien mort : jeton absent, trafiqué, expiré ou déjà consommé.
+          //
+          // Avant, le formulaire restait affiché — champs saisissables, seul le
+          // bouton grisé — et la seule issue proposée était « retour à la
+          // connexion ». C'est-à-dire : on laissait la personne remplir deux
+          // champs qui ne servaient à rien, puis on la renvoyait exactement là
+          // où elle vient d'échouer. L'action utile à cet instant précis est
+          // d'en redemander un ; c'est donc la seule qu'on propose.
+          <div className="space-y-4">
+            <div
+              className="flex items-start gap-3 rounded-md px-4 py-3 text-[13px]"
+              style={{ background: 'var(--danger-soft)', color: 'var(--danger)' }}
+            >
+              <AlertCircle size={15} className="shrink-0 mt-0.5" />
+              <span>
+                {error}<br />
+                <span style={{ opacity: 0.85 }}>
+                  Ces liens ne servent qu'une fois et expirent. En demander un
+                  nouveau prend quelques secondes.
+                </span>
+              </span>
+            </div>
+            <Link to="/forgot-password" className="btn-primary w-full justify-center !h-10 flex items-center gap-1.5">
+              <RefreshCw size={14} /> Demander un nouveau lien
+            </Link>
+            <Link
+              to="/login"
+              className="flex items-center justify-center gap-1.5 text-[13px] text-[var(--text-muted)] hover:text-[var(--text)] transition-colors"
+            >
+              <ArrowLeft size={13} /> Retour à la connexion
             </Link>
           </div>
         ) : (

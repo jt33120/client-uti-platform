@@ -212,23 +212,63 @@ def test_l_email_explique_pourquoi_il_arrive(script):
     """Un lien de mot de passe non sollicité ressemble à un hameçonnage.
 
     C'est le seul e-mail de la plateforme que le destinataire n'a pas demandé et
-    qui lui réclame une action sur son mot de passe. S'il ne dit ni pourquoi il
-    arrive, ni ce qui NE change pas, le réflexe correct de l'utilisateur est de
-    l'ignorer — et l'opération échoue sur les comptes les plus prudents.
+    qui lui réclame une action sur son mot de passe. Une recette en conditions
+    réelles l'a dit sans détour : l'expéditeur appartient à un autre domaine que
+    la marque, et toute formation anti-hameçonnage apprend à ne pas cliquer.
+
+    Trois choses doivent donc y figurer, et leur absence est un défaut :
+    pourquoi il arrive maintenant, ce qui NE change pas, et un moyen de vérifier
+    qui ne consiste PAS à nous croire sur parole. Écrire « faites-nous
+    confiance » n'a aucune valeur : un hameçonneur écrirait la même phrase.
     """
     from services import email_templates
 
     sujet, html, texte = email_templates.build_email(
         "password_migration",
         {"name": "Julian", "link": "https://exemple.test/reset-password?token=xyz",
-         "validite": "7 jours"},
+         "validite": "7 jours", "plateforme": "https://exemple.test"},
     )
     assert "Julian" in html
     assert "https://exemple.test/reset-password?token=xyz" in html
     assert "7 jours" in html
     # Ce que le modèle « mot de passe oublié » dirait à tort ici.
     assert "Vous avez demandé" not in html
+
+    # 1. Pourquoi maintenant, sans l'avoir demandé.
+    assert "changé de serveur" in html
+    assert "rien demandé" in html
+    # 2. Ce qui ne change pas.
     for attendu in ("intacts", "double authentification"):
         assert attendu in html, f"l'e-mail ne mentionne pas « {attendu} »"
+    # 3. Une vérification qui ne passe pas par cet e-mail, et un interlocuteur.
+    assert "Ne cliquez pas" in html, (
+        "aucune issue pour le destinataire prudent : il ne lui reste qu'à cliquer "
+        "ou à renoncer"
+    )
+    assert "https://exemple.test/contact" in html, "aucun interlocuteur de vérification"
+
     assert "définissez votre mot de passe" in sujet.lower()
     assert texte.strip(), "aucune version texte : l'e-mail passerait mal certains filtres"
+
+
+def test_aucune_variable_ne_reste_non_remplacee(script, monkeypatch, envois):
+    """Un `{plateforme}` littéral dans l'e-mail reçu, c'est l'e-mail décrédibilisé.
+
+    Le modèle porte quatre variables et deux appelants les fournissent. Ajouter
+    une variable au modèle sans l'ajouter aux DEUX appelants ne casse rien, ne
+    lève rien, et se voit uniquement dans la boîte du destinataire — sur un
+    message dont tout l'enjeu est d'avoir l'air légitime.
+
+    On vérifie donc sur l'e-mail réellement produit par le script, pas sur un
+    contexte fabriqué pour le test.
+    """
+    import re
+
+    client = _FauxClient({"profiles": PROFILS, "user_credentials": []})
+    _brancher(monkeypatch, script, client, envois)
+    _lancer(monkeypatch, script, ["--email", "julian.talou33@gmail.com", "--envoyer"])
+
+    assert len(envois) == 1
+    for champ in ("subject", "html", "text"):
+        restant = re.findall(r"\{[a-z_]+\}", envois[0][champ])
+        assert not restant, f"variables non remplacées dans {champ} : {restant}"

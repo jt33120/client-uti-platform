@@ -929,6 +929,9 @@ async def forgot_password(body: ForgotPasswordRequest, request: Request):
                         contexte_sup={
                             "name": (profil.get("name") or "").split(" ")[0] or "bonjour",
                             "validite": f"{MIGRATION_LIEN_JOURS} jours",
+                            # Permet au destinataire de vérifier sans cliquer :
+                            # ouvrir lui-même la plateforme aboutit au même lien.
+                            "plateforme": settings.frontend_url.rstrip("/"),
                         },
                     )
                 else:

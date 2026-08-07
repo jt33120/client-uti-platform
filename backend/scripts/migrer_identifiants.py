@@ -120,6 +120,9 @@ def _envoyer(profil: dict, jours: int) -> tuple[bool, str]:
         "name": (profil.get("name") or "").split(" ")[0] or "bonjour",
         "link": lien,
         "validite": _validite_humaine(jours),
+        # Permet au destinataire de vérifier sans cliquer : ouvrir lui-même la
+        # plateforme et y demander « mot de passe oublié » aboutit au même lien.
+        "plateforme": settings.frontend_url.rstrip("/"),
     }
     sujet, html, texte = email_templates.build_email("password_migration", contexte)
     ligne = email_outbox.enqueue(

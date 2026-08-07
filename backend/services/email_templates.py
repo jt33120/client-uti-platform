@@ -89,18 +89,38 @@ _DEFAULT_RESET = (
 # pas sollicité pense d'abord à une tentative d'hameçonnage, et il a raison de le
 # penser. L'email doit donc dire POURQUOI il arrive, et ce qui NE change pas.
 _DEFAULT_MIGRATION = (
-    '<p style="margin:0 0 14px;">La plateforme Groupement-IT gère désormais '
-    "elle-même les mots de passe, sur nos propres serveurs. Pour des raisons de "
-    "sécurité, aucun mot de passe n'a été repris de l'ancien système : il vous "
-    "faut en choisir un nouveau, une seule fois.</p>"
+    # PREMIÈRE PHRASE = POURQUOI CET E-MAIL ARRIVE MAINTENANT.
+    # Un destinataire qui n'a rien demandé cherche d'abord à comprendre ce qui
+    # lui vaut ce message. Tant qu'il ne le sait pas, tout le reste se lit comme
+    # un prétexte — et « Action requise » suivi d'un lien de mot de passe est le
+    # gabarit exact d'un hameçonnage.
+    '<p style="margin:0 0 14px;">Vous recevez cet e-mail parce que la plateforme '
+    "Groupement-IT a changé de serveur. Les mots de passe n'ont pas été conservés "
+    "lors de l'opération : il vous faut en choisir un nouveau, une seule fois. "
+    "<strong>Vous n'avez rien demandé, et c'est normal.</strong></p>"
     '<p style="margin:0 0 14px;"><strong>Votre compte et vos données sont '
     "intacts</strong> — appels d'offres, consultants, historique. Seule la façon "
     "de vous connecter change.</p>"
     '<p style="margin:0 0 14px;">Si la double authentification était déjà active '
     "sur votre compte, votre application d'authentification continue de "
     "fonctionner : aucun nouveau QR code à scanner.</p>"
-    '<p style="margin:0;font-size:13px;color:#6e6e73;">Ce lien est à usage unique '
-    "et expire dans {validite}.</p>"
+    '<p style="margin:0 0 14px;font-size:13px;color:#6e6e73;">Ce lien est à usage '
+    "unique et expire dans {validite}.</p>"
+    # LE MOYEN DE VÉRIFIER SANS NOUS CROIRE.
+    # Demander « faites-nous confiance » dans un e-mail est sans valeur : un
+    # hameçonneur écrirait la même phrase. On donne donc un chemin qui ne passe
+    # PAS par ce message — ouvrir soi-même la plateforme et y demander le lien
+    # aboutit exactement au même endroit. Le prudent a une issue, et le réflexe
+    # qu'on lui apprend est le bon partout ailleurs.
+    '<div style="margin:0;padding:12px 14px;border-radius:8px;background:#f5f5f7;'
+    'font-size:13px;color:#3a3f4a;">'
+    "<strong>Un doute sur cet e-mail ?</strong> Ne cliquez pas. Ouvrez vous-même "
+    '<a href="{plateforme}/login" style="color:#3a3f4a;">{plateforme}</a> dans '
+    "votre navigateur et utilisez « Mot de passe oublié » : vous obtiendrez "
+    "exactement le même lien. Une question, ou vous pensez que cet e-mail n'aurait "
+    'pas dû vous parvenir ? Écrivez-nous depuis la <a href="{plateforme}/contact" '
+    'style="color:#3a3f4a;">page Contact</a> de la plateforme.'
+    "</div>"
 )
 
 # `placeholders` : variables proposées dans l'éditeur.
@@ -155,7 +175,7 @@ DEFAULTS = {
         "subject": "Action requise : définissez votre mot de passe Groupement-IT",
         "body": _DEFAULT_MIGRATION,
         "format": "html",
-        "placeholders": ["name", "link", "validite"],
+        "placeholders": ["name", "link", "validite", "plateforme"],
         "email_title": "Bonjour {name},",
         "cta_label": "Définir mon mot de passe",
         # Le pied de page d'un e-mail de réinitialisation dit « ignorez, votre

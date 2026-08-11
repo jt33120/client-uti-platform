@@ -99,6 +99,9 @@ export default function LoginPage() {
   // Retour depuis l'inscription : compte créé, on invite à se connecter (la
   // double authentification s'enclenche à cette 1re connexion).
   const justRegistered = searchParams.get('registered') === '1'
+  // Retour depuis /reset-password : le mot de passe vient d'être posé. Sans ce
+  // relais, la confirmation mourait avec la page qu'on quitte.
+  const justReset = searchParams.get('reset') === '1'
   const [form, setForm] = useState({ email: searchParams.get('email') || '', password: '' })
   const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState('')
@@ -166,6 +169,16 @@ export default function LoginPage() {
                 <span>
                   <strong className="font-semibold">Vous avez été déconnecté.</strong><br />
                   Votre session a expiré après 3 heures (pour des raisons de sécurité). Reconnectez-vous pour continuer.
+                </span>
+              </div>
+            )}
+            {justReset && (
+              <div className="mb-5 flex items-start gap-2.5 rounded-lg px-3.5 py-3 text-[13px]"
+                style={{ background: 'var(--success-soft, rgba(16,163,74,0.10))', color: 'var(--success, #16a34a)', border: '1px solid var(--border)' }}>
+                <CheckCircle size={15} className="shrink-0 mt-0.5" />
+                <span>
+                  <strong className="font-semibold">Mot de passe enregistré.</strong><br />
+                  Connectez-vous avec celui que vous venez de choisir.
                 </span>
               </div>
             )}

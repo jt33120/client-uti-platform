@@ -27,7 +27,6 @@ export default function ResetPasswordPage() {
   // ni le révoquer. Le nouveau jeton ne se décode pas — c'est 256 bits de hasard
   // dont seule l'empreinte SHA-256 existe en base.
   useEffect(() => {
-    logout() // clear any stale session so we don't land as the wrong user
     const recu = searchParams.get('token')
     if (!recu) {
       setError('Lien de réinitialisation invalide. Veuillez refaire une demande.')
@@ -42,7 +41,21 @@ export default function ResetPasswordPage() {
     // Il ne sert qu'à alimenter le champ « username » masqué, pour que le
     // trousseau du navigateur rattache le nouveau mot de passe au bon compte.
     api.post('/auth/reset-password/verify', { token: recu })
-      .then(res => setEmail(res.data.email || ''))
+      .then(res => {
+        setEmail(res.data.email || '')
+        // La session en cours n'est fermée QU'UNE FOIS le lien reconnu valide.
+        //
+        // Elle doit l'être : sans cela, quelqu'un déjà connecté qui ouvre le
+        // lien d'un autre compte poserait un mot de passe sur ce compte-là tout
+        // en restant connecté sur le sien — deux identités mêlées sur un écran
+        // qui parle de mot de passe.
+        //
+        // Mais le faire AVANT de vérifier déconnectait sur un lien mort : ouvrir
+        // par curiosité un lien déjà consommé, dans un onglet, faisait perdre sa
+        // session à quelqu'un qui n'avait rien demandé et ne pouvait rien
+        // réinitialiser. On paie le coût là où il achète quelque chose.
+        logout()
+      })
       .catch(err => {
         setToken('')
         setError(err.response?.data?.detail || 'Lien de réinitialisation invalide ou expiré.')
@@ -60,7 +73,12 @@ export default function ResetPasswordPage() {
     try {
       await api.post('/auth/reset-password', { token, new_password: password })
       setDone(true)
-      setTimeout(() => { logout(); navigate('/login') }, 3000)
+      // La confirmation SURVIT à la redirection. Affichée seulement ici, elle
+      // disparaissait avec la page : on validait, on se retrouvait sur l'écran
+      // de connexion, et rien ne disait si ça avait marché — on l'apprenait en
+      // essayant. Le paramètre reprend le motif déjà en place pour l'inscription
+      // (`?registered=1`).
+      setTimeout(() => { logout(); navigate('/login?reset=1') }, 3000)
     } catch (err) {
       setError(err.response?.data?.detail || 'Une erreur est survenue.')
     } finally {

@@ -294,12 +294,19 @@ base que la production interroge AUJOURD'HUI, pas celle qu'elle interrogera
 après la bascule.** Tant que `SUPABASE_URL` pointe sur Supabase, c'est Supabase
 qu'il faut migrer.
 
-**Appliquer 0019 à Supabase** — tableau de bord → SQL Editor → coller le contenu
-de `backend/migrations/0019_auth_maison.sql`. Le fichier est idempotent :
+**Appliquer 0019 puis 0020 à Supabase** — tableau de bord → SQL Editor → coller
+le contenu des deux fichiers, dans l'ordre. Ils sont idempotents :
 
 ```bash
-cat ~/app/backend/migrations/0019_auth_maison.sql   # à copier tel quel
+cat ~/app/backend/migrations/0019_auth_maison.sql       # à copier tel quel
+cat ~/app/backend/migrations/0020_mot_de_passe_defini.sql
 ```
+
+⚠️ **0020 conditionne le code déployé, pas l'inverse.** `credentials.create()`
+écrit la colonne `password_defini` : sans elle, PostgREST refuse l'insertion et
+plus aucun compte ne peut être créé ni réinitialisé. Comme 0019, elle doit
+atteindre la base **avant** le déploiement — et **les deux bases** doivent la
+porter, celle de Supabase aujourd'hui, celle du VPS avant la bascule.
 
 **Rouvrir un compte existant.** 0019 ne reprend aucun hachage bcrypt : les
 profils survivent, les mots de passe non. Sur une base peuplée, on pose donc un

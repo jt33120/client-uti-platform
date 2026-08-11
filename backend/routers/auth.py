@@ -897,7 +897,7 @@ async def forgot_password(body: ForgotPasswordRequest, request: Request):
         # On provisionne donc la ligne à la demande, avec un hachage que
         # personne ne connaît : aucun compte n'est créé, aucun accès n'est
         # ouvert — on rend simplement joignable un compte qui existe déjà.
-        migre = False
+        profil = None
         if not cred:
             profil = _profil_a_migrer(body.email)
             if profil:
@@ -905,7 +905,29 @@ async def forgot_password(body: ForgotPasswordRequest, request: Request):
                     profil["id"], (profil.get("email") or body.email).strip().lower()
                 )
                 cred = credentials.by_email(body.email)
-                migre = bool(cred)
+
+        # « EN MIGRATION » NE VEUT PAS DIRE « LIGNE ABSENTE ».
+        #
+        # La première demande CRÉE la ligne. Se fier à son absence faisait donc
+        # disparaître le signe distinctif au premier clic : la deuxième demande —
+        # celle qu'on fait quand le premier e-mail tarde, le geste le plus
+        # naturel qui soit — repartait en « vous avez demandé à réinitialiser »,
+        # valable 1 heure au lieu de 7 jours, ET invalidait le lien du premier
+        # e-mail. Deux messages contradictoires, le seul valide étant le mauvais.
+        # Constaté en production le 11 août, sur deux appels à 1,5 seconde
+        # d'intervalle.
+        #
+        # La colonne `password_defini` (migration 0020) répond à la vraie
+        # question : cette personne a-t-elle déjà choisi un mot de passe ? Elle
+        # ne bouge qu'au moment où quelqu'un en choisit un, donc elle reste
+        # stable quel que soit le nombre de clics.
+        #
+        # Absente (0020 pas encore appliquée) → True, ce qui est vrai de toutes
+        # les lignes créées avant elle : on retombe sur l'ancien comportement au
+        # lieu de traiter tout le monde comme un compte migré.
+        migre = bool(cred) and not cred.get("password_defini", True)
+        if migre and profil is None:
+            profil = _profil_a_migrer(body.email) or {}
 
         if cred:
             clear, token_hash = passwords.new_reset_token()

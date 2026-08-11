@@ -94,10 +94,23 @@ def _profils(email_cible: str | None, inclure_suspendus: bool) -> list[dict]:
 
 
 def _deja_pourvus() -> set:
-    """Comptes déjà munis d'identifiants. Passe par `services/credentials` : ce
-    module est le SEUL à interroger `user_credentials`, et c'est cette unicité
-    qui rend vérifiable la promesse « aucun hachage ne fuite »."""
+    """Comptes qui ont déjà une LIGNE d'identifiants — à ne pas réinsérer.
+
+    Passe par `services/credentials` : ce module est le SEUL à interroger
+    `user_credentials`, et c'est cette unicité qui rend vérifiable la promesse
+    « aucun hachage ne fuite »."""
     return credentials.existing_user_ids()
+
+
+def _ont_repris_leur_compte() -> set:
+    """Comptes dont quelqu'un a réellement CHOISI le mot de passe.
+
+    Distinct de `_deja_pourvus` : une personne qui a cliqué une fois sur « mot de
+    passe oublié » sans aller au bout possède une ligne, mais n'a pas repris son
+    compte. C'est elle qu'il faut relancer en priorité — se fier à l'existence de
+    la ligne la ferait disparaître de la liste au pire moment.
+    """
+    return credentials.defined_user_ids()
 
 
 def _envoyer(profil: dict, jours: int) -> tuple[bool, str]:
@@ -168,6 +181,7 @@ def main() -> int:
     try:
         profils = _profils(args.email, args.inclure_suspendus)
         pourvus = _deja_pourvus()
+        repris = _ont_repris_leur_compte()
     except Exception as e:  # noqa: BLE001
         print(f"❌ Base injoignable : {e}", file=sys.stderr)
         print("   Vérifiez SUPABASE_URL / SUPABASE_SERVICE_KEY dans backend/.env,",
@@ -180,14 +194,16 @@ def main() -> int:
         print(f"Aucun profil à traiter{cible}.")
         return 1 if args.email else 0
 
-    a_traiter = [p for p in profils if args.relancer or p["id"] not in pourvus]
+    # On saute qui a REPRIS son compte, pas qui a une ligne : quelqu'un qui a
+    # cliqué sans aller au bout doit rester dans la liste.
+    a_traiter = [p for p in profils if args.relancer or p["id"] not in repris]
     ignores = [p for p in profils if p not in a_traiter]
 
     print(f"Base : {settings.supabase_url}")
     print(f"Lien valable {_validite_humaine(args.jours)} — envoi depuis {settings.smtp_from or '(SMTP_FROM absent)'}")
     print()
     for profil in ignores:
-        print(f"  ⏭  {profil['email']:<45} déjà pourvu d'identifiants (--relancer pour forcer)")
+        print(f"  ⏭  {profil['email']:<45} mot de passe déjà choisi (--relancer pour forcer)")
     if not a_traiter:
         print("\nRien à faire.")
         return 0
@@ -195,7 +211,12 @@ def main() -> int:
     if not args.envoyer:
         print("SIMULATION — rien n'est écrit, rien n'est envoyé.\n")
         for profil in a_traiter:
-            etat = "création des identifiants" if profil["id"] not in pourvus else "relance"
+            if profil["id"] not in pourvus:
+                etat = "création des identifiants"
+            elif profil["id"] not in repris:
+                etat = "compte en attente depuis une demande précédente"
+            else:
+                etat = "relance"
             print(f"  ✉️  {profil['email']:<45} {profil['role']:<9} {etat}")
         print(f"\n{len(a_traiter)} e-mail(s) seraient envoyés. Ajoutez --envoyer pour le faire.")
         return 0

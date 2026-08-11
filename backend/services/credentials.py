@@ -183,6 +183,27 @@ def existing_user_ids() -> set:
     return {r["user_id"] for r in rows if r.get("user_id")}
 
 
+def defined_user_ids() -> set:
+    """Comptes dont le mot de passe a réellement été CHOISI par quelqu'un.
+
+    Sous-ensemble de `existing_user_ids` : une ligne provisionnée pour une
+    migration existe mais ne compte pas ici. Les deux questions se ressemblent
+    et n'ont pas la même réponse — confondre « la ligne existe » avec « la
+    personne a repris son compte » est exactement le défaut que la migration
+    0020 corrige.
+
+    Sert à savoir qui reste à contacter : quelqu'un qui a cliqué une fois sur
+    « mot de passe oublié » sans aller au bout doit rester dans la liste.
+    """
+    rows = supabase.table(TABLE).select("user_id, password_defini").execute().data or []
+    return {
+        r["user_id"] for r in rows
+        # Colonne absente (migration 0020 non appliquée) → on considère le mot
+        # de passe défini, ce qui est vrai de toutes les lignes antérieures.
+        if r.get("user_id") and r.get("password_defini", True)
+    }
+
+
 def provision_for_migration(user_id: str, email: str) -> Optional[dict]:
     """Crée la ligne d'identifiants d'un compte MIGRÉ, sans mot de passe utilisable.
 
@@ -200,7 +221,7 @@ def provision_for_migration(user_id: str, email: str) -> Optional[dict]:
     simplement que le travail est fait).
     """
     try:
-        return create(user_id, email, passwords.placeholder_hash())
+        return create(user_id, email, passwords.placeholder_hash(), defini=False)
     except Exception as e:  # noqa: BLE001
         msg = str(e).lower()
         if "23505" in msg or "duplicate key" in msg or "violates unique constraint" in msg:
@@ -208,12 +229,15 @@ def provision_for_migration(user_id: str, email: str) -> Optional[dict]:
         raise
 
 
-def create(user_id: str, email: str, password_hash: str) -> dict:
+def create(user_id: str, email: str, password_hash: str, defini: bool = True) -> dict:
     """Crée la ligne d'identifiants d'un compte neuf.
 
     Laisse remonter l'exception : l'appelant (routers/auth.py:register) doit
     pouvoir défaire l'insertion du profil si celle-ci échoue. Un doublon d'e-mail
     ressort en 23505, que `_credentials_error` traduit en 409.
+
+    `defini=False` réservé au provisionnement de migration : le hachage posé
+    n'est alors connu de personne et la personne n'a rien choisi (cf. 0020).
     """
     now = datetime.now(timezone.utc).isoformat()
     res = supabase.table(TABLE).insert({
@@ -221,6 +245,7 @@ def create(user_id: str, email: str, password_hash: str) -> dict:
         "email": (email or "").strip().lower(),
         "password_hash": password_hash,
         "password_changed_at": now,
+        "password_defini": defini,
     }).execute()
     return (res.data or [{}])[0]
 
@@ -328,6 +353,11 @@ def consume_reset(token_hash: str, password_hash: str, now: Optional[datetime] =
     res = supabase.table(TABLE).update({
         "password_hash": password_hash,
         "password_changed_at": now.isoformat(),
+        # C'est ICI, et nulle part ailleurs, qu'un compte cesse d'être « en
+        # attente de migration » : au moment précis où quelqu'un choisit un mot
+        # de passe. Le poser à la création de la ligne ferait mentir la colonne
+        # dès le premier provisionnement.
+        "password_defini": True,
         "reset_token_hash": None,
         "reset_token_expires_at": None,
         # Réinitialiser par e-mail débloque le compte : c'est la voie de secours

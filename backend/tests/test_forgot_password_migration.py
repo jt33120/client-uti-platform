@@ -208,7 +208,7 @@ async def test_un_compte_deja_migre_recoit_le_modele_ordinaire(monkeypatch, auth
         "profiles": [PROFIL],
         "user_credentials": [{
             "user_id": PROFIL["id"], "email": "romain.aumard@uti-group.com",
-            "password_hash": "$argon2id$déjà-posé",
+            "password_hash": "$argon2id$déjà-posé", "password_defini": True,
         }],
     })
     _brancher(monkeypatch, auth, client, envois)
@@ -220,3 +220,77 @@ async def test_un_compte_deja_migre_recoit_le_modele_ordinaire(monkeypatch, auth
     assert not [e for e in client.journal if e[:2] == ("insert", "user_credentials")], (
         "les identifiants d'un compte déjà migré ont été réécrits"
     )
+
+
+@pytest.mark.asyncio
+async def test_deux_demandes_de_suite_restent_une_migration(monkeypatch, auth):
+    """Le geste le plus banal du monde : recliquer parce que l'e-mail tarde.
+
+    CE QUI SE PASSAIT (constaté en production le 11 août, deux appels à 1,5 s
+    d'intervalle). La première demande CRÉE la ligne d'identifiants — le signe
+    auquel on reconnaissait un compte hérité. La seconde ne le trouvait donc
+    plus et repartait en réinitialisation ordinaire :
+
+        clic 1  →  « la plateforme a changé de serveur », lien valable 7 jours
+        clic 2  →  « vous avez demandé à réinitialiser », lien valable 1 HEURE
+
+    Et comme `issue_reset` écrase le jeton précédent, le second clic TUAIT le
+    lien du premier. Il restait donc à l'utilisateur deux e-mails qui se
+    contredisent, dont le seul encore valide lui parlait d'une demande qu'il
+    n'avait pas faite et expirait soixante fois plus vite.
+
+    Rien n'échouait, rien n'était journalisé comme anormal.
+    """
+    from datetime import datetime, timezone
+
+    envois = []
+    client = _FauxClient({"profiles": [PROFIL], "user_credentials": []})
+    _brancher(monkeypatch, auth, client, envois)
+
+    await _demander(auth, "romain.aumard@uti-group.com")
+    await _demander(auth, "romain.aumard@uti-group.com")
+
+    assert len(envois) == 2
+    assert [e["cle"] for e in envois] == ["password_migration", "password_migration"], (
+        "la deuxième demande a basculé en réinitialisation ordinaire"
+    )
+
+    # Et la validité ne s'effondre pas non plus au second clic.
+    for _, _, maj in [e for e in client.journal if e[:2] == ("update", "user_credentials")]:
+        echeance = datetime.fromisoformat(maj["reset_token_expires_at"])
+        restant = (echeance - datetime.now(timezone.utc)).total_seconds()
+        assert restant > 6 * 24 * 3600, "un des deux liens ne vaut qu'une heure"
+
+    # Une seule ligne créée : la seconde demande ne réinsère pas.
+    inserts = [e for e in client.journal if e[:2] == ("insert", "user_credentials")]
+    assert len(inserts) == 1
+    assert inserts[0][2]["password_defini"] is False, (
+        "la ligne provisionnée se déclare « mot de passe choisi » : le compte "
+        "sortirait de la liste des personnes à relancer sans que personne n'ait rien choisi"
+    )
+
+
+@pytest.mark.asyncio
+async def test_colonne_absente_on_retombe_sur_le_comportement_ordinaire(monkeypatch, auth):
+    """Si la migration 0020 n'est pas appliquée, ne pas traiter tout le monde en migré.
+
+    Une base sans la colonne `password_defini` renvoie des lignes qui n'ont pas
+    la clé. Lire une absence comme « false » ferait envoyer l'e-mail de MIGRATION
+    à des comptes ordinaires — et leur annoncerait que leur mot de passe n'existe
+    plus, ce qui serait faux. En cas de doute on retombe donc sur l'ancien
+    comportement, qui est vrai de toutes les lignes antérieures à 0020.
+    """
+    envois = []
+    client = _FauxClient({
+        "profiles": [PROFIL],
+        "user_credentials": [{
+            "user_id": PROFIL["id"], "email": "romain.aumard@uti-group.com",
+            "password_hash": "$argon2id$peu-importe",  # pas de clé password_defini
+        }],
+    })
+    _brancher(monkeypatch, auth, client, envois)
+
+    await _demander(auth, "romain.aumard@uti-group.com")
+
+    assert len(envois) == 1
+    assert envois[0]["cle"] == "password_reset"

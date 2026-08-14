@@ -6,7 +6,11 @@
 (function () {
   if (typeof MIPRum === 'undefined') return; // script CDN bloqué/indisponible : l'app vit sans RUM
   MIPRum.init({
-    endpoint: "https://nupxrdpsliqptqnjkmgw.supabase.co/functions/v1/v1-traces",
+    // Ingestion redéployée sur Vercel (août 2026). L'ancienne adresse était une
+    // edge function du projet Supabase nupxrdpsliqptqnjkmgw, supprimé depuis :
+    // tout ce qui l'appelle échoue désormais, silencieusement — la télémétrie
+    // est best-effort et ne remonte aucune erreur à l'utilisateur.
+    endpoint: "https://mip-rum-console.vercel.app/api/ingest/v1/traces",
     appId: "gip-plateforme",
     clientId: "groupement-it",
     apiKey: "mip_live_gip_59ca708ce596d20a52d58ea976dc512c516b442a",

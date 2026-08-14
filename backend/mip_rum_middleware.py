@@ -6,7 +6,9 @@ La corrélation front→back se fait par trace_id ; la session web (optionnelle)
 voyage dans ``tracestate: mip=s:<session_id>``.
 
 Activation par variables d'environnement — sans elles, passthrough total :
-  MIP_RUM_ENDPOINT  ex. https://xxx.supabase.co/functions/v1/v1-traces
+  MIP_RUM_ENDPOINT  ex. https://mip-rum-console.vercel.app/api/ingest/v1/traces
+                    (l'ancienne edge function Supabase a été supprimée en
+                    août 2026 : une valeur en *.supabase.co n'ingère plus rien)
   MIP_RUM_APP_ID    ex. gip-plateforme
   MIP_RUM_API_KEY   optionnel (clé d'app MIP RUM)
   MIP_RUM_IGNORE    routes exactes ignorées (défaut "/health,/docs,/openapi.json,/favicon.ico")

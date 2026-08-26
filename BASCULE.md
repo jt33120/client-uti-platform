@@ -7,6 +7,211 @@
 
 ---
 
+## 0. ÉTAT RÉEL AU 26 AOÛT 2026
+
+> **Cette section prime sur tout ce qui suit.** Le calendrier des sections 1 à 6
+> a glissé de neuf jours ; son raisonnement, lui, tient toujours. Ce qui est
+> écrit ici a été **mesuré** le 26 août — `/health` interrogé, la base
+> questionnée, le DNS résolu, les journaux Vercel lus. Rien n'y est déduit d'un
+> document ni repris d'un compte rendu.
+
+### 0.1 Ce qui tourne réellement en production
+
+| Brique | Où elle tourne vraiment | Comment on le sait |
+|---|---|---|
+| Frontend | **Vercel**, projet `uti_platform`, domaine `plateforme.groupement-it.com` | API Vercel |
+| Backend | **VPS OVH**, commit `ba159675` | `/health` |
+| **Base de données** | **Supabase** — pas le VPS | 8 785 appels `/rest/v1/*` en 24 h dans les journaux du projet |
+| **Fichiers** | **Supabase Storage** — pas le disque du VPS | `/files/d/{jeton bidon}` renvoie 404 et non 403, donc `storage._use_local()` est faux (`routers/files.py:110-112`) |
+| Authentification | **Migrée.** GoTrue est mort, `/auth/login` lit `user_credentials` | `routers/auth.py:521-535`, aucun repli vers Supabase Auth |
+
+**La formule « on a migré la base et l'authentification » est à moitié fausse, et
+c'est la moitié dangereuse.** L'authentification, oui. La base, non : la table
+`user_credentials` elle-même vit dans Supabase. Supprimer le projet aujourd'hui
+couperait la production net, en quelques secondes.
+
+Le VPS ne « ne sert aucun trafic » pas davantage : il sert **tout** le trafic
+applicatif (`frontend/vercel.json:5` réécrit `/api/*` vers lui). Ce qui ne sert
+rien, c'est sa base PostgreSQL et son disque de stockage. La conséquence est
+heureuse : le jour J n'est plus « déplacer l'application » mais « repointer
+`SUPABASE_URL` et `STORAGE_BACKEND` ». Un périmètre bien plus étroit que celui
+qu'annonce la séquence minute par minute du §4.
+
+### 0.2 Le transfert du dépôt a cassé, en silence, tout ce qui s'authentifiait
+
+Le dépôt est passé de `jt33120/uti-platform` à
+`my-paddock-studio/client-uti-platform` — changement de propriétaire **et** de
+nom **et** de visibilité (public → privé). Trois intégrations s'authentifiaient
+auprès de l'ancien propriétaire. Les trois sont tombées. **Aucune n'a alerté.**
+
+| Ce qui est tombé | Effet | Durée avant qu'on s'en aperçoive |
+|---|---|---|
+| Clé de déploiement SSH du VPS | `deploy.sh` mort à sa ligne 58 (`git pull`, sous `set -e`) | Backend figé au **11 août** — 15 jours |
+| Application GitHub de Vercel | Plus aucun webhook, donc aucun build | Front figé au **14 août** — 12 jours |
+| Politique de l'organisation | Interdisait de recréer une clé de déploiement | Découvert en tentant de réparer |
+
+**Le mode de panne est le pire qui soit** : chaque fusion affichait un succès,
+la CI passait au vert, `master` avançait — et plus rien n'atteignait les
+utilisateurs. Deux canaux morts, aucun signal, douze jours.
+
+Le message de GitHub est complice : la clé SSH s'authentifiait parfaitement
+(`Hi my-paddock-studio/client-uti-platform!`) tout en n'ayant aucun droit, et
+`git fetch` répondait **« Repository not found »** — un refus d'accès déguisé en
+erreur de chemin, pour ne pas révéler l'existence d'un dépôt privé. On cherche
+l'URL pendant que le problème est l'autorisation.
+
+**Deux dettes restent ouvertes après réparation :**
+
+1. La clé de déploiement a été recréée **avec accès en écriture**. `deploy.sh`
+   ne fait que `git pull` : cette permission n'a aucun usage, et elle transforme
+   `~/.ssh/id_ed25519`, posé sur une machine exposée, en droit de pousser sur
+   `master` — qui se déploie automatiquement. À recréer sans écriture.
+2. Le même transfert a pu couper d'autres accès que personne n'a encore
+   sollicités. À inventorier.
+
+### 0.3 Les e-mails : ce qui est prouvé, ce qui ne l'est pas
+
+**On n'utilise pas Resend.** Rien dans le dépôt ne l'appelle. La clé API « UTI »
+affiche 0 activité parce qu'aucun code ne s'en sert — ce n'est pas un symptôme.
+
+On utilise le **SMTP Infomaniak**, expéditeur `plateforme.grp-it@hbccp.fr`, via
+la file `email_outbox` dépilée toutes les 20 secondes. Personne dans l'équipe ne
+sait qui a créé ce compte Infomaniak ni qui possède `hbccp.fr`.
+
+**Ce qui est prouvé, par un envoi réel déclenché le 26 août à 07:02 :** la chaîne
+applicative fonctionne de bout en bout. Endpoint atteint → ligne
+`user_credentials` provisionnée → jeton armé → e-mail déposé en file → **accepté
+par Infomaniak en 11 secondes, sans erreur**.
+
+**Ce qui n'est pas prouvé :** que le message arrive. `status = "sent"` en base
+signifie « le relais a accepté », rien de plus.
+
+**Et le vrai constat est ailleurs.** `email_outbox` contient **cinq lignes depuis
+toujours**, dont aucune entre le 11 août et le 26. Or l'endpoint crée
+systématiquement une ligne dès que l'adresse correspond à un profil. Donc entre
+ces deux dates, **aucune demande de réinitialisation n'a jamais atteint le
+backend**. Le problème signalé n'était pas un problème de livraison.
+
+L'hypothèse la plus probable : une adresse saisie qui ne figure pas dans
+`profiles`. `_profil_a_migrer` renvoie alors `None`, rien n'est envoyé, et
+l'écran affiche quand même « si un compte existe, un lien a été envoyé ».
+
+> **Ce message est volontaire — ne pas révéler qui a un compte — et il a coûté
+> deux semaines.** Il ne ment pas, mais il rend indistinguables « adresse
+> inconnue » et « e-mail perdu ». Il faut garder le secret côté public et rendre
+> le diagnostic possible côté administration.
+
+**L'état de l'authentification des domaines, mesuré :**
+
+| Domaine | SPF | DKIM | DMARC |
+|---|---|---|---|
+| `hbccp.fr` (expéditeur actuel) | `?all` — qualificateur **neutre**, n'affirme rien | **absent** | **absent** |
+| `groupement-it.com` | **22 requêtes DNS** (limite 10) + 3 requêtes à vide → **`PermError`** | absent | `p=none` |
+
+Le SPF de `groupement-it.com` est donc **déjà inexploitable**, et l'a été sans
+que personne le sache : `include:uti-group.com` réimporte presque toute la liste
+une seconde fois. Y ajouter un fournisseur n'améliorerait rien et risquerait la
+messagerie d'autres usages (VerySwing, OVH, Orange, IONOS).
+
+**Décision prise le 26 août : passer à Resend, depuis un sous-domaine.**
+
+- Compte Resend **existant** — l'adresse de connexion et les domaines d'envoi
+  sont indépendants, aucun nouveau compte n'est nécessaire.
+- Domaine d'envoi : **`notifications.groupement-it.com`**. Un sous-domaine
+  n'hérite pas du SPF de la racine : il repart d'un enregistrement propre à une
+  seule requête, et la racine n'est pas touchée.
+- Zone DNS chez **IONOS**, que nous contrôlons — contrairement à `hbccp.fr`,
+  dont la zone est chez Infomaniak.
+- Bascule = **cinq variables d'environnement, zéro ligne de code** : la seule
+  trace d'Infomaniak dans le backend est une valeur par défaut
+  (`config.py:17`) ; `services/email.py:194-197` est du SMTP standard.
+
+⚠️ **`SMTP_HOST` et `SMTP_PORT` sont absents du `.env` de production** : elle
+tourne sur les défauts de `config.py`. Il faut donc les y écrire **explicitement
+avant** tout nettoyage du code, sans quoi retirer le défaut Infomaniak changerait
+de fournisseur en silence au déploiement suivant.
+
+Le vrai gain n'est pas la livrabilité, c'est l'**observabilité** : Resend dit ce
+que devient chaque message. Toute la difficulté de ce chantier vient de là.
+
+### 0.4 Les comptes
+
+11 profils, 10 actifs, 1 suspendu. **3 ont un mot de passe** (dont un
+provisionné par le test du 26 août). **7 restent à reprendre.**
+
+| Domaine | Comptes | Avec mot de passe | À migrer |
+|---|---|---|---|
+| gmail.com | 5 | 3 | 2 |
+| uti-group.com | 3 | 0 | 3 |
+| groupement-it.com | 1 | 0 | 1 |
+| polytechnique.org | 1 | 0 | 1 |
+
+`scripts/migrer_identifiants.py` fait la campagne en une commande. **Ne pas la
+lancer avant d'avoir prouvé la livraison sur chacun des quatre domaines** : la
+file afficherait sept fois « sent » sans que personne ne reçoive rien, et on
+croirait la migration faite.
+
+### 0.5 Deux lignes de configuration absentes en production
+
+`app_settings` ne contient qu'**une seule ligne**, `notifications`.
+`data_retention` et `ai_budget` sont **absents de la base de production**.
+
+C'est exactement l'incident décrit au §3 comme un piège à éviter *sur la base
+neuve* — il est sur l'ancienne, depuis toujours. Conséquences (`app_settings.py:117`
+et `:130`) : la purge de rétention est inerte et invisible, et la surveillance du
+budget IA ne se déclenchera jamais.
+
+### 0.6 Le blocage n'a pas bougé, et il n'est pas technique
+
+**Il n'existe aucune destination de sauvegarde hors du VPS, et aucune
+restauration n'a jamais été prouvée.** Ce sont les conditions posées pour
+supprimer Supabase. Elles ne sont pas remplies. Le chantier E reste bloquant
+pour G, comme au §1.
+
+L'outillage, lui, est écrit et complet : `backup_db.sh`, `restore_drill.sh`,
+`setup_backup_offsite.sh`, la politique S3 et son contrôle qui **essaie
+réellement de supprimer un objet**.
+
+**Une nuance mesurée le 26 août, qui change le calendrier :** `deploy/s3_backup.py`
+est du **boto3 générique** piloté par `BACKUP_S3_ENDPOINT` (lignes 34-55). Rien
+n'y est OVH. Seuls les gestes manuels de `setup_backup_offsite.sh` (étape 3,
+création du second utilisateur S3) sont rédigés pour la console OVH.
+
+Autrement dit : **l'attente d'un accès OVH détenu par un associé n'est pas une
+contrainte technique.** Tout fournisseur S3 offrant le verrou d'objet en mode
+COMPLIANCE lève le blocage. La contrainte réelle est que ce verrou se pose **à la
+création du conteneur** et jamais après — pas la marque du fournisseur.
+
+### 0.7 Les leçons payées
+
+1. **« Accepté » n'est pas « arrivé ».** `status = "sent"`, `✅ Email envoyé avec
+   succès`, `HTTP 200` : trois systèmes différents ont annoncé un succès le même
+   matin sans que rien ne parvienne à destination. Une sonde vaut ce qu'elle
+   **charge**, pas ce qu'elle affirme.
+2. **Un transfert de dépôt casse en silence tout ce qui s'authentifiait auprès de
+   l'ancien propriétaire.** Et l'erreur affichée désigne la mauvaise cause.
+3. **« Redeploy » rejoue un commit, il ne déploie pas le dernier.** Le bouton a
+   republié à l'identique le 14 août en affichant `READY`.
+4. **Un diagnostic hérité n'est pas une mesure.** « `origin` pointe sur l'ancien
+   chemin » a été confirmé sans être vérifié — il pointait déjà sur le bon. Le
+   test qui a servi de preuve testait autre chose.
+5. **Un indicateur peut être plausible et faux.** « 4 AOs avec profil » à côté de
+   « 0 AO ouvert » : rien n'échouait, et seule la comparaison de deux cases
+   voisines a révélé le défaut.
+
+### 0.8 Les trois prochaines actions, dans l'ordre
+
+1. **Terminer Vercel.** Le lien est réparé, il manque un build du `master`
+   courant. Contrôle : `plateforme.groupement-it.com/init-mip-rum.js` ne doit
+   plus contenir **aucune** clé `feedback`.
+2. **Basculer sur Resend, puis prouver la livraison domaine par domaine**, et
+   seulement ensuite lancer `migrer_identifiants.py` pour les 7 comptes.
+3. **Obtenir la destination hors-site et prouver une restauration.** C'est la
+   seule chose qui commande encore la suppression de Supabase — tout le reste
+   est du travail d'ici là.
+
+---
+
 ## 1. Calendrier et dépendances
 
 **La date de bascule n'est pas un choix, c'est une soustraction.** Julian pose

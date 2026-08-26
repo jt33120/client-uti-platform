@@ -123,6 +123,40 @@ def test_privileges_par_defaut_pour_les_futures_tables():
     assert "grant all privileges on tables to service_role" in sql
 
 
+def test_owner_recupere_les_tables_dune_premiere_charge_mal_faite():
+    """`create database uti owner uti_admin` rend :"owner" propriétaire de la
+    BASE, pas de chaque TABLE : un premier chargement du schéma par un autre
+    rôle (`sudo -u postgres psql -f schema.sql`, le geste le plus naturel) les
+    laisse toutes appartenir à ce rôle-là.
+
+    Mesuré le 26 août 2026 : `PGUSER=uti_admin bash deploy/backup_db.sh`
+    échoue avec « permission denied for table ai_usage » — verrouiller une
+    table pour la sauvegarder exige au moins SELECT, que :"owner" n'a jamais
+    reçu (les GRANT de la section 4 ne visent QUE service_role). Reproduit et
+    vérifié en local sur un vrai PostgreSQL : une table créée par `postgres`
+    avec seulement ce GRANT refuse même un LOCK ACCESS SHARE à :"owner"."""
+    sql = ROLES.read_text(encoding="utf-8")
+    sql_bas = sql.lower()
+    assert "alter table public.%i owner to %i" in sql_bas, (
+        "aucune réassignation de propriétaire des tables déjà chargées : "
+        "un schéma chargé un jour par un autre rôle que :\"owner\" le reste, "
+        "et pg_dump échoue en silence tant que personne ne l'a lancé."
+    )
+    assert "alter sequence public.%i owner to %i" in sql_bas, (
+        "les séquences ne sont pas réassignées : pg_dump les verrouille "
+        "aussi (nextval sur une colonne serial), même échec attendu sur "
+        "la première séquence appartenant encore à un autre rôle."
+    )
+    assert "\\gexec" in sql, (
+        "la réassignation doit s'exécuter via \\gexec (génération + exécution "
+        "des ALTER), pas dans un bloc DO $$ ... $$ : :'owner' ne s'y substitue "
+        "pas de la même façon."
+    )
+    # Doit s'appliquer à CE QUI EXISTE DÉJÀ (pg_tables), pas seulement aux
+    # futures créations — c'est le rôle, distinct, de la section 4 plus bas.
+    assert "from pg_tables" in sql_bas and "from pg_sequences" in sql_bas
+
+
 def test_les_roles_ne_sont_pas_dans_les_migrations():
     """scripts/check_schema_drift.py rejoue backend/migrations/0*.sql sur une
     base jetable (check_schema_drift.py:103). Les rôles sont des objets de

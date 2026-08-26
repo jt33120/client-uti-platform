@@ -188,9 +188,27 @@ restauration n'a jamais été prouvée.** Ce sont les conditions posées pour
 supprimer Supabase. Elles ne sont pas remplies. Le chantier E reste bloquant
 pour G, comme au §1.
 
-L'outillage, lui, est écrit et complet : `backup_db.sh`, `restore_drill.sh`,
+L'outillage, lui, est écrit : `backup_db.sh`, `restore_drill.sh`,
 `setup_backup_offsite.sh`, la politique S3 et son contrôle qui **essaie
 réellement de supprimer un objet**.
+
+**Il n'était pas complet, et personne ne pouvait le voir.** Audité le 26 août,
+`restore_drill.sh` ne vérifiait que **quatre des cinq** familles de fichiers :
+les images des modèles d'e-mail manquaient. Elles ne sont référencées par aucune
+colonne — elles vivent dans le HTML de `email_templates.body` — et c'est ce qui
+les avait fait oublier, jusque dans le test censé garantir la couverture, qui
+énumérait lui aussi quatre familles.
+
+Effet réel aujourd'hui : **nul**, `email_templates` étant vide en production.
+C'est précisément pour cela que le trou pouvait durer. Il aurait suffi qu'une
+personne personnalise un modèle depuis l'écran d'administration pour qu'une
+restauration soit déclarée conforme en ayant perdu ses images — et la panne
+serait apparue chez un CLIENT, dans un e-mail aux images cassées, des semaines
+plus tard. Corrigé, avec un test ancré sur la liste des buckets du code plutôt
+que sur une énumération recopiée.
+
+La leçon vaut au-delà de ce défaut : **une vérification incomplète est plus
+dangereuse qu'une vérification absente**, parce qu'elle délivre un certificat.
 
 **Une nuance mesurée le 26 août, qui change le calendrier :** `deploy/s3_backup.py`
 est du **boto3 générique** piloté par `BACKUP_S3_ENDPOINT` (lignes 34-55). Rien

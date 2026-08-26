@@ -188,6 +188,26 @@ restauration n'a jamais été prouvée.** Ce sont les conditions posées pour
 supprimer Supabase. Elles ne sont pas remplies. Le chantier E reste bloquant
 pour G, comme au §1.
 
+**Et c'est pire que « pas de hors-site ».** Mesuré le 26 août :
+`/var/backups/uti` **n'existait pas**. Pas une sauvegarde, même locale, n'avait
+jamais abouti — et aucune n'aurait pu. `backup_db.sh`, `restore_drill.sh` et
+`supervision.sh` lançaient tous `psql`/`pg_dump` **sans nommer le rôle
+PostgreSQL**, alors que `install_db.sh` installe une authentification « peer »
+AVEC correspondance (`pg_ident.conf` : compte UNIX `julian.talou` → rôle
+`uti_admin`). Faute de `PGUSER`, libpq demandait le rôle « julian.talou », qui
+n'existe pas :
+
+    pg_dump: FATAL: Peer authentication failed for user "julian.talou"
+
+Les scripts contredisaient la conception de leur propre installation. Rien ne
+pouvait le révéler à la lecture : chaque fichier est correct isolément, et c'est
+leur rencontre qui échoue. **Seule une exécution le disait — et personne n'avait
+jamais exécuté ces scripts.** Le plus grave défaut possible sur un outil dont la
+seule raison d'être est de fonctionner le jour où tout le reste a échoué.
+
+Corrigé, avec un test qui ancre le rôle par défaut sur le `DB_OWNER` de
+`install_db.sh` plutôt que sur une valeur recopiée.
+
 L'outillage, lui, est écrit : `backup_db.sh`, `restore_drill.sh`,
 `setup_backup_offsite.sh`, la politique S3 et son contrôle qui **essaie
 réellement de supprimer un objet**.

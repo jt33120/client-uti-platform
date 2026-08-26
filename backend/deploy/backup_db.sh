@@ -84,6 +84,35 @@ set -uo pipefail
 
 DEST="${BACKUP_DIR:-/var/backups/uti}"
 BASE="${PGDATABASE:-uti}"
+
+# ── LE RÔLE POSTGRESQL DOIT ÊTRE NOMMÉ, ET CE N'EST PAS FACULTATIF ──────────
+#
+# Sans cette ligne, ce script échoue à sa PREMIÈRE commande, toujours, sur
+# toute installation conforme :
+#
+#     pg_dump: FATAL: Peer authentication failed for user "julian.talou"
+#
+# install_db.sh configure l'authentification « peer » avec une table de
+# correspondance (pg_ident.conf) :
+#
+#     pg_hba.conf     local all all peer map=uti
+#     pg_ident.conf   uti  "julian.talou"  ->  uti_admin
+#
+# Le compte UNIX julian.talou est donc autorisé à se connecter comme rôle
+# `uti_admin` — et UNIQUEMENT comme lui. Or libpq, faute de `-U` ou de PGUSER,
+# prend le nom du compte UNIX comme nom de rôle : il demande « julian.talou »,
+# qui n'est pas un rôle, et la correspondance ne s'applique pas.
+#
+# Le script contredisait donc la conception de sa propre installation. Constaté
+# le 26 août 2026, à la première exécution réelle : /var/backups/uti n'existait
+# même pas, parce que AUCUNE sauvegarde n'avait jamais abouti — ni ici, ni dans
+# restore_drill.sh, ni dans supervision.sh, tous atteints du même défaut.
+#
+# Le défaut est posé DANS LE SCRIPT et non dans l'unité systemd, délibérément :
+# le RUNBOOK §10 fait lancer ces scripts À LA MAIN le jour d'un sinistre. Une
+# variable qui ne vivrait que dans uti-backup.service laisserait échouer
+# exactement l'exécution qui compte le plus.
+export PGUSER="${PGUSER:-uti_admin}"
 BACKEND="${BACKEND_DIR:-/home/julian.talou/app/backend}"
 # Doit correspondre à LOCAL_STORAGE_DIR de backend/.env (config.py). Deux valeurs
 # qui divergent produiraient une sauvegarde parfaitement verte d'un répertoire

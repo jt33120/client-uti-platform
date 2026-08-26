@@ -56,6 +56,15 @@ set -uo pipefail
 
 DEST="${BACKUP_DIR:-/var/backups/uti}"
 BASE="${PGDATABASE:-uti}"
+
+# Rôle PostgreSQL nommé explicitement — sans quoi ce script échoue à sa première
+# commande sur toute installation conforme. install_db.sh met en place une
+# authentification « peer » avec correspondance (pg_ident.conf : le compte UNIX
+# julian.talou -> le rôle uti_admin). Faute de PGUSER, libpq demande le rôle
+# « julian.talou », qui n'existe pas, et la correspondance ne s'applique pas.
+# Explication complète dans backup_db.sh. Posé ici plutôt que dans l'unité
+# systemd : le RUNBOOK §10 fait lancer ce script à la main un jour de sinistre.
+export PGUSER="${PGUSER:-uti_admin}"
 BACKEND="${BACKEND_DIR:-/home/julian.talou/app/backend}"
 # Même valeur que dans backup_db.sh et que LOCAL_STORAGE_DIR de backend/.env.
 FICHIERS="${FILES_DIR:-/var/lib/uti/files}"

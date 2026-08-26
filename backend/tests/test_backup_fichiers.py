@@ -350,3 +350,32 @@ def test_la_repetition_choisit_larchive_par_son_suffixe():
     assert "uti-fichiers-.*\\.tar\\.age$" in src, (
         "La sélection de l'archive de fichiers ne filtre plus sur son suffixe."
     )
+
+
+def test_la_repetition_ne_rejoue_pas_pg_stat_statements():
+    """install_db.sh installe pg_stat_statements en tant que postgres
+    (superuser) dans la base vivante ; pg_dump l'embarque donc dans chaque
+    archive, avec un `CREATE EXTENSION IF NOT EXISTS` que la répétition doit
+    rejouer. Elle restaure en tant que uti_admin (PGUSER, peer), pas postgres —
+    et pg_stat_statements est câblée « non fiable » dans son propre fichier de
+    contrôle : aucun GRANT ne peut lui retirer l'exigence de superuser.
+
+    Mesuré le 26 août 2026, à la première exécution réelle de ce script :
+        pg_restore: error: ... permission denied to create extension
+        "pg_stat_statements" ... Must be superuser to create this extension.
+    Reproduit et vérifié en local : la même restauration échoue à l'identique
+    sans le filtrage ci-dessous, et réussit avec, données incluses.
+    """
+    src = code_seul(DRILL)
+    assert re.search(r"pg_restore -l \"\$ARCHIVE\"", src), (
+        "La répétition ne liste plus le sommaire de l'archive avant de "
+        "restaurer : rien ne peut plus en retirer pg_stat_statements."
+    )
+    assert re.search(r"grep -v 'EXTENSION.*pg_stat_statements'", src), (
+        "pg_stat_statements n'est plus filtrée du sommaire : la répétition "
+        "échouerait de nouveau sur « permission denied to create extension »."
+    )
+    assert re.search(r"pg_restore --exit-on-error[^\n]*\n\s*-L \"\$sommaire\.filtre\"", src), (
+        "pg_restore ne restaure plus depuis le sommaire FILTRÉ : le filtrage "
+        "du test précédent serait généré puis ignoré."
+    )

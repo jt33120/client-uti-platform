@@ -156,6 +156,34 @@ echo "[répétition] archive : $ORIGINE"
 psql -d postgres -qc "CREATE DATABASE \"$CIBLE\" TEMPLATE template0 ENCODING 'UTF8';" \
   || alerte "création de la base jetable $CIBLE impossible"
 
+# ── pg_stat_statements : présent dans le dump, restaurable par personne ici ──
+# install_db.sh installe cette extension dans la base VIVANTE en tant que
+# postgres (superuser) — pg_dump l'embarque donc dans chaque archive, avec un
+# « CREATE EXTENSION IF NOT EXISTS » que le rôle qui restaure doit rejouer. Or
+# ce rôle est uti_admin (peer, ligne PGUSER plus haut), pas postgres, et
+# pg_stat_statements est câblée « non fiable » dans son propre fichier de
+# contrôle : aucun GRANT ne peut lui faire sauter l'exigence de superuser.
+#
+# Mesuré le 26 août 2026, à la première exécution réelle de ce script :
+#   pg_restore: error: could not execute query: ERROR:  permission denied to
+#   create extension "pg_stat_statements"
+#   HINT:  Must be superuser to create this extension.
+# Reproduit et vérifié en local : la même restauration, hors liste filtrée,
+# échoue à l'identique ; filtrée comme ci-dessous, elle passe, données incluses.
+#
+# pg_stat_statements ne contient AUCUNE donnée applicative — sa « table » est
+# une vue sur de la mémoire partagée, jamais une ligne du COPY du dump — donc
+# l'exclure de la répétition ne retire rien à ce qu'elle vérifie (les 22 tables
+# métier, comparées plus bas). On retire ses DEUX entrées du sommaire
+# (l'extension et son COMMENT) avant de rejouer, plutôt que d'exiger un accès
+# superuser que ce script n'a jamais eu et ne doit pas gagner : une répétition
+# de restauration qui ne demande « AUCUN secret » (voir l'en-tête) ne doit pas
+# se mettre à en exiger un pour tourner sans erreur.
+sommaire="$TRAVAIL/pg_restore.list"
+pg_restore -l "$ARCHIVE" > "$sommaire" 2>/dev/null \
+  || alerte "impossible de lister le sommaire de $ORIGINE"
+grep -v 'EXTENSION.*pg_stat_statements' "$sommaire" > "$sommaire.filtre"
+
 # --exit-on-error : sans lui, pg_restore signale les erreurs et rend 0. On
 # validerait des restaurations partielles pendant des mois.
 # --no-owner / --no-privileges : les rôles sont des objets de CLUSTER
@@ -163,7 +191,7 @@ psql -d postgres -qc "CREATE DATABASE \"$CIBLE\" TEMPLATE template0 ENCODING 'UT
 # répétition pour un motif qui n'a rien à voir avec l'intégrité des données.
 journal_restore="$TRAVAIL/pg_restore.log"
 if ! pg_restore --exit-on-error --no-owner --no-privileges \
-      -d "$CIBLE" "$ARCHIVE" > "$journal_restore" 2>&1; then
+      -L "$sommaire.filtre" -d "$CIBLE" "$ARCHIVE" > "$journal_restore" 2>&1; then
   alerte "pg_restore a ÉCHOUÉ sur $ORIGINE :
 $(tail -20 "$journal_restore")"
 fi

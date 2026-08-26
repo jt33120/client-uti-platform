@@ -259,13 +259,33 @@ export default function LoginPage() {
                     <span>
                       {/* « Changer de main » signifie PASSER À QUELQU'UN D'AUTRE.
                           La phrase disait donc littéralement l'inverse de ce
-                          qu'elle voulait rassurer, en première ligne. */}
+                          qu'elle voulait rassurer, en première ligne.
+
+                          « SI VOUS AVIEZ UN COMPTE » N'EST PAS UNE PRÉCAUTION DE
+                          STYLE. Ce bandeau s'affiche sur TOUT 401, délibérément :
+                          l'afficher seulement aux comptes connus révélerait qui a
+                          un compte. Mais l'ancienne rédaction AFFIRMAIT « votre
+                          compte et vos données sont intacts » — un fait, adressé
+                          à quelqu'un qui n'a peut-être aucun compte, et faux pour
+                          qui a déjà repris la main et vient juste de mal taper son
+                          mot de passe.
+
+                          Constaté le 26 août : le fondateur a saisi une adresse
+                          sans compte, lu cette phrase, et en a conclu qu'un compte
+                          avait été SUPPRIMÉ. Un message conçu pour rassurer a
+                          fabriqué la croyance d'une perte de données.
+
+                          La condition ne bouge pas — c'est la formulation qui
+                          cesse d'affirmer. Le texte reste rigoureusement identique
+                          que l'adresse existe ou non : on ne divulgue toujours
+                          rien. */}
                       <strong className="font-semibold">
                         Les mots de passe n'ont pas été conservés lors de notre changement de serveur.
                       </strong><br />
-                      <strong className="font-semibold">Votre compte et vos données sont intacts</strong> —
-                      il suffit d'en choisir un nouveau. Si la double authentification était
-                      déjà active, votre application d'authentification continue de fonctionner.
+                      <strong className="font-semibold">Si vous aviez un compte, il est intact</strong> —
+                      ses données aussi. Il suffit d'en choisir un nouveau. Si la double
+                      authentification était déjà active, votre application
+                      d'authentification continue de fonctionner.
                     </span>
                   </div>
                   {/* Un lien noyé dans cinq lignes de texte ne se voit pas. */}

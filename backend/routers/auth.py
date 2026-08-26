@@ -404,6 +404,14 @@ async def register(body: RegisterRequest, request: Request):
         # Le profil vient d'être créé et n'a pas de mot de passe : il serait
         # inutilisable ET bloquerait toute nouvelle tentative (email UNIQUE).
         # Même rôle que la suppression de l'utilisateur GoTrue orphelin d'avant.
+        #
+        # DÉLIBÉRÉMENT NON JOURNALISÉ, contrairement à la suppression de compte
+        # de routers/admin.py. Ce profil-ci a existé quelques millisecondes,
+        # n'a jamais eu d'identifiants, n'a jamais rien décidé et ne référence
+        # rien. L'inscrire comme « compte supprimé » ferait passer une
+        # annulation d'inscription pour la disparition d'un acteur, et noierait
+        # les vraies suppressions — celles qui laissent des UUID orphelins dans
+        # audit_log, human_decision et submissions.
         try:
             supabase.table("profiles").delete().eq("id", user_id).execute()
             print(f"[AUTH] profil orphelin {user_id} supprimé")

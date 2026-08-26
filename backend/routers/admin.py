@@ -11,7 +11,7 @@ from typing import Literal, Optional
 import httpx
 
 from services.supabase_client import supabase
-from services import credentials
+from services import credentials, audit
 from services.app_settings import (
     get_notification_settings, set_notification_settings,
     get_ai_budget_settings, set_ai_budget_settings,
@@ -754,15 +754,69 @@ async def delete_account(account_id: str, user: dict = Depends(require_admin)):
     d'identifiants part avec le profil. Il n'y a plus d'utilisateur GoTrue à
     supprimer dans un second appel — et donc plus de risque qu'il survive au
     profil parce que l'appel HTTP a échoué en silence.
+
+    LA SUPPRESSION EST JOURNALISÉE, ET L'IDENTITÉ EST LUE AVANT LE DELETE.
+
+    Jusqu'au 26 août 2026, effacer un compte ne laissait AUCUNE trace : aucun
+    type d'événement d'`audit_log` ne couvrait le cas. Constaté en cherchant à
+    répondre à « ce compte a-t-il été supprimé ? » — la base ne pouvait pas
+    répondre, ni pour confirmer ni pour infirmer. Une plateforme soumise à
+    l'AI Act art. 12 ne peut pas être muette sur la disparition d'un acteur
+    dont les décisions restent journalisées.
+
+    L'ordre n'est pas un détail. Le profil est lu AVANT : après le DELETE il ne
+    reste que l'UUID, et `audit_log.actor_id`, `human_decision.decided_by` et
+    `submissions.submitted_by` continuent de le référencer. Sans l'adresse et
+    le nom capturés ici, l'archive de conformité devient une suite d'UUID qui
+    ne désignent plus personne — exactement le motif pour lequel BASCULE.md §2
+    exige d'exporter la correspondance `auth.users` avant de supprimer Supabase.
+
+    RGPD : cette ligne conserve l'adresse d'une personne dont le compte a été
+    effacé. C'est voulu pour une suppression ADMINISTRATIVE. Si la suppression
+    répond à une demande d'effacement (art. 17), la ligne d'audit doit être
+    traitée séparément — elle ne l'est pas automatiquement.
     """
     if account_id == user["sub"]:
         raise HTTPException(status_code=400, detail="Vous ne pouvez pas supprimer votre propre compte.")
+
+    # Lecture AVANT suppression. Best-effort : un compte introuvable ici ne doit
+    # pas empêcher le DELETE (il peut s'agir d'un rattrapage), mais on saura le
+    # dire dans la trace plutôt que d'inventer une identité.
+    try:
+        lignes = supabase.table("profiles").select(
+            "id, email, name, role, status, created_at"
+        ).eq("id", account_id).limit(1).execute().data or []
+        profil = lignes[0] if lignes else None
+    except Exception:  # noqa: BLE001
+        profil = None
+
     try:
         supabase.table("profiles").delete().eq("id", account_id).execute()
-        return {"message": "Compte supprimé"}
     except Exception:
         # Détail loggé côté serveur ; réponse 500 générique (handler global).
+        # Rien n'est journalisé : la suppression n'a pas eu lieu.
         raise
+
+    # Après le DELETE seulement : on ne journalise pas une suppression qui
+    # n'aurait pas abouti. `log_event` ne lève jamais (services/audit.py:41).
+    audit.log_event(
+        "account_deleted",
+        audit.new_run_id(),
+        actor_id=user["sub"],
+        severity="warning",
+        payload={
+            "compte_id": account_id,
+            # None quand la lecture a échoué ou le profil n'existait plus : on
+            # préfère un trou explicite à une identité reconstituée.
+            "email": (profil or {}).get("email"),
+            "nom": (profil or {}).get("name"),
+            "role": (profil or {}).get("role"),
+            "statut_avant_suppression": (profil or {}).get("status"),
+            "compte_cree_le": (profil or {}).get("created_at"),
+            "identite_capturee": profil is not None,
+        },
+    )
+    return {"message": "Compte supprimé"}
 
 
 class NotificationSettings(BaseModel):

@@ -91,14 +91,36 @@ async def get_matching_stats(user: dict = Depends(require_staff)):
         # AOs « traités » : ceux qui ont au moins un profil potentiel (score ≥ 50,
         # le seuil « à considérer »). C'est la métrique métier affichée sur le
         # tableau de bord (« X AOs ayant trouvé un consultant potentiel »).
+        #
+        # LES ARCHIVÉS ET LES BROUILLONS SONT EXCLUS, ET C'EST TOUT LE SUJET.
+        # `matchings` ne porte aucune trace de l'état de l'AO : compter ses
+        # lignes telles quelles fait vivre éternellement des AO clos. Constaté
+        # en production le 26 août — 14 AO, tous archivés, KPI « Appels d'offres »
+        # à 0, et « AOs avec profil » à 4. Deux chiffres côte à côte qui se
+        # contredisent, celui qui rassure étant le faux.
+        #
+        # Le prédicat est VOLONTAIREMENT identique à celui de la vue « active »
+        # de GET /aos (routers/aos.py) : ce KPI est cliquable et mène à
+        # `/aos?matched=1`, qui intersecte `matched_ao_ids` avec cette liste-là.
+        # Deux définitions différentes de « vivant » donneraient un compteur qui
+        # promet des lignes que la page suivante n'affiche pas.
         POTENTIAL_THRESHOLD = 50
         try:
+            # Fail-closed, même convention que routers/aos.py : si cette lecture
+            # échoue, on ne se rabat PAS sur un comptage non filtré — mieux vaut
+            # afficher 0 que ressusciter les archivés.
+            vivants = {
+                r["id"] for r in (
+                    supabase.table("appels_offres").select("id")
+                    .eq("is_draft", False).eq("archived", False).execute().data or []
+                )
+            }
             scored = supabase.table("matchings").select("ao_id, score_total").execute().data or []
             matched_ao_ids = sorted({
                 r["ao_id"] for r in scored
-                if r.get("ao_id") and (r.get("score_total") or 0) >= POTENTIAL_THRESHOLD
+                if r.get("ao_id") in vivants and (r.get("score_total") or 0) >= POTENTIAL_THRESHOLD
             })
-            analyzed_ao_ids = {r["ao_id"] for r in scored if r.get("ao_id")}
+            analyzed_ao_ids = {r["ao_id"] for r in scored if r.get("ao_id") in vivants}
         except Exception:
             matched_ao_ids, analyzed_ao_ids = [], set()
 

@@ -156,6 +156,47 @@ echo "[répétition] archive : $ORIGINE"
 psql -d postgres -qc "CREATE DATABASE \"$CIBLE\" TEMPLATE template0 ENCODING 'UTF8';" \
   || alerte "création de la base jetable $CIBLE impossible"
 
+# ── Objets d'administration : présents dans le dump, restaurables par ──────
+# ── personne ici, et volontairement pas rejoués ─────────────────────────────
+# install_db.sh et roles_postgrest.sql posent, en tant que postgres
+# (superuser) : l'extension pg_stat_statements, et le déclencheur d'événement
+# pgrst_watch_ddl (qui prévient PostgREST après chaque DDL). pg_dump embarque
+# les DEUX dans chaque archive, avec les commandes qui les recréent. Le rôle
+# qui restaure est uti_admin (peer, ligne PGUSER plus haut), jamais postgres —
+# et ces deux catégories d'objets EXIGENT le superuser pour être créées, sans
+# qu'aucun GRANT ne puisse lever l'exigence : pg_stat_statements est câblée
+# « non fiable » dans son propre fichier de contrôle, et un déclencheur
+# d'événement demande toujours le superuser, quel qu'en soit le propriétaire.
+#
+# Mesuré le 26 août 2026, aux deux premières exécutions réelles de ce script,
+# l'une après l'autre (le retrait du premier objet a révélé le second) :
+#   ERREUR:  permission denied to create extension "pg_stat_statements"
+#   ERREUR:  permission denied to create event trigger "pgrst_watch_ddl"
+#   HINT (les deux fois) :  Must be superuser […]
+# Reproduit et vérifié en local : la même restauration, hors liste filtrée,
+# échoue à l'identique sur chacun des deux ; filtrée comme ci-dessous, les DEUX
+# retirés, elle passe, données incluses. Le sommaire complet de ce schéma a
+# aussi été passé au crible (EXTENSION, EVENT TRIGGER, FOREIGN, SUBSCRIPTION,
+# PUBLICATION, LANGUAGE) : ce sont les deux seuls objets superuser qu'il
+# contient aujourd'hui.
+#
+# Ni l'un ni l'autre ne porte de donnée applicative — pg_stat_statements est
+# une vue sur de la mémoire partagée, jamais une ligne du COPY du dump ; le
+# déclencheur ne fait que notifier PostgREST, qui ne parle jamais à cette base
+# jetable. Les en retirer ne retire donc rien à ce que la répétition vérifie
+# (les 22 tables métier, comparées plus bas), plutôt que d'exiger un accès
+# superuser que ce script n'a jamais eu et ne doit pas gagner : une répétition
+# qui ne demande « AUCUN secret » (voir l'en-tête) ne doit pas se mettre à en
+# exiger un pour tourner sans erreur. Un TROISIÈME objet superuser qui
+# apparaîtrait un jour échouerait de nouveau, bruyamment — c'est voulu : mieux
+# vaut le découvrir ici qu'exclure par catégorie entière et perdre, sans le
+# voir, un objet qui aurait dû être vérifié.
+sommaire="$TRAVAIL/pg_restore.list"
+pg_restore -l "$ARCHIVE" > "$sommaire" 2>/dev/null \
+  || alerte "impossible de lister le sommaire de $ORIGINE"
+grep -v 'EXTENSION.*pg_stat_statements' "$sommaire" \
+  | grep -v 'EVENT TRIGGER.*pgrst_watch_ddl' > "$sommaire.filtre"
+
 # --exit-on-error : sans lui, pg_restore signale les erreurs et rend 0. On
 # validerait des restaurations partielles pendant des mois.
 # --no-owner / --no-privileges : les rôles sont des objets de CLUSTER
@@ -163,7 +204,7 @@ psql -d postgres -qc "CREATE DATABASE \"$CIBLE\" TEMPLATE template0 ENCODING 'UT
 # répétition pour un motif qui n'a rien à voir avec l'intégrité des données.
 journal_restore="$TRAVAIL/pg_restore.log"
 if ! pg_restore --exit-on-error --no-owner --no-privileges \
-      -d "$CIBLE" "$ARCHIVE" > "$journal_restore" 2>&1; then
+      -L "$sommaire.filtre" -d "$CIBLE" "$ARCHIVE" > "$journal_restore" 2>&1; then
   alerte "pg_restore a ÉCHOUÉ sur $ORIGINE :
 $(tail -20 "$journal_restore")"
 fi

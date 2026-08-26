@@ -24,19 +24,21 @@
     // bannière, puis remettre replay: 0.1.
     replay: 0,
     frustration: true, // rage clicks / dead clicks
-    // Widget d'avis MIP (CSAT) : alimente le CSAT par fonction dans la
-    // Supervision IA. Aucun script séparé à poser (SDK ≥ 0.4.2 ; ignoré en
-    // silence si la version ne le supporte pas).
-    // Cantonné aux SECTIONS AUTHENTIFIÉES (onlyPaths = préfixes des routes sous
-    // ProtectedRoute) : on ne sollicite JAMAIS d'avis sur la page publique de
-    // retour client (/client-review/:token), le login ou les pages légales.
-    // Le widget se masque/réapparaît tout seul à la navigation (SPA comprise).
-    feedback: {
-      onlyPaths: [
-        '/dashboard', '/clients', '/consultants', '/aos', '/partners',
-        '/graph', '/carte', '/pacs', '/emails', '/notifications',
-        '/admin', '/supervision', '/tickets'
-      ]
-    }
+    // WIDGET D'AVIS MIP (CSAT) : RETIRÉ. Ne pas le remettre.
+    //
+    // Il a été introduit pour alimenter le CSAT par fonction de la Supervision
+    // IA, puis corrigé deux fois sans jamais répondre à la vraie objection :
+    // ced98d1 l'a cantonné aux pages authentifiées, da5fec7 l'a décollé du
+    // bouton Assistant. Or les pages authentifiées SONT les pages où l'équipe
+    // travaille toute la journée : le restreindre revenait à le laisser
+    // exactement là où il gênait. Demandé retiré à plusieurs reprises.
+    //
+    // Le SDK ne l'initialise que si la clé est présente et vraie
+    // (`t.feedback && zr(t.feedback)` dans mip-rum.js) : l'absence de clé
+    // suffit, il n'y a rien à désactiver ailleurs. Le reste de la télémétrie
+    // — traces, spans, frustration — continue de remonter normalement.
+    //
+    // Si le CSAT redevient un besoin, il se collecte dans l'application, à un
+    // moment choisi par nous, pas par une bulle flottante permanente.
   });
 })();

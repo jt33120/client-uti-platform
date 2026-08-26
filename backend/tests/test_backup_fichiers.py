@@ -352,30 +352,39 @@ def test_la_repetition_choisit_larchive_par_son_suffixe():
     )
 
 
-def test_la_repetition_ne_rejoue_pas_pg_stat_statements():
-    """install_db.sh installe pg_stat_statements en tant que postgres
-    (superuser) dans la base vivante ; pg_dump l'embarque donc dans chaque
-    archive, avec un `CREATE EXTENSION IF NOT EXISTS` que la répétition doit
-    rejouer. Elle restaure en tant que uti_admin (PGUSER, peer), pas postgres —
-    et pg_stat_statements est câblée « non fiable » dans son propre fichier de
-    contrôle : aucun GRANT ne peut lui retirer l'exigence de superuser.
+def test_la_repetition_ne_rejoue_pas_les_objets_superuser():
+    """install_db.sh et roles_postgrest.sql posent, en tant que postgres
+    (superuser), l'extension pg_stat_statements ET le déclencheur d'événement
+    pgrst_watch_ddl. pg_dump embarque les DEUX dans chaque archive, avec les
+    commandes qui les recréent. La répétition restaure en tant que uti_admin
+    (PGUSER, peer), jamais postgres — et ces deux catégories d'objets exigent
+    TOUJOURS le superuser pour être créées, sans qu'aucun GRANT ne puisse
+    lever l'exigence (pg_stat_statements est câblée « non fiable » ; un
+    déclencheur d'événement demande le superuser quel qu'en soit le
+    propriétaire).
 
-    Mesuré le 26 août 2026, à la première exécution réelle de ce script :
-        pg_restore: error: ... permission denied to create extension
-        "pg_stat_statements" ... Must be superuser to create this extension.
+    Mesuré le 26 août 2026, aux deux premières exécutions réelles de ce
+    script — le retrait du premier objet a révélé le second :
+        permission denied to create extension "pg_stat_statements"
+        permission denied to create event trigger "pgrst_watch_ddl"
     Reproduit et vérifié en local : la même restauration échoue à l'identique
-    sans le filtrage ci-dessous, et réussit avec, données incluses.
+    sur chacun des deux sans le filtrage ci-dessous, et réussit avec les DEUX
+    retirés, données incluses.
     """
     src = code_seul(DRILL)
     assert re.search(r"pg_restore -l \"\$ARCHIVE\"", src), (
         "La répétition ne liste plus le sommaire de l'archive avant de "
-        "restaurer : rien ne peut plus en retirer pg_stat_statements."
+        "restaurer : rien ne peut plus en retirer les objets superuser."
     )
     assert re.search(r"grep -v 'EXTENSION.*pg_stat_statements'", src), (
         "pg_stat_statements n'est plus filtrée du sommaire : la répétition "
         "échouerait de nouveau sur « permission denied to create extension »."
     )
+    assert re.search(r"grep -v 'EVENT TRIGGER.*pgrst_watch_ddl'", src), (
+        "pgrst_watch_ddl n'est plus filtré du sommaire : la répétition "
+        "échouerait de nouveau sur « permission denied to create event trigger »."
+    )
     assert re.search(r"pg_restore --exit-on-error[^\n]*\n\s*-L \"\$sommaire\.filtre\"", src), (
         "pg_restore ne restaure plus depuis le sommaire FILTRÉ : le filtrage "
-        "du test précédent serait généré puis ignoré."
+        "des deux tests précédents serait généré puis ignoré."
     )

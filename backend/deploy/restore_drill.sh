@@ -156,33 +156,46 @@ echo "[répétition] archive : $ORIGINE"
 psql -d postgres -qc "CREATE DATABASE \"$CIBLE\" TEMPLATE template0 ENCODING 'UTF8';" \
   || alerte "création de la base jetable $CIBLE impossible"
 
-# ── pg_stat_statements : présent dans le dump, restaurable par personne ici ──
-# install_db.sh installe cette extension dans la base VIVANTE en tant que
-# postgres (superuser) — pg_dump l'embarque donc dans chaque archive, avec un
-# « CREATE EXTENSION IF NOT EXISTS » que le rôle qui restaure doit rejouer. Or
-# ce rôle est uti_admin (peer, ligne PGUSER plus haut), pas postgres, et
-# pg_stat_statements est câblée « non fiable » dans son propre fichier de
-# contrôle : aucun GRANT ne peut lui faire sauter l'exigence de superuser.
+# ── Objets d'administration : présents dans le dump, restaurables par ──────
+# ── personne ici, et volontairement pas rejoués ─────────────────────────────
+# install_db.sh et roles_postgrest.sql posent, en tant que postgres
+# (superuser) : l'extension pg_stat_statements, et le déclencheur d'événement
+# pgrst_watch_ddl (qui prévient PostgREST après chaque DDL). pg_dump embarque
+# les DEUX dans chaque archive, avec les commandes qui les recréent. Le rôle
+# qui restaure est uti_admin (peer, ligne PGUSER plus haut), jamais postgres —
+# et ces deux catégories d'objets EXIGENT le superuser pour être créées, sans
+# qu'aucun GRANT ne puisse lever l'exigence : pg_stat_statements est câblée
+# « non fiable » dans son propre fichier de contrôle, et un déclencheur
+# d'événement demande toujours le superuser, quel qu'en soit le propriétaire.
 #
-# Mesuré le 26 août 2026, à la première exécution réelle de ce script :
-#   pg_restore: error: could not execute query: ERROR:  permission denied to
-#   create extension "pg_stat_statements"
-#   HINT:  Must be superuser to create this extension.
+# Mesuré le 26 août 2026, aux deux premières exécutions réelles de ce script,
+# l'une après l'autre (le retrait du premier objet a révélé le second) :
+#   ERREUR:  permission denied to create extension "pg_stat_statements"
+#   ERREUR:  permission denied to create event trigger "pgrst_watch_ddl"
+#   HINT (les deux fois) :  Must be superuser […]
 # Reproduit et vérifié en local : la même restauration, hors liste filtrée,
-# échoue à l'identique ; filtrée comme ci-dessous, elle passe, données incluses.
+# échoue à l'identique sur chacun des deux ; filtrée comme ci-dessous, les DEUX
+# retirés, elle passe, données incluses. Le sommaire complet de ce schéma a
+# aussi été passé au crible (EXTENSION, EVENT TRIGGER, FOREIGN, SUBSCRIPTION,
+# PUBLICATION, LANGUAGE) : ce sont les deux seuls objets superuser qu'il
+# contient aujourd'hui.
 #
-# pg_stat_statements ne contient AUCUNE donnée applicative — sa « table » est
-# une vue sur de la mémoire partagée, jamais une ligne du COPY du dump — donc
-# l'exclure de la répétition ne retire rien à ce qu'elle vérifie (les 22 tables
-# métier, comparées plus bas). On retire ses DEUX entrées du sommaire
-# (l'extension et son COMMENT) avant de rejouer, plutôt que d'exiger un accès
+# Ni l'un ni l'autre ne porte de donnée applicative — pg_stat_statements est
+# une vue sur de la mémoire partagée, jamais une ligne du COPY du dump ; le
+# déclencheur ne fait que notifier PostgREST, qui ne parle jamais à cette base
+# jetable. Les en retirer ne retire donc rien à ce que la répétition vérifie
+# (les 22 tables métier, comparées plus bas), plutôt que d'exiger un accès
 # superuser que ce script n'a jamais eu et ne doit pas gagner : une répétition
-# de restauration qui ne demande « AUCUN secret » (voir l'en-tête) ne doit pas
-# se mettre à en exiger un pour tourner sans erreur.
+# qui ne demande « AUCUN secret » (voir l'en-tête) ne doit pas se mettre à en
+# exiger un pour tourner sans erreur. Un TROISIÈME objet superuser qui
+# apparaîtrait un jour échouerait de nouveau, bruyamment — c'est voulu : mieux
+# vaut le découvrir ici qu'exclure par catégorie entière et perdre, sans le
+# voir, un objet qui aurait dû être vérifié.
 sommaire="$TRAVAIL/pg_restore.list"
 pg_restore -l "$ARCHIVE" > "$sommaire" 2>/dev/null \
   || alerte "impossible de lister le sommaire de $ORIGINE"
-grep -v 'EXTENSION.*pg_stat_statements' "$sommaire" > "$sommaire.filtre"
+grep -v 'EXTENSION.*pg_stat_statements' "$sommaire" \
+  | grep -v 'EVENT TRIGGER.*pgrst_watch_ddl' > "$sommaire.filtre"
 
 # --exit-on-error : sans lui, pg_restore signale les erreurs et rend 0. On
 # validerait des restaurations partielles pendant des mois.

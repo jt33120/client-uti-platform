@@ -208,6 +208,35 @@ seule raison d'être est de fonctionner le jour où tout le reste a échoué.
 Corrigé, avec un test qui ancre le rôle par défaut sur le `DB_OWNER` de
 `install_db.sh` plutôt que sur une valeur recopiée.
 
+**Le correctif PGUSER en a révélé un second, dessous.** Une fois `uti_admin`
+correctement connecté (`PGUSER=uti_admin bash deploy/backup_db.sh`), `pg_dump`
+échouait quand même — sur la toute première table qu'il tente de verrouiller :
+
+    pg_dump: error: query failed: ERROR:  permission denied for table ai_usage
+    pg_dump: detail: Query was: LOCK TABLE public.ai_usage, ... IN ACCESS SHARE MODE
+
+`create database uti owner uti_admin` (`install_db.sh`) rend `uti_admin`
+propriétaire de la BASE, pas de chaque TABLE. Le schéma a été chargé, au moins
+une fois, par un autre rôle que `uti_admin` — vraisemblablement
+`sudo -u postgres psql -f schema.sql`, le geste le plus naturel pour un premier
+chargement. `roles_postgrest.sql` (section 4) accorde bien `service_role` sur
+« toutes les tables », ce qui explique pourquoi l'application n'a jamais rien
+laissé voir : c'est le seul rôle qu'elle utilise. Mais ce GRANT ne vise que
+`service_role` — jamais `uti_admin` lui-même, qui se retrouve sans aucun
+privilège sur des tables dont il est censé être responsable. Verrouiller une
+table (ce que fait `pg_dump` avant de la lire) exige au moins `SELECT`, que
+`uti_admin` n'avait reçu nulle part.
+
+Reproduit et vérifié sur un vrai PostgreSQL local : une table créée par
+`postgres` avec uniquement ce GRANT refuse même un `LOCK ... IN ACCESS SHARE
+MODE` à `uti_admin`. Corrigé dans `roles_postgrest.sql` : un bloc qui
+réassigne à `:"owner"` la propriété de toutes les tables et séquences
+*déjà* présentes dans `public`, à chaque exécution — donc sans effet la fois
+où la discipline « migrations jouées en tant que `uti_admin` » a été
+respectée depuis le début, et corrige d'elle-même les fois où elle ne l'a pas
+été. `service_role` n'est pas touché : le correctif est vérifié rejouable et sans
+régression sur son accès.
+
 L'outillage, lui, est écrit : `backup_db.sh`, `restore_drill.sh`,
 `setup_backup_offsite.sh`, la politique S3 et son contrôle qui **essaie
 réellement de supprimer un objet**.

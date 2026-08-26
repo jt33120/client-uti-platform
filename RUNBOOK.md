@@ -142,7 +142,7 @@ rebascule le trafic API immédiatement.
 | **« Ce lien a expiré » (410)** | Normal : une URL de fichier dure 1 h (7 j pour un CV envoyé à un client). Rouvrir la fiche depuis la plateforme régénère le lien. |
 | **Un CV répond 403** | Lien tronqué par le client de messagerie, ou `JWT_SECRET` / `FILE_URL_SECRET` changé depuis l'envoi : cela change la clé de signature, donc invalide tous les liens émis avant. |
 | Matching IA très lent / timeout | clé OpenRouter/OpenAI valide ? quotas ? le proxy coupe à 120 s |
-| Pas d'e-mails envoyés | SMTP Infomaniak : `SMTP_USER`/`SMTP_PASSWORD` ; tester `python scripts/test_smtp.py` |
+| Pas d'e-mails envoyés | Chercher `[OUTBOX] EN PAUSE` dans `journalctl -u uti-backend` : la file annonce le motif. Sinon vérifier `SMTP_HOST`/`SMTP_USER`/`SMTP_PASSWORD`, puis `python scripts/test_smtp.py`. Si le test passe mais que rien n'arrive, le problème est la LIVRAISON : voir le tableau de bord du fournisseur (`delivered` / `bounced`), et DKIM/SPF/DMARC du domaine d'envoi |
 | RAM du VPS saturée | activer les garde-fous `MemoryHigh`/`MemoryMax` dans `uti-backend.service` |
 | CORS bloqué (front) | l'origine Vercel doit correspondre à `FRONTEND_URL` / aux markers dans `main.py` |
 | **E-mail « 🚨 UTI — sauvegarde en échec »** | **§9.5** |

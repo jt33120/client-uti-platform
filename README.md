@@ -147,17 +147,26 @@ Pour de gros volumes (>50 CVs), le système batchifie automatiquement les appels
 | `OPENAI_API_KEY` | Clé API OpenAI (GPT-4o) | ✅ |
 | `JWT_SECRET` | Secret pour signer les tokens | ✅ |
 | `FRONTEND_URL` | URL du frontend (CORS) | optionnel |
-| `SMTP_HOST` | Serveur SMTP (défaut `mail.infomaniak.com`) | optionnel |
+| `SMTP_HOST` | Serveur SMTP — **aucun défaut** (voir `config.py`) | ✅ (emails) |
 | `SMTP_PORT` | Port SMTP STARTTLS (défaut `587`) | optionnel |
 | `SMTP_USER` | Compte SMTP (envoi des emails) | ✅ (emails) |
 | `SMTP_PASSWORD` | Mot de passe SMTP | ✅ (emails) |
 | `SMTP_FROM` | Adresse expéditeur (défaut = `SMTP_USER`) | optionnel |
-| `SMTP_FROM_NAME` | Nom affiché de l'expéditeur (défaut `UTI Group`) | optionnel |
+| `SMTP_FROM_NAME` | Nom affiché de l'expéditeur (défaut `Plateforme GRP-IT`) | optionnel |
 | `ADMIN_EMAIL` | Destinataire des notifications support/contact | ✅ (support) |
 
 > Les emails transactionnels (invitations partenaires, formulaire de support)
-> sont envoyés via SMTP Infomaniak. Pour tester la connexion :
-> `cd backend && python scripts/test_smtp.py` (renseignez `SMTP_TEST_TO`).
+> partent par SMTP standard — **Resend depuis le 26/08/2026**, et le code n'en
+> sait rien : `services/email.py` ne connaît que `SMTP_HOST`. Changer de
+> fournisseur est un changement de variables d'environnement.
+>
+> `SMTP_FROM` doit appartenir à un domaine **vérifié** chez le fournisseur,
+> sinon l'envoi est refusé.
+>
+> Pour tester : `cd backend && python scripts/test_smtp.py` (renseignez
+> `SMTP_TEST_TO`). ⚠️ Ce test prouve que le relais **accepte** le message, pas
+> qu'il **arrive** : vérifiez la boîte du destinataire et le tableau de bord du
+> fournisseur.
 
 ---
 

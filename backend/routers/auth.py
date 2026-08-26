@@ -820,7 +820,7 @@ class ResetTokenRequest(BaseModel):
 def _send_reset_email(to_email: str, reset_url: str, cle: str = "password_reset",
                       contexte_sup: Optional[dict] = None) -> tuple[bool, Optional[str]]:
     """
-    Send the password-reset email via our own SMTP (Infomaniak), branded as
+    Send the password-reset email via our own SMTP, branded as
     Groupement-IT — instead of letting Supabase send it from
     "Supabase Auth <noreply@mail.app.supabase.io>", which alarms users and
     trips spam filters. Returns (success, error); never raises.

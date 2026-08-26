@@ -13,9 +13,21 @@ class Settings(BaseSettings):
     frontend_url: str = "https://git-alpha-hazel.vercel.app"
     admin_email: Optional[str] = None  # recipient for support/contact notifications
 
-    # SMTP (Infomaniak) — transactional email delivery
-    smtp_host: str = "mail.infomaniak.com"
-    smtp_port: int = 587  # STARTTLS
+    # SMTP — envoi transactionnel. Fournisseur au choix (Resend en production
+    # depuis le 26/08/2026) : `services/email.py` ne fait que du SMTP standard.
+    #
+    # AUCUN SERVEUR PAR DÉFAUT, ET C'EST DÉLIBÉRÉ. Cette ligne portait
+    # « mail.infomaniak.com ». Or `.env` de production ne définissait pas
+    # SMTP_HOST : la production tournait donc sur ce défaut sans que personne
+    # ne le sache, chez un hébergeur dont plus personne ne détenait le compte.
+    # Un défaut de serveur d'envoi ne rend pas service — il cache une
+    # configuration manquante derrière un comportement plausible.
+    #
+    # Absent → `email.config_error()` le dit, la file se met en pause en
+    # l'annonçant (services/scheduler.py), et rien ne part vers un tiers
+    # arbitraire.
+    smtp_host: Optional[str] = None
+    smtp_port: int = 587  # port de soumission standard (STARTTLS)
     smtp_user: Optional[str] = None
     smtp_password: Optional[str] = None
     smtp_from: Optional[str] = None  # defaults to smtp_user when unset

@@ -51,7 +51,7 @@ Plan de test de bout en bout de la plateforme. À utiliser **à chaque release**
 | # | Étape | Résultat attendu | Statut | Notes |
 |---|---|---|---|---|
 | 3.1 | Partenaires / Accès partenaires → inviter avec l'email de réception | Confirmation d'envoi | | |
-| 3.2 | Vérifier la boîte mail | Email d'invitation reçu (expéditeur UTI Group / Infomaniak) | | |
+| 3.2 | Vérifier la boîte mail | Email d'invitation **reçu** (expéditeur Groupement-IT). Vérifier aussi les indésirables : un message accepté par le relais peut ne jamais arriver | | |
 | 3.3 | Ouvrir le lien → créer le compte `TEST-Partenaire` | Compte créé, connexion OK | | |
 | 3.4 | (Admin) Donner au partenaire un accès `list_1` ou `list_2` au client `TEST-Client-Acme` | Accès enregistré | | |
 | 3.5 | Réutiliser le **même lien** d'invitation une 2e fois | Lien refusé (usage unique / expiré) | | |

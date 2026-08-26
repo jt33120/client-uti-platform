@@ -1,7 +1,7 @@
 """
 Shared email sending service.
 
-Sends transactional emails through an SMTP server (Infomaniak by default)
+Sends transactional emails through the SMTP server configured in SMTP_HOST
 using STARTTLS on port 587. All public helpers return a ``(success, error)``
 tuple and never raise, so callers can treat email delivery as best-effort.
 """

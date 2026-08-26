@@ -143,7 +143,7 @@ def test_la_repetition_restaure_aussi_les_fichiers():
 
 def test_la_repetition_confronte_les_references_de_la_base_restauree():
     """Compter les fichiers ne suffit pas : ce qui compte est que CHAQUE
-    référence de la base restaurée désigne un fichier présent. Les quatre
+    référence de la base restaurée désigne un fichier présent. Les CINQ
     familles doivent y être — en oublier une, c'est valider une restauration où
     les attestations URSSAF ont disparu."""
     src = code_seul(DRILL)
@@ -152,6 +152,7 @@ def test_la_repetition_confronte_les_references_de_la_base_restauree():
         ("profiles", "avatars"),
         ("partner_compliance_docs", "compliance"),
         ("appels_offres", "ao-sources"),
+        ("email_templates", "email-assets"),
     ):
         assert table in src and bucket in src, (
             f"La répétition ne vérifie plus les fichiers de « {table} » "
@@ -159,6 +160,55 @@ def test_la_repetition_confronte_les_references_de_la_base_restauree():
         )
     assert "ABSENT de l'archive" in lire(DRILL), (
         "L'écart « référence sans fichier » n'est plus signalé."
+    )
+
+
+def test_la_repetition_couvre_les_cinq_buckets_du_code():
+    """La liste des familles vérifiées doit suivre celle des buckets qui existent.
+
+    Ce test existe parce que la version précédente en couvrait QUATRE sur cinq :
+    les images des modèles d'e-mail manquaient. Elles ne sont référencées par
+    aucune colonne — elles vivent dans le HTML de `email_templates.body` — et
+    c'est précisément ce qui les avait fait oublier. `email_templates` étant vide
+    en production, le trou était sans effet visible : la meilleure façon de durer.
+
+    On ancre donc la liste sur `migrate_storage_to_ovh.BUCKETS`, source unique.
+    Ajouter un bucket là-bas sans l'ajouter ici fera échouer ce test.
+    """
+    migration = lire(BACKEND / "scripts" / "migrate_storage_to_ovh.py")
+    m = re.search(r"^BUCKETS\s*=\s*\[(.*?)\]", migration, re.M | re.S)
+    assert m, "BUCKETS introuvable dans migrate_storage_to_ovh.py"
+    buckets = re.findall(r'"([^"]+)"', m.group(1))
+    assert len(buckets) == 5, f"Le nombre de buckets a changé : {buckets}"
+
+    src = code_seul(DRILL)
+    oublies = [b for b in buckets if b not in src]
+    assert not oublies, (
+        f"Bucket(s) absent(s) de la répétition de restauration : {oublies}. "
+        "Une restauration serait déclarée conforme alors que ces fichiers "
+        "auraient disparu."
+    )
+
+
+def test_les_images_des_modeles_email_sont_extraites_du_html():
+    """Les images d'e-mail ne sont dans aucune colonne : il faut les lire dans le HTML.
+
+    Vérifier la seule présence de « email-assets » ne suffirait pas — encore
+    faut-il que la requête aille les CHERCHER dans `body`. Et son expression
+    rationnelle doit rester alignée sur celle du script de migration : une
+    vérification plus large signalerait des fichiers que la migration ne
+    réécrit jamais, une plus étroite en raterait.
+    """
+    src = code_seul(DRILL)
+    assert "regexp_matches" in src and "email_templates" in src, (
+        "Les images des modèles ne sont plus extraites du HTML de email_templates.body."
+    )
+    assert "/email-assets/" in src, "Le motif ne cible plus le bucket email-assets."
+
+    migration = lire(BACKEND / "scripts" / "migrate_storage_to_ovh.py")
+    assert "/email-assets/" in migration, (
+        "Le script de migration ne réécrit plus ces images : les deux motifs "
+        "doivent rester alignés."
     )
 
 

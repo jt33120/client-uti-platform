@@ -242,8 +242,28 @@ fk_restauree=$(psql -d "$CIBLE" -tA -c "SELECT count(*) FROM pg_constraint WHERE
   ecarts="$ecarts\n  * clés étrangères : $fk_restauree restaurées contre $fk_vivante en base"
 
 # ── Les FICHIERS : restaurer l'archive et confronter la base restaurée ──────
-# Les quatre requêtes ci-dessous produisent, pour chaque référence de fichier
-# stockée en base, le chemin ATTENDU dans le dépôt. Elles reproduisent en SQL ce
+# Les CINQ requêtes ci-dessous produisent, pour chaque référence de fichier
+# stockée en base, le chemin ATTENDU dans le dépôt.
+#
+# CINQ, ET PAS QUATRE. La cinquième — les images des modèles d'e-mail — a
+# manqué jusqu'au 26/08/2026. Ces images ne sont référencées par AUCUNE
+# colonne : elles vivent à l'intérieur du HTML de `email_templates.body`
+# (scripts/migrate_storage_to_ovh.py:191-201). Une restauration pouvait donc
+# les perdre en étant déclarée conforme, et la panne serait apparue chez un
+# CLIENT, dans un e-mail aux images cassées, des semaines plus tard.
+#
+# `email_templates` est vide en production aujourd'hui : le trou était donc
+# sans effet, et c'est exactement pour ça qu'il pouvait durer. Il suffit qu'une
+# personne personnalise un modèle depuis l'écran d'administration.
+#
+# L'expression rationnelle est VOLONTAIREMENT identique à celle du script de
+# migration, limites comprises — elle s'arrête à la première espace, donc une
+# URL non encodée n'est ni réécrite ni vérifiée. Une vérification plus large
+# que la réécriture signalerait des fichiers que la migration ne touche jamais.
+#
+# `clients.logo_url` reste délibérément hors de la liste : la colonne n'est
+# réécrite par aucun script, aucun bucket ne lui correspond, et elle est vide
+# sur les 21 clients. Ce n'est pas une référence de stockage. Elles reproduisent en SQL ce
 # que fait services/storage.py:_object_path : une valeur peut être une URL
 # publique héritée (« …/public/cvs/<chemin> »), une URL S3, ou déjà un chemin
 # nu. Le faire en SQL plutôt qu'en bash évite d'avoir à découper des URL dans un
@@ -267,7 +287,12 @@ UNION ALL
 SELECT 'ao-sources/' || (f->>'path')
   FROM public.appels_offres, jsonb_array_elements(source_files) AS f
  WHERE source_files IS NOT NULL AND jsonb_typeof(source_files) = 'array'
-   AND f->>'path' IS NOT NULL;"
+   AND f->>'path' IS NOT NULL
+UNION ALL
+SELECT 'email-assets/' || m[1]
+  FROM public.email_templates,
+       LATERAL regexp_matches(body, '/email-assets/([^[:space:]\"''<>)?]+)', 'g') AS m
+ WHERE body IS NOT NULL AND body <> '';"
 
 # Choix de l'archive de fichiers, selon le même mode que pour la base.
 ARCHIVE_F=""

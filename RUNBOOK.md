@@ -550,8 +550,9 @@ attentes (provisioning, `apt`, DNS) et le fait qu'on fait ça en état de stress
 > psql -d uti -tAc "SELECT count(*) FROM submissions WHERE cv_url IS NOT NULL;"
 > find /var/lib/uti/files/cvs -type f | wc -l
 > ```
-> Le contrôle complet (chaque référence ↔ chaque fichier, les quatre familles)
-> est celui que fait `restore_drill.sh` : le relancer une fois la machine debout.
+> Le contrôle complet (chaque référence ↔ chaque fichier, les **cinq** familles —
+> CV, avatars, pièces d'AO, attestations, et les images des modèles d'e-mail) est
+> celui que fait `restore_drill.sh` : le relancer une fois la machine debout.
 
 ### 10.4 Les trois façons dont cette procédure échoue
 

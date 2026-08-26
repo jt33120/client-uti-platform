@@ -288,6 +288,21 @@ n'est perdu de ce que la répétition vérifie réellement (les 22 tables
 métier). Reproduit et vérifié en local, avec et sans le filtre, avant
 correctif.
 
+**Le retrait de ce premier objet en a révélé un second, immédiatement.**
+Deuxième exécution réelle du script, une fois `pg_stat_statements` filtré :
+`pg_restore` a échoué à nouveau, sur le déclencheur d'événement
+`pgrst_watch_ddl` que `roles_postgrest.sql` pose lui aussi en tant que
+`postgres` (§5 de ce fichier — le rechargement automatique du cache de schéma
+de PostgREST après chaque DDL). Un déclencheur d'événement exige **toujours**
+le superuser pour être créé, quel qu'en soit le propriétaire : même
+mécanisme, même défaut de conception, même correctif — retiré du sommaire
+avant restauration, puisqu'il ne notifie que PostgREST, qui ne parle jamais à
+la base jetable de la répétition. Le sommaire complet du schéma a été passé
+au crible (extensions, déclencheurs d'événement, foreign data wrappers,
+souscriptions, publications, langages) : ce sont aujourd'hui les deux SEULS
+objets qui exigent le superuser. Reproduit et vérifié en local, les deux
+retirés ensemble, avant correctif.
+
 **Une nuance mesurée le 26 août, qui change le calendrier :** `deploy/s3_backup.py`
 est du **boto3 générique** piloté par `BACKUP_S3_ENDPOINT` (lignes 34-55). Rien
 n'y est OVH. Seuls les gestes manuels de `setup_backup_offsite.sh` (étape 3,

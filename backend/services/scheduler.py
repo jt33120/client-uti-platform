@@ -205,9 +205,26 @@ async def run_outbox() -> None:
     """
     print("[OUTBOX] envoyeur d'emails démarré")
     from services.email_outbox import process_outbox
+
+    # Dernier motif de pause annoncé. `process_outbox` renvoie
+    # status="disabled" quand la configuration SMTP est incomplète, et ce cas
+    # ne produisait AUCUNE trace : la file tournait à vide toutes les 20 s, et
+    # « aucun e-mail ne part » ne se découvrait qu'en le constatant chez un
+    # utilisateur. On l'annonce donc — une fois, et de nouveau si le motif
+    # change ou si l'envoi reprend. Répéter à chaque tick noierait le journal.
+    pause_annoncee: Optional[str] = None
+
     while True:
         try:
             res = await asyncio.to_thread(process_outbox)
+            motif = res.get("reason") if res.get("status") == "disabled" else None
+            if motif != pause_annoncee:
+                if motif:
+                    print(f"[OUTBOX] EN PAUSE — aucun e-mail ne partira : {motif}")
+                    _record_err("email", f"File d'envoi en pause : {motif}", level="warning")
+                elif pause_annoncee:
+                    print("[OUTBOX] configuration SMTP retrouvée, envoi repris")
+                pause_annoncee = motif
             if res.get("sent") or res.get("failed"):
                 print(f"[OUTBOX] {res['sent']} envoyé(s), {res['failed']} en échec")
         except Exception as e:  # noqa: BLE001

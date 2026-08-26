@@ -71,20 +71,27 @@ l'URL pendant que le problème est l'autorisation.
 
 ### 0.3 Les e-mails : ce qui est prouvé, ce qui ne l'est pas
 
-**On n'utilise pas Resend.** Rien dans le dépôt ne l'appelle. La clé API « UTI »
-affiche 0 activité parce qu'aucun code ne s'en sert — ce n'est pas un symptôme.
+**Sortie d'Infomaniak effectuée le 26 août.** L'envoi passe désormais par
+**Resend**, expéditeur `plateforme@notifications.groupement-it.com`, via la file
+`email_outbox` dépilée toutes les 20 secondes.
 
-On utilise le **SMTP Infomaniak**, expéditeur `plateforme.grp-it@hbccp.fr`, via
-la file `email_outbox` dépilée toutes les 20 secondes. Personne dans l'équipe ne
-sait qui a créé ce compte Infomaniak ni qui possède `hbccp.fr`.
+Jusque-là on utilisait le SMTP Infomaniak avec l'expéditeur
+`plateforme.grp-it@hbccp.fr` — un domaine que personne dans l'équipe ne possède,
+sur un compte que personne ne savait retrouver. C'est cette dépendance
+introuvable, plus que la livrabilité, qui a motivé le changement.
 
-**Ce qui est prouvé, par un envoi réel déclenché le 26 août à 07:02 :** la chaîne
-applicative fonctionne de bout en bout. Endpoint atteint → ligne
-`user_credentials` provisionnée → jeton armé → e-mail déposé en file → **accepté
-par Infomaniak en 11 secondes, sans erreur**.
+**Ce qui a été prouvé le 26 août, dans l'ordre :**
 
-**Ce qui n'est pas prouvé :** que le message arrive. `status = "sent"` en base
-signifie « le relais a accepté », rien de plus.
+| Heure | Mesure |
+|---|---|
+| 07:02 | Chaîne applicative complète : endpoint → ligne `user_credentials` provisionnée → jeton armé → e-mail en file → accepté en 11 s. Mais **arrivée non constatée** |
+| 09:37 | Même chaîne, via Resend : accepté en 19 s. Resend refusant les domaines non vérifiés, l'acceptation **prouve** que `notifications.groupement-it.com` est vérifié |
+| — | **Message reçu dans la boîte Gmail.** Première fois de la journée qu'un « succès » en base correspond à une arrivée constatée, sur le domaine même qui échouait |
+
+**La leçon reste vraie malgré le succès :** `status = "sent"` signifie « le relais
+a accepté », rien de plus. Ce qui change avec Resend, c'est qu'un tableau de bord
+donne enfin `delivered` / `bounced` / `complained`. L'observabilité était le vrai
+gain ; la livrabilité n'en est qu'une conséquence.
 
 **Et le vrai constat est ailleurs.** `email_outbox` contient **cinq lignes depuis
 toujours**, dont aucune entre le 11 août et le 26. Or l'endpoint crée
@@ -105,7 +112,8 @@ l'écran affiche quand même « si un compte existe, un lien a été envoyé ».
 
 | Domaine | SPF | DKIM | DMARC |
 |---|---|---|---|
-| `hbccp.fr` (expéditeur actuel) | `?all` — qualificateur **neutre**, n'affirme rien | **absent** | **absent** |
+| `hbccp.fr` (ancien expéditeur) | `?all` — qualificateur **neutre**, n'affirme rien | **absent** | **absent** |
+| `notifications.groupement-it.com` (nouveau) | `v=spf1 include:amazonses.com ~all` — **1 requête** | ✅ publié, clé vérifiée caractère par caractère | hérite de la racine |
 | `groupement-it.com` | **22 requêtes DNS** (limite 10) + 3 requêtes à vide → **`PermError`** | absent | `p=none` |
 
 Le SPF de `groupement-it.com` est donc **déjà inexploitable**, et l'a été sans
@@ -113,7 +121,7 @@ que personne le sache : `include:uti-group.com` réimporte presque toute la list
 une seconde fois. Y ajouter un fournisseur n'améliorerait rien et risquerait la
 messagerie d'autres usages (VerySwing, OVH, Orange, IONOS).
 
-**Décision prise le 26 août : passer à Resend, depuis un sous-domaine.**
+**Décision prise ET exécutée le 26 août : Resend, depuis un sous-domaine.**
 
 - Compte Resend **existant** — l'adresse de connexion et les domaines d'envoi
   sont indépendants, aucun nouveau compte n'est nécessaire.
@@ -122,14 +130,26 @@ messagerie d'autres usages (VerySwing, OVH, Orange, IONOS).
   seule requête, et la racine n'est pas touchée.
 - Zone DNS chez **IONOS**, que nous contrôlons — contrairement à `hbccp.fr`,
   dont la zone est chez Infomaniak.
-- Bascule = **cinq variables d'environnement, zéro ligne de code** : la seule
-  trace d'Infomaniak dans le backend est une valeur par défaut
-  (`config.py:17`) ; `services/email.py:194-197` est du SMTP standard.
+- Bascule = **six variables d'environnement, zéro ligne de code** :
+  `services/email.py` ne fait que du SMTP standard, et ne connaît aucun
+  fournisseur.
 
-⚠️ **`SMTP_HOST` et `SMTP_PORT` sont absents du `.env` de production** : elle
-tourne sur les défauts de `config.py`. Il faut donc les y écrire **explicitement
-avant** tout nettoyage du code, sans quoi retirer le défaut Infomaniak changerait
-de fournisseur en silence au déploiement suivant.
+**Un piège rencontré en chemin, et la correction qu'il a entraînée.**
+`SMTP_HOST` et `SMTP_PORT` étaient **absents du `.env` de production** : elle
+tournait sur les défauts de `config.py`, c'est-à-dire chez Infomaniak, sans que
+la variable figure nulle part. Un défaut de serveur d'envoi ne rend donc pas
+service : il masque une configuration manquante derrière un comportement
+plausible — encore le même mode de panne.
+
+`config.py` n'a désormais **aucun serveur par défaut**. Absent, la file se met
+en pause **en l'annonçant** dans le journal (`[OUTBOX] EN PAUSE`), au lieu de
+tourner à vide en silence toutes les 20 secondes comme elle le faisait.
+
+**Une conséquence juridique, à ne pas laisser derrière.** Infomaniak est suisse
+— décision d'adéquation. Resend, Inc. est américaine, même si l'acheminement
+observé passe par Amazon SES en Irlande. Le registre des sous-traitants est mis
+à jour, et un **DPA avec clauses contractuelles types reste à conclure** : voir
+`compliance/ai-act/rgpd/REGISTRE-SOUS-TRAITANTS.md` §4.
 
 Le vrai gain n'est pas la livrabilité, c'est l'**observabilité** : Resend dit ce
 que devient chaque message. Toute la difficulté de ce chantier vient de là.

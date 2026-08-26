@@ -27,7 +27,7 @@ Guide pas-à-pas pour faire tourner le backend **FastAPI** sur le VPS OVH, en
 
 1. **Accès SSH** au VPS : `ssh -p 1622 julian.talou@164.132.44.212`
 2. Les **secrets** à portée de main : clés Supabase, OpenAI, `JWT_SECRET`,
-   mot de passe SMTP Infomaniak (les mêmes que sur Railway).
+   mot de passe SMTP du fournisseur d'envoi (Resend depuis le 26/08/2026).
 
 ---
 

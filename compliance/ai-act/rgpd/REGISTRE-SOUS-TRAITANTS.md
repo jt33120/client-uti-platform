@@ -41,13 +41,27 @@ sous-traitance** : il se documente, et il se documente **avant**.
 | **Authentification** (mots de passe, sessions) | **Supabase, Inc.** (GoTrue) | **UTI Group** — code interne, aucun tiers | Roubaix, France |
 | **Stockage des fichiers** (CV, pièces jointes, attestations) | **Supabase Storage** | **OVH Object Storage** (région GRA) | Gravelines, France |
 | **Inférence IA** | OpenRouter → Anthropic | OpenRouter → Anthropic *(inchangé)* | Hors UE |
-| **Envoi d'e-mails** | Infomaniak | Infomaniak *(inchangé)* | Suisse |
+| **Envoi d'e-mails** | Infomaniak *(Suisse)* | **Resend, Inc.** — acheminement via Amazon SES `eu-west-1` | Irlande *(éditeur aux USA)* |
 
 **Effet net :** trois sous-traitants disparaissent de la chaîne (base,
-authentification, stockage, tous portés par Supabase) et aucun ne s'ajoute — OVH
-y figurait déjà pour l'API. Le nombre d'entités touchant des données
-personnelles **diminue**, et les données de base et de fichiers **restent
-intégralement en France**.
+authentification, stockage, tous portés par Supabase). Le nombre d'entités
+touchant des données personnelles **diminue**, et les données de base et de
+fichiers **restent intégralement en France**.
+
+**Une substitution, décidée le 26/08/2026 : Infomaniak → Resend.** Ce n'est pas
+un changement neutre au regard de l'article 44, et il faut le dire :
+Infomaniak est suisse, donc couvert par une décision d'adéquation ; **Resend,
+Inc. est une société américaine**, même si l'acheminement observé passe par
+Amazon SES en Irlande (`feedback-smtp.eu-west-1.amazonses.com`). Le transfert
+repose donc sur des **clauses contractuelles types**, à obtenir — voir §4.
+
+Ce que la substitution apporte en contrepartie, et qui manquait : une
+**traçabilité de la livraison**. L'ancien dispositif ne permettait pas de savoir
+si un message était parvenu à son destinataire — un e-mail « envoyé » sans
+signature DKIM pouvait être écarté en silence. C'est notamment ce qui rend
+opposable la preuve d'envoi mentionnée au registre (`email_outbox`,
+`partner_email_log`) : sans statut de remise, elle prouvait une tentative, pas
+une notification.
 
 C'est un changement **favorable** aux personnes concernées, ce qui ne dispense
 ni de le documenter, ni de le faire viser.
@@ -61,7 +75,8 @@ ni de le documenter, ni de le faire viser.
 | **OVH SAS** — 2 rue Kellermann, 59100 Roubaix, France | Hébergement de l'API, de la base de données et des fichiers | Toutes catégories : identité, coordonnées, CV, scores, journaux | France (Roubaix, Gravelines) | Conditions particulières OVH + DPA. **À joindre au dossier** |
 | **Vercel Inc.** — 340 S Lemon Ave #4133, Walnut, CA 91789, USA | Hébergement des fichiers statiques du frontend | Aucune donnée personnelle stockée ; adresses IP dans les journaux d'accès | USA | DPA Vercel + clauses contractuelles types. **À vérifier** |
 | **OpenRouter, Inc.** → **Anthropic PBC** | Extraction et analyse des CV par LLM | Contenu de CV, pseudonymisé (`services/pseudonymize.py`) ; pages du CV **en image** si `VISION_ENABLED=true` | Hors UE | 🟥 DPA à conclure — risque R6 du [registre des risques](../phase-2-risques-donnees/01-systeme-gestion-risques.md) |
-| **Infomaniak Network SA** — Genève, Suisse | Acheminement des e-mails transactionnels | Adresse e-mail, nom, contenu des notifications | Suisse (décision d'adéquation) | DPA Infomaniak. **À joindre au dossier** |
+| **Resend, Inc.** — USA ; acheminement via **Amazon Web Services** (SES, région `eu-west-1`, Irlande) | Acheminement des e-mails transactionnels **depuis le 26/08/2026** | Adresse e-mail, nom, contenu des notifications | Irlande pour l'acheminement ; éditeur soumis au droit américain | 🟥 **DPA + clauses contractuelles types à conclure.** Sous-traitant ultérieur (AWS) à faire figurer |
+| ~~**Infomaniak Network SA**~~ — Genève, Suisse | Acheminement des e-mails transactionnels **jusqu'au 26/08/2026** | Adresse e-mail, nom, contenu des notifications | Suisse (décision d'adéquation) | Sorti de la chaîne. Conserver la trace : des notifications envoyées par cette voie restent journalisées dans `email_outbox` et `partner_email_log` |
 
 ---
 
@@ -76,7 +91,13 @@ ni de le documenter, ni de le faire viser.
 - [ ] Mettre à jour les **mentions légales** (`frontend/src/pages/LegalPages.jsx`).
 - [ ] Réviser la **DPIA** — une DPIA se revoit à chaque changement significatif
       de sous-traitant ([DPIA §7](DPIA.md)).
-- [ ] Joindre les **DPA** d'OVH, Vercel et Infomaniak au dossier.
+- [ ] Joindre les **DPA** d'OVH et de Vercel au dossier.
+- [ ] 🟥 **Conclure le DPA et les clauses contractuelles types avec Resend, Inc.**
+      Substitution effective depuis le 26/08/2026 ; l'encadrement contractuel ne
+      l'est pas encore. Y faire figurer **AWS** comme sous-traitant ultérieur.
+- [ ] Vérifier que l'**information des personnes concernées** ne nomme pas
+      Infomaniak. Un changement de destinataire des données doit leur être porté
+      à connaissance.
 - [ ] Conclure le **DPA OpenRouter/Anthropic** (action antérieure, toujours ouverte).
 - [ ] Archiver le `MANIFEST.txt` de l'archive Supabase comme **preuve de
       restitution et d'effacement** au titre de l'art. 28-3-g : le sous-traitant

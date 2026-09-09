@@ -87,7 +87,42 @@ BUCKETS=(cvs avatars ao-sources compliance email-assets)
   echo "   install -m 600 /dev/null $URI_FILE && nano $URI_FILE"
   exit 2
 }
-PGURI="$(tr -d '\r\n' < "$URI_FILE")"
+# L'URI PORTE UN MOT DE PASSE, ET IL NE DOIT PAS ATTERRIR DANS `ps`.
+#
+# Ce fichier promet en tête (« L'URI ne passe JAMAIS en argument ») ce que son
+# code ne tenait que pour les arguments DU SCRIPT : `PGURI` partait ensuite en
+# argv à pg_dump et psql sur neuf sites, dont un DANS LA BOUCLE DES 24 TABLES.
+# Une trentaine de processus portaient donc le mot de passe du rôle propriétaire
+# de la base de production dans /proc/<pid>/cmdline — mode 0444, lisible par
+# postgrest, par www-data, par tout compte local. Et pendant la bascule, ces deux
+# exports tournent alors que Supabase est encore la base VIVANTE.
+#
+# psql et pg_dump ne réécrivent pas leur ligne de commande : c'est précisément la
+# raison d'être des variables libpq. On découpe donc l'URI, exactement comme
+# scripts/bascule.sh, et on les exporte. /proc/<pid>/environ est en 0400 :
+# l'environnement, lui, ne fuit pas.
+_uri="$(tr -d '\r\n' < "$URI_FILE")"
+_reste="${_uri#*://}"; _creds="${_reste%%@*}"; _hote="${_reste#*@}"
+PGUSER="${_creds%%:*}"; PGPASSWORD="${_creds#*:}"
+_hp="${_hote%%/*}"; _db="${_hote#*/}"
+PGHOST="${_hp%%:*}"; PGPORT="${_hp##*:}"; [ "$PGPORT" = "$PGHOST" ] && PGPORT=5432
+PGDATABASE="${_db%%\?*}"; PGSSLMODE=require
+export PGHOST PGPORT PGUSER PGPASSWORD PGDATABASE PGSSLMODE
+unset _uri _reste _creds _hote _hp _db
+
+[ -n "$PGHOST" ] && [ -n "$PGDATABASE" ] || {
+  echo "❌ URI illisible dans $URI_FILE"
+  echo "   Attendu : postgresql://utilisateur:motdepasse@hote:port/base"
+  exit 2
+}
+# Sonde immédiate : sans elle, un mot de passe percent-encodé (%40, %25…) ne se
+# manifesterait qu'à la première requête, au milieu de l'export.
+psql -tAc 'select 1' >/dev/null 2>&1 || {
+  echo "❌ connexion Supabase refusée avec l'URI fournie."
+  echo "   Si le mot de passe contient %40, %25 ou similaire, remplacez-le par sa"
+  echo "   forme littérale dans $URI_FILE — libpq ne décode pas ces séquences ici."
+  exit 2
+}
 export PGCONNECT_TIMEOUT=15
 
 command -v pg_dump >/dev/null || { echo "❌ pg_dump absent (paquet postgresql-client)"; exit 2; }
@@ -122,9 +157,9 @@ echo "=== Archive Supabase → $OUT ==="
 # contrôle échouerait sur chaque GRANT et l'archive ne serait pas vérifiable —
 # une archive qu'on ne sait pas restaurer n'est pas une archive.
 echo "[1/6] pg_dump…"
-pg_dump "$PGURI" --schema=public --schema=auth --schema=storage \
+pg_dump --schema=public --schema=auth --schema=storage \
         --no-owner --no-privileges -Fc -f "$OUT/dump.pgcustom"
-pg_dump "$PGURI" --schema=public --schema=auth --schema=storage \
+pg_dump --schema=public --schema=auth --schema=storage \
         --no-owner --no-privileges -f "$OUT/dump.sql"
 
 # ── 2. CSV par table ────────────────────────────────────────────────────────
@@ -132,7 +167,7 @@ pg_dump "$PGURI" --schema=public --schema=auth --schema=storage \
 # PostgreSQL. C'est lui qu'on ouvre en cas de contrôle, pas le dump binaire.
 echo "[2/6] CSV des 22 tables…"
 for t in "${TABLES[@]}"; do
-  psql "$PGURI" -v ON_ERROR_STOP=1 -q \
+  psql -v ON_ERROR_STOP=1 -q \
     -c "\copy public.$t TO '$OUT/csv/$t.csv' WITH (FORMAT csv, HEADER true)"
   printf '  %-28s %s ligne(s)\n' "$t" \
     "$(( $(wc -l < "$OUT/csv/$t.csv") - 1 ))"
@@ -140,7 +175,7 @@ done
 
 # ── 3. Comptes : la correspondance UUID → personne ──────────────────────────
 echo "[3/6] auth.users (sans empreintes)…"
-psql "$PGURI" -v ON_ERROR_STOP=1 -q -c "\copy (
+psql -v ON_ERROR_STOP=1 -q -c "\copy (
   SELECT u.id, u.email, p.name, p.role, u.created_at, u.last_sign_in_at,
          u.email_confirmed_at, u.banned_until
   FROM auth.users u LEFT JOIN public.profiles p ON p.id = u.id
@@ -153,7 +188,7 @@ if [ "$WITH_SECRETS" = "--with-secrets" ]; then
   # pouvoir être conservé des années, ceci non.
   echo "[3b/6] secrets d'authentification (fichier séparé, 0600)…"
   install -m 600 /dev/null "$OUT/auth_secrets.csv"
-  psql "$PGURI" -v ON_ERROR_STOP=1 -q -c "\copy (
+  psql -v ON_ERROR_STOP=1 -q -c "\copy (
     SELECT u.id, u.email, u.encrypted_password, p.mfa_enabled, p.mfa_secret
     FROM auth.users u LEFT JOIN public.profiles p ON p.id = u.id
   ) TO '$OUT/auth_secrets.csv' WITH (FORMAT csv, HEADER true)"
@@ -168,7 +203,7 @@ fi
 # ne réécrit donc pas la configuration à la main sur la base neuve, on la
 # rejoue depuis la production.
 echo "[4/6] config_replay.sql…"
-psql "$PGURI" -At -v ON_ERROR_STOP=1 > "$OUT/config_replay.sql" <<'SQL'
+psql -At -v ON_ERROR_STOP=1 > "$OUT/config_replay.sql" <<'SQL'
 SELECT '-- Configuration extraite de la production Supabase le ' || now()::date;
 SELECT '-- À rejouer sur la base neuve APRÈS schema.sql :';
 SELECT '--   psql -d uti -v ON_ERROR_STOP=1 -f config_replay.sql';
@@ -247,9 +282,9 @@ echo "[6/6] manifeste…"
   echo "Prise le            : $(date -Is)"
   echo "Par                 : $(whoami)@$(hostname)"
   echo "pg_dump             : $(pg_dump --version)"
-  echo "Serveur PostgreSQL  : $(psql "$PGURI" -tAc 'select version()')"
-  echo "Collation de la base: $(psql "$PGURI" -tAc 'select datcollate from pg_database where datname=current_database()')"
-  echo "Extensions          : $(psql "$PGURI" -tAc "select string_agg(extname||' '||extversion, ', ' order by extname) from pg_extension")"
+  echo "Serveur PostgreSQL  : $(psql -tAc 'select version()')"
+  echo "Collation de la base: $(psql -tAc 'select datcollate from pg_database where datname=current_database()')"
+  echo "Extensions          : $(psql -tAc "select string_agg(extname||' '||extversion, ', ' order by extname) from pg_extension")"
   echo ""
   echo "Lignes par table :"
   for t in "${TABLES[@]}"; do

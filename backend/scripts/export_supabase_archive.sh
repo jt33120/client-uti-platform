@@ -101,9 +101,20 @@ BUCKETS=(cvs avatars ao-sources compliance email-assets)
 # raison d'être des variables libpq. On découpe donc l'URI, exactement comme
 # scripts/bascule.sh, et on les exporte. /proc/<pid>/environ est en 0400 :
 # l'environnement, lui, ne fuit pas.
+# %XX : libpq DÉCODE les séquences percent quand on lui passe une URI entière.
+# Un découpage manuel qui ne le fait pas donne un mot de passe FAUX dès qu'il
+# contient un caractère réservé — @ : / ? # % — que la console Supabase encode.
+# Le symptôme est trompeur : « password authentication failed », qui envoie
+# chercher un problème de mot de passe là où il y a un problème d'analyse.
+# Les antislashs sont doublés d'abord, sinon printf %%b les interpréterait.
+_decode_pct() {
+  local s="${1//\\/\\\\}"
+  printf '%b' "${s//%/\\x}"
+}
+
 _uri="$(tr -d '\r\n' < "$URI_FILE")"
 _reste="${_uri#*://}"; _creds="${_reste%%@*}"; _hote="${_reste#*@}"
-PGUSER="${_creds%%:*}"; PGPASSWORD="${_creds#*:}"
+PGUSER="$(_decode_pct "${_creds%%:*}")"; PGPASSWORD="$(_decode_pct "${_creds#*:}")"
 _hp="${_hote%%/*}"; _db="${_hote#*/}"
 PGHOST="${_hp%%:*}"; PGPORT="${_hp##*:}"; [ "$PGPORT" = "$PGHOST" ] && PGPORT=5432
 PGDATABASE="${_db%%\?*}"; PGSSLMODE=require

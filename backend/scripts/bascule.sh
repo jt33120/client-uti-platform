@@ -137,13 +137,24 @@ psql_su() { sudo -u postgres psql -v ON_ERROR_STOP=1 -q "$@"; }
 # On découpe donc l'URI en variables libpq. L'environnement d'un processus n'est
 # lisible que par son propriétaire et par root (/proc/<pid>/environ, mode 0600),
 # jamais par `ps`.
+# %XX : libpq DÉCODE les séquences percent quand on lui passe une URI entière.
+# Un découpage manuel qui ne le fait pas donne un mot de passe FAUX dès qu'il
+# contient un caractère réservé — @ : / ? # % — que la console Supabase encode.
+# Le symptôme est trompeur : « password authentication failed », qui envoie
+# chercher un problème de mot de passe là où il y a un problème d'analyse.
+# Les antislashs sont doublés d'abord, sinon printf %%b les interpréterait.
+_decode_pct() {
+  local s="${1//\\/\\\\}"
+  printf '%b' "${s//%/\\x}"
+}
+
 _uri_vers_env() {
   local uri; uri="$(tr -d "\r\n" < "$URI_FILE")"
   # postgresql://UTILISATEUR:MOTDEPASSE@HOTE:PORT/BASE[?options]
   local reste="${uri#*://}"
   local creds="${reste%%@*}" hostpart="${reste#*@}"
-  PGUSER_S="${creds%%:*}"
-  PGPASSWORD_S="${creds#*:}"
+  PGUSER_S="$(_decode_pct "${creds%%:*}")"
+  PGPASSWORD_S="$(_decode_pct "${creds#*:}")"
   local hostport="${hostpart%%/*}" dbpart="${hostpart#*/}"
   PGHOST_S="${hostport%%:*}"
   PGPORT_S="${hostport##*:}"; [ "$PGPORT_S" = "$PGHOST_S" ] && PGPORT_S=5432
@@ -156,6 +167,17 @@ psql_supabase() {
   PGHOST="$PGHOST_S" PGPORT="$PGPORT_S" PGUSER="$PGUSER_S" \
   PGPASSWORD="$PGPASSWORD_S" PGDATABASE="$PGDATABASE_S" \
   PGSSLMODE=require psql "$@" 2>/dev/null
+}
+
+# Même chose, mais SANS museler stderr. Un contrôle qui échoue doit dire
+# pourquoi : « impossible de joindre Supabase » sans le message de libpq envoie
+# chercher un problème de réseau là où il y a un mot de passe refusé, et coûte
+# un aller-retour de diagnostic à chaque fois.
+psql_supabase_bavard() {
+  _uri_vers_env || return 1
+  PGHOST="$PGHOST_S" PGPORT="$PGPORT_S" PGUSER="$PGUSER_S" \
+  PGPASSWORD="$PGPASSWORD_S" PGDATABASE="$PGDATABASE_S" \
+  PGSSLMODE=require PGCONNECT_TIMEOUT=15 psql "$@"
 }
 
 # ── Retour arrière ──────────────────────────────────────────────────────────
@@ -261,9 +283,24 @@ LIBRE_KO="$(df -kP / | awk 'NR==2{print $4}')"
                                  || { ko "moins de 2 Go libres — l'archive et le dump ne tiendront pas"; MANQUE=1; }
 systemctl is-active --quiet postgresql && ok "PostgreSQL actif" || { ko "PostgreSQL inactif"; MANQUE=1; }
 systemctl is-active --quiet postgrest  && ok "PostgREST actif"  || { ko "PostgREST inactif"; MANQUE=1; }
-psql_supabase -tAc "select 1" >/dev/null 2>&1 \
-  && ok "connexion à Supabase établie" \
-  || { ko "impossible de joindre Supabase avec l'URI fournie"; MANQUE=1; }
+if psql_supabase -tAc "select 1" >/dev/null 2>&1; then
+  ok "connexion à Supabase établie"
+else
+  ko "impossible de joindre Supabase — message de libpq :"
+  psql_supabase_bavard -tAc "select 1" 2>&1 | sed 's/^/      /'
+  info ""
+  info "Les trois causes, dans l'ordre de fréquence :"
+  info "  • « password authentication failed » → le mot de passe de l'URI est"
+  info "    faux, ou il a été régénéré. Console Supabase → Settings → Database"
+  info "    → Reset database password, puis recopier la chaîne ENTIÈRE."
+  info "  • « no route to host » / « could not translate host name » → l'hôte"
+  info "    « db.<projet>.supabase.co » ne résout qu'en IPv6. Si ce VPS n'a pas"
+  info "    de sortie IPv6, prendre l'onglet « Session pooler » (port 5432,"
+  info "    utilisateur postgres.<projet>), joignable en IPv4. Surtout PAS"
+  info "    « Transaction pooler » : pg_dump n'y fonctionne pas."
+  info "  • « timeout » → un pare-feu sortant bloque le 5432."
+  MANQUE=1
+fi
 [ "$MANQUE" = 0 ] || mort 0 "un préalable manque"
 
 # ═══ 1. La sauvegarde qui aboutit ═══════════════════════════════════════════

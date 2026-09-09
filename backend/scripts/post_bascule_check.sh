@@ -23,6 +23,14 @@
 set -uo pipefail
 
 BACKEND="${BACKEND_DIR:-$HOME/app/backend}"
+
+# SE PLACER DANS backend/ AVANT TOUT. config.py déclare `env_file: ".env"`, que
+# pydantic-settings résout RELATIVEMENT AU RÉPERTOIRE COURANT. Lancé depuis
+# ~/app (ou depuis n'importe où ailleurs), chaque heredoc python de ce script
+# échouait donc sur « supabase_url Field required » — et le contrôle concluait
+# « au moins un comportement PostgREST diffère », ce qui envoie chercher une
+# incompatibilité de base de données là où il n'y a qu'un chemin relatif.
+cd "$BACKEND" || { echo "❌ répertoire introuvable : $BACKEND"; exit 2; }
 API="${API_URL:-http://127.0.0.1:8000}"
 PGRST="${PGRST_URL:-http://127.0.0.1:8080}"
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/uti}"
@@ -30,6 +38,13 @@ BACKUP_DIR="${BACKUP_DIR:-/var/backups/uti}"
 ROUGE=0
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$1"; }
 ko()   { printf '  \033[31m✗\033[0m %s\n' "$1"; ROUGE=$((ROUGE+1)); }
+# TROISIÈME ÉTAT, ET IL MANQUAIT. Un contrôle qui n'a PAS PU s'exécuter n'est
+# pas un contrôle en échec. Le confondre produit le pire message possible :
+# « la clé S3 du VPS PEUT supprimer » affirmé par un script qui n'a jamais
+# réussi à s'y connecter. Une alerte fausse coûte plus cher que pas d'alerte —
+# elle envoie corriger un problème qui n'existe pas, et elle apprend à ignorer
+# les rouges suivants.
+nv()   { printf '  \033[33m?\033[0m %s\n' "$1"; }
 titre(){ printf '\n\033[1m%s\033[0m\n' "$1"; }
 
 titre "1. Backend et façade"
@@ -241,10 +256,25 @@ titre "5. Boucles de fond"
 # services/scheduler.py:184 et :206 impriment ces marqueurs au démarrage. Leur
 # absence signifie que le planificateur (liste 2, relances, purge RGPD, budget IA)
 # et l'envoyeur d'e-mails ne tournent pas — panne totalement silencieuse.
-journalctl -u uti-backend --since "-10 min" --no-pager 2>/dev/null | grep -q "\[SCHED\] planificateur" \
-  && ok "planificateur démarré" || ko "marqueur [SCHED] absent des 10 dernières minutes"
-journalctl -u uti-backend --since "-10 min" --no-pager 2>/dev/null | grep -q "\[OUTBOX\] envoyeur" \
-  && ok "envoyeur d'e-mails démarré" || ko "marqueur [OUTBOX] absent des 10 dernières minutes"
+# CES DEUX MARQUEURS SONT ÉCRITS UNE SEULE FOIS, AU DÉMARRAGE. Les chercher sur
+# une fenêtre de 10 minutes ne pouvait réussir que si le backend venait de
+# redémarrer — donc échouer presque toujours. Pire pour l'envoyeur d'e-mails :
+# sa boucle n'écrit RIEN quand la file est vide, c'est délibéré
+# (services/scheduler.py) ; attendre un battement d'un processus volontairement
+# silencieux est une erreur de lecture du code, pas un signal.
+#
+# On lit donc le journal DEPUIS LE DÉMARRAGE DU SERVICE, ce qui est exactement
+# la question posée : « les deux boucles ont-elles démarré dans ce processus ? »
+_depuis=$(systemctl show uti-backend -p ActiveEnterTimestamp --value 2>/dev/null)
+[ -n "$_depuis" ] || _depuis="-1 h"
+_jrn=$(journalctl -u uti-backend --since "$_depuis" --no-pager 2>/dev/null)
+
+grep -q "\[SCHED\] planificateur" <<<"$_jrn" \
+  && ok "planificateur démarré (depuis le lancement du service)" \
+  || ko "marqueur [SCHED] absent depuis le démarrage du service — la boucle de notifications n'a pas démarré"
+grep -q "\[OUTBOX\] envoyeur" <<<"$_jrn" \
+  && ok "envoyeur d'e-mails démarré (depuis le lancement du service)" \
+  || ko "marqueur [OUTBOX] absent depuis le démarrage du service — la file d'envoi n'a pas démarré"
 
 erreurs=$(journalctl -u uti-backend --since "-1 h" --no-pager 2>/dev/null | grep -c "\[ERROR\]" || true)
 [ "$erreurs" -eq 0 ] && ok "aucune erreur applicative sur la dernière heure" \
@@ -281,9 +311,25 @@ fi
 
 # — Condition 1 : elle vit HORS du VPS. Sans ce contrôle, on validerait un
 #   dispositif qu'un seul `rm -rf` (ou un rançongiciel) annule intégralement.
-if [ -f /etc/uti-backup.env ]; then
-  # shellcheck disable=SC1091  # fichier de secrets, absent du dépôt par construction
-  set -a; . /etc/uti-backup.env; set +a
+# Ce script tourne sous julian.talou ; /etc/uti-backup.env est en 0600 root.
+# `[ -f ]` était donc vrai, le `.` échouait en « Permission denied », les
+# variables restaient vides, et TROIS contrôles se déclaraient rouges sans avoir
+# rien testé. On tente sudo sans mot de passe (utilisable depuis une unité
+# systemd ou un sudoers dédié) ; à défaut, on annonce « non vérifié ».
+_secrets_lus=0
+if [ -r /etc/uti-backup.env ]; then
+  # shellcheck disable=SC1091
+  set -a; . /etc/uti-backup.env; set +a; _secrets_lus=1
+elif sudo -n cat /etc/uti-backup.env >/dev/null 2>&1; then
+  set -a; . <(sudo -n cat /etc/uti-backup.env); set +a; _secrets_lus=1
+fi
+
+if [ "$_secrets_lus" = 0 ] && [ -f /etc/uti-backup.env ]; then
+  nv "hors-site NON VÉRIFIÉ : /etc/uti-backup.env illisible sous $(id -un) (0600 root)."
+  nv "   Relancer en root pour ces trois contrôles :  sudo -E $0"
+  nv "   La sauvegarde elle-même, lancée par systemd, lit bien ce fichier —"
+  nv "   voir la ligne « dernière sauvegarde RÉUSSIE » ci-dessus, qui fait foi."
+elif [ -f /etc/uti-backup.env ]; then
   recent=$(BACKEND_DIR="$BACKEND" "$BACKEND/venv/bin/python" "$BACKEND/deploy/s3_backup.py" lister "uti/" 2>/dev/null | tail -1)
   [ -n "$recent" ] \
     && ok "dépôt hors-site alimenté — dernier objet : $recent" \
@@ -318,10 +364,20 @@ fi
 
 # — Condition 2 : le chiffrement. Les archives contiennent des CV et les secrets
 #   TOTP en clair de profiles.mfa_secret ; elles partent chez un tiers.
-grep -q '^Environment=AGE_RECIPIENT=age1' /etc/systemd/system/uti-backup.service 2>/dev/null \
-  && ! grep -qi 'REMPLACER' /etc/systemd/system/uti-backup.service \
-  && ok "chiffrement age actif (clé publique renseignée dans l'unité)" \
-  || ko "AGE_RECIPIENT absent ou encore à sa valeur gabarit : les archives partiraient EN CLAIR (backup_db.sh refuse, donc rien ne part)"
+# LA GARDE ANTI-GABARIT NE DOIT REGARDER QUE LA LIGNE, PAS LE FICHIER.
+# Elle faisait `! grep -qi REMPLACER <fichier entier>` : or l'unité porte, deux
+# lignes plus haut, le commentaire « Remplacer par la sortie de age-keygen ».
+# La recherche étant insensible à la casse et non ancrée, ce contrôle ne pouvait
+# JAMAIS être vert — même avec une clé publique parfaitement posée. Il annonçait
+# « les archives partiraient EN CLAIR » pendant que le dépôt chiffré réussissait.
+_age_ligne=$(grep -m1 '^Environment=AGE_RECIPIENT=' \
+             /etc/systemd/system/uti-backup.service 2>/dev/null)
+case "$_age_ligne" in
+  "")                                 ko "AGE_RECIPIENT absent de l'unité uti-backup.service : les archives partiraient EN CLAIR (backup_db.sh refuse, donc rien ne part)" ;;
+  *REMPLACER*|*remplacer*)            ko "AGE_RECIPIENT est encore à sa valeur gabarit : les archives partiraient EN CLAIR (backup_db.sh refuse, donc rien ne part)" ;;
+  Environment=AGE_RECIPIENT=age1?*)   ok "chiffrement age actif (clé publique renseignée dans l'unité)" ;;
+  *)                                  ko "AGE_RECIPIENT ne ressemble pas à une clé publique age (attendu : age1…)" ;;
+esac
 
 # — Condition 3 : une restauration a été faite POUR DE VRAI, et récemment.
 #   C'est la seule qui transforme un fichier en sauvegarde.

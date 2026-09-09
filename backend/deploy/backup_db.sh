@@ -167,9 +167,27 @@ mv "$FICHIER.partiel" "$FICHIER"
 chmod 600 "$FICHIER"
 
 taille=$(stat -c%s "$FICHIER")
-# La base fait 16 Mo de données ; un dump compressé sous 50 Ko signifie
-# « schéma sans données », donc une catastrophe silencieuse.
+# Plancher absolu : un dump sous 50 Ko n'a rien d'une base applicative.
 [ "$taille" -gt 51200 ] || alerte "dump anormalement petit ($taille octets)"
+
+# CE PLANCHER NE SUFFIT PAS, ET ON L'A VU EN VRAI. Le 9 septembre 2026, la base
+# « uti » ne contenait que le SCHÉMA — aucune ligne. Son dump faisait 79 Ko :
+# au-dessus du plancher, donc vert. Une sauvegarde parfaitement réussie d'une
+# base vide, annoncée comme un succès. C'est exactement la « catastrophe
+# silencieuse » que le plancher prétendait empêcher.
+#
+# Le repère fiable n'est pas une constante, c'est LA SAUVEGARDE PRÉCÉDENTE : une
+# base qui perd d'un coup la moitié de son volume a un problème, quelle que soit
+# sa taille absolue. Seuil à 50 % pour laisser passer une purge RGPD ou un
+# archivage massif légitimes, tout en attrapant un rechargement raté, une
+# restauration partielle ou une base pointée au mauvais endroit.
+precedent=$(ls -1t "$DEST"/*.pgcustom 2>/dev/null | grep -v "^$FICHIER$" | head -1)
+if [ -n "$precedent" ]; then
+  taille_prec=$(stat -c%s "$precedent" 2>/dev/null || echo 0)
+  if [ "$taille_prec" -gt 51200 ] && [ "$taille" -lt $(( taille_prec / 2 )) ]; then
+    alerte "dump de $taille octets contre $taille_prec la fois précédente ($(basename "$precedent")) : la base a perdu plus de la moitié de son volume. Sauvegarde REFUSÉE — vérifier que le serveur pointe la bonne base avant de relancer."
+  fi
+fi
 
 # Contrôle de lisibilité : pg_restore --list échoue sur une archive corrompue.
 # Sans ce contrôle, on découvrirait le problème le jour de la restauration.

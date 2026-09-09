@@ -278,6 +278,20 @@ fi
 # -P (POSIX) : sans lui, df coupe sa sortie en deux lignes dès que le nom du
 # périphérique est long (LVM, /dev/mapper/…), NR==2 ne contient que ce nom, et
 # $4 est vide — le contrôle refuserait alors la bascule sur un disque vide.
+# Le répertoire de destination des fichiers doit exister ET être inscriptible
+# par CE compte. Il vit sous /var/lib, qui appartient à root : `local_write` ne
+# peut pas le créer, et l'étape 3 mourait sur « Permission denied » APRÈS avoir
+# fait la sauvegarde, l'archive et deux exports. Un préalable se vérifie avant
+# de travailler, pas au milieu.
+if [ -d "$FICHIERS" ] && [ -w "$FICHIERS" ]; then
+  ok "répertoire des fichiers inscriptible ($FICHIERS)"
+else
+  ko "répertoire des fichiers absent ou non inscriptible : $FICHIERS"
+  info "  sudo install -d -m 700 -o \"$(id -un)\" -g \"$(id -gn)\" $(dirname "$FICHIERS")"
+  info "  sudo install -d -m 700 -o \"$(id -un)\" -g \"$(id -gn)\" $FICHIERS"
+  MANQUE=1
+fi
+
 LIBRE_KO="$(df -kP / | awk 'NR==2{print $4}')"
 [ "${LIBRE_KO:-0}" -gt 2097152 ] && ok "espace disque : $((LIBRE_KO/1024)) Mo libres" \
                                  || { ko "moins de 2 Go libres — l'archive et le dump ne tiendront pas"; MANQUE=1; }
@@ -596,6 +610,32 @@ if etape 9 "Bascule des trois lignes de .env"; then
       mort 9 "nettoie-la avant de continuer (la sauvegarde $ENV_SAUVE est intacte)"
     fi
     ok "plus aucune ligne active supabase.co dans .env"
+
+    # LA CLÉ DE SERVICE, ET C'EST ICI QUE ÇA S'EST CASSÉ.
+    #
+    # `SUPABASE_SERVICE_KEY` est un JWT signé par SUPABASE. PostgREST local le
+    # valide avec SON secret et le rejette : le backend démarre parfaitement,
+    # /health est vert, et TOUT répond 401. Panne totale et muette.
+    #
+    # Le commentaire de cette étape annonçait « vérifiée à l'étape 9 par le
+    # démarrage réel » — elle ne l'était pas. On la vérifie donc pour de bon,
+    # contre PostgREST, AVANT de redémarrer quoi que ce soit.
+    CLE=$(grep -m1 '^SUPABASE_SERVICE_KEY=' "$BACKEND/.env" | cut -d= -f2- | tr -d '"')
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 \
+      -H "Authorization: Bearer $CLE" -H "apikey: $CLE" \
+      'http://127.0.0.1:8080/rest/v1/profiles?select=id&limit=1')
+    if [ "$code" = "200" ]; then
+      ok "la clé de service est acceptée par PostgREST local (200)"
+    else
+      ko "PostgREST refuse la clé de service ($code) — elle est encore signée par Supabase."
+      info "Elle doit être signée avec le secret de CE PostgREST. Le dépôt a l'outil :"
+      info ""
+      info "  NOUVELLE=\$(sudo python3 $BACKEND/scripts/make_service_key.py)"
+      info "  cp $BACKEND/.env $BACKEND/.env.avant-cle"
+      info "  sed -i \"s#^SUPABASE_SERVICE_KEY=.*#SUPABASE_SERVICE_KEY=\$NOUVELLE#\" $BACKEND/.env"
+      info ""
+      mort 9 "sans cette clé, le backend redémarrerait et répondrait 401 sur tout"
+    fi
   fi
   fait etape9
 fi
@@ -644,8 +684,21 @@ if etape 11 "Contrôle de bascule"; then
   # lui libpq demande le rôle « julian.talou », qui n'existe pas. Les sections
   # du contrôle qui interrogent la base seraient muettes — vertes sans avoir
   # rien vérifié. C'est le défaut exact qui a rendu les sauvegardes inertes.
-  faire "PGUSER='$PROPRIO' bash '$BACKEND/scripts/post_bascule_check.sh'" || mort 11 "contrôle de bascule ROUGE — lire ci-dessus, puis décider entre corriger et --rollback"
-  faire "PGUSER='$PROPRIO' bash '$BACKEND/deploy/supervision.sh'" || ko "supervision : au moins une anomalie (voir ci-dessus)"
+  # CE CONTRÔLE N'EST PAS UNE PORTE, ET EN FAIRE UNE ÉTAIT UNE ERREUR.
+  #
+  # post_bascule_check.sh vérifie les 12 CRITÈRES DE SUPPRESSION du projet
+  # Supabase (BASCULE.md §6) : quatorze jours d'observation, une restauration
+  # éprouvée, un dépôt hors-site, les comptes reconnectés. Aucun d'eux n'est
+  # censé être vert le jour de la bascule — c'est le début de la période
+  # d'observation, pas sa fin. Son propre verdict le dit : « NE PAS supprimer
+  # Supabase », ce qui est un conseil juste, pas un échec de bascule.
+  #
+  # En faire un `mort 11` faisait terminer en rouge une bascule réussie, ce qui
+  # est la meilleure façon d'apprendre à quelqu'un à ignorer un rouge.
+  faire "PGUSER='$PROPRIO' bash '$BACKEND/scripts/post_bascule_check.sh'" \
+    || info "→ des critères de SUPPRESSION restent rouges : c'est attendu aujourd'hui."
+  faire "PGUSER='$PROPRIO' bash '$BACKEND/deploy/supervision.sh'" \
+    || info "→ supervision : au moins une anomalie signalée ci-dessus."
   fait etape11
 fi
 

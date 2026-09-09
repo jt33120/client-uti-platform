@@ -61,7 +61,8 @@ def _send_invite_email(to_email: str, partner_name: str, invite_url: str, role: 
     role_label = "l'équipe commerciale Groupement-IT" if role == "commerce" else "la plateforme partenaires Groupement-IT"
     # Sujet + corps + coquille via la source unique (= aperçu admin fidèle).
     context = {"name": first, "role": role_label, "link": invite_url}
-    subject, html, text = email_templates.build_email("invite", context)
+    subject, html, text = email_templates.build_email("invite", context,
+                                                      recipient=to_email)
     # Via la file : une invitation perdue sur un hoquet SMTP, c'est un partenaire
     # qui n'arrive jamais et personne qui s'en aperçoit. La file réessaie et
     # garde la trace, ce que l'envoi direct ne faisait ni l'un ni l'autre.

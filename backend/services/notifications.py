@@ -73,8 +73,11 @@ def _render(ao: dict, client_name: str, kind: str, recipient: dict | None = None
         "partner_name": (recipient or {}).get("name") or "",
         "greeting": f"Bonjour {first}," if first else "Bonjour,",
     }
-    # Source unique de rendu (identique à l'aperçu admin).
-    return email_templates.build_email(key, context)
+    # Source unique de rendu (identique à l'aperçu admin). L'adresse est passée
+    # pour SIGNER le lien de désabonnement du pied de page : sans elle, l'email
+    # partirait sans recours (cf. services/email_optout.py).
+    return email_templates.build_email(
+        key, context, recipient=(recipient or {}).get("email"))
 
 
 # `_log_send` a disparu : la file (`email_outbox`) EST désormais le journal.

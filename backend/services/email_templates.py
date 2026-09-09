@@ -442,15 +442,23 @@ def _meta_table(context: dict) -> str:
     return f'<table cellpadding="0" cellspacing="0" style="width:100%;font-size:14px;margin-top:14px;">{rows}</table>'
 
 
-def build_email(key: str, context: dict, subject: str = None, body: str = None) -> tuple[str, str, str]:
+def build_email(key: str, context: dict, subject: str = None, body: str = None,
+                recipient: str = None) -> tuple[str, str, str]:
     """Construit (sujet, html, texte) d'un email transactionnel — SOURCE UNIQUE.
 
     Utilisée pour l'envoi réel ET pour l'aperçu, ce qui garantit que l'aperçu
     affiché à l'admin est exactement le mail reçu. `subject`/`body` permettent
     de prévisualiser un contenu non encore enregistré.
+
+    `recipient` est l'adresse destinataire. Elle ne sert qu'à SIGNER le lien de
+    désabonnement, qui lie une adresse à une catégorie — sans elle, un même lien
+    désabonnerait n'importe qui. L'omettre produit donc un email sans lien de
+    désabonnement : c'est voulu pour l'aperçu sans destinataire, et c'est
+    pourquoi chaque point d'envoi la passe.
     """
     # Import local pour éviter toute dépendance circulaire au chargement.
     from services.email import render_email_html
+    from services import email_optout
 
     # Normalise les dates au format français (JJ/MM/AAAA) — copie pour ne pas
     # muter le contexte de l'appelant. Couvre le tableau méta ET les {deadline}.
@@ -489,8 +497,21 @@ def build_email(key: str, context: dict, subject: str = None, body: str = None) 
     if d.get("cta_label") and link:
         cta = {"label": d["cta_label"], "url": str(link)}
 
+    # Pied de page. Pour une notification, la phrase NOMME le type auquel on est
+    # abonné (« Nouvel appel d'offres »…) et porte le lien de désabonnement :
+    # « ne plus recevoir ça » n'est actionnable que si on sait ce qu'est « ça ».
+    # Pour un email transactionnel, le pied du modèle est conservé tel quel — il
+    # dit déjà la bonne chose (« ignorez cet email, votre mot de passe reste
+    # inchangé ») et n'a pas de désabonnement à offrir.
+    unsub_url = email_optout.unsubscribe_url(recipient, key)
+    footer_note = d.get("footer")
+    if unsub_url:
+        footer_note = ("Vous recevez cet email car vous êtes abonné aux "
+                       f"notifications « {email_optout.label_for(key)} ».")
+
     html = render_email_html(
-        title=title, body_html=intro, cta=cta, footer_note=d.get("footer"),
+        title=title, body_html=intro, cta=cta, footer_note=footer_note,
+        unsubscribe_url=unsub_url,
     )
 
     # Version texte (fallback).
@@ -500,4 +521,10 @@ def build_email(key: str, context: dict, subject: str = None, body: str = None) 
     text_lines = [title, "", text_body]
     if link:
         text_lines += ["", str(link)]
+    # La version texte porte le même recours que la version HTML : un client
+    # mail en texte seul ne doit pas être un client mail dont on ne peut pas se
+    # désabonner.
+    if unsub_url:
+        text_lines += ["", "--", footer_note,
+                       f"Ne plus recevoir ce type de notification : {unsub_url}"]
     return subj, html, "\n".join(text_lines)

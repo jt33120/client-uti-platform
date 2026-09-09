@@ -841,7 +841,7 @@ def _send_reset_email(to_email: str, reset_url: str, cle: str = "password_reset"
     # Sujet + corps + coquille via la source unique (= aperçu admin fidèle).
     context = {"link": reset_url}
     context.update(contexte_sup or {})
-    subject, html, text = email_templates.build_email(cle, context)
+    subject, html, text = email_templates.build_email(cle, context, recipient=to_email)
     # Via la file : un échec SMTP transitoire perdait définitivement le lien, et
     # l'utilisateur restait bloqué sans recours. La file réessaie, et l'envoyeur
     # tourne toutes les 20 s — le délai reste sous le seuil de perception d'un

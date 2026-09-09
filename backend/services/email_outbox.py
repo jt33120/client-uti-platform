@@ -25,6 +25,7 @@ from typing import Optional
 from services.supabase_client import supabase
 from services.error_log import record as _record_err
 from services import email as email_service
+from services import email_optout
 
 #: Lignes traitées par tick. Le planificateur tourne toutes les heures ; le lot
 #: doit rester envoyable bien en dessous de cette fenêtre.
@@ -67,6 +68,12 @@ def enqueue(
     Le conflit d'unicité est donc un SUCCÈS silencieux, pas une erreur.
     """
     if not to_email:
+        return None
+    # Un destinataire désabonné de ce type de notification n'entre PAS dans la
+    # file. Filtrer ici plutôt qu'au dépilage évite d'écrire une ligne dont le
+    # seul destin est d'être annulée, et garde le journal de la file lisible :
+    # ce qu'il contient est ce qui devait partir.
+    if email_optout.is_blocked(to_email, template_key):
         return None
     row = {
         "to_email": to_email,
@@ -191,11 +198,17 @@ def process_outbox(now: Optional[datetime] = None) -> dict:
     with email_service.SmtpSession() as session:
         for row in rows:
             try:
+                # L'en-tête List-Unsubscribe est RECALCULÉ ici, pas stocké
+                # dans la ligne : le jeton est déterministe à partir de
+                # (adresse, catégorie), et le recalculer garde les lignes déjà
+                # en file cohérentes avec la clé de signature courante.
                 msg = email_service.build_message(
                     row["to_email"], row["subject"], row["html"],
                     text=row.get("text"),
                     reply_to=row.get("reply_to"),
                     to_name=row.get("to_name"),
+                    unsubscribe_url=email_optout.unsubscribe_url(
+                        row["to_email"], row.get("template_key")),
                 )
                 ok, err = session.send(msg)
             except Exception as e:  # noqa: BLE001 - message malformé, encodage…

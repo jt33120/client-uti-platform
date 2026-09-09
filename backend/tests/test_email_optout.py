@@ -191,3 +191,44 @@ def test_aucun_en_tete_sur_un_email_transactionnel(expediteur):
     msg = build_message("marc@exemple.fr", "Mot de passe", "<p>x</p>")
     assert msg["List-Unsubscribe"] is None
     assert msg["List-Unsubscribe-Post"] is None
+
+
+# ── Un lien qui échoue doit rester lisible ─────────────────────────────────
+#
+# La route est ouverte depuis une boîte mail par quelqu'un qui ne veut plus
+# recevoir d'emails. Le pire résultat possible n'est pas un refus, c'est un
+# refus ILLISIBLE : un corps JSON de FastAPI est un cul-de-sac, et le geste
+# suivant est le bouton « Spam », qui coûte au domaine d'envoi entier.
+#
+# Une contrainte déclarée sur le paramètre de requête (min_length, max_length)
+# fait refuser FastAPI en 422 AVANT le handler, donc en JSON. Ces tests
+# interdisent que la contrainte revienne.
+
+def _client():
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from routers import emails
+    app = FastAPI()
+    app.include_router(emails.router)
+    return TestClient(app)
+
+
+@pytest.mark.parametrize("url,cas", [
+    ("/emails/unsubscribe", "jeton absent"),
+    ("/emails/unsubscribe?token=", "jeton vide"),
+    ("/emails/unsubscribe?token=court", "jeton trop court"),
+    ("/emails/unsubscribe?token=" + "x" * 40, "jeton invalide"),
+    ("/emails/unsubscribe?token=" + "x" * 9000, "jeton absurdement long"),
+])
+def test_un_lien_invalide_rend_une_page_lisible(url, cas):
+    r = _client().get(url)
+    assert r.status_code == 400, f"{cas} : 422 = refus de FastAPI avant le handler"
+    assert "text/html" in r.headers["content-type"], f"{cas} : corps illisible"
+    assert "Lien invalide" in r.text
+
+
+def test_le_jeton_absurdement_long_est_refuse_sans_etre_decode():
+    """Le plafond protège PyJWT, mais rend la page — pas un 422."""
+    from routers import emails
+    ok, titre, _ = emails._desabonner("x" * (emails.JETON_MAX + 1), source="lien")
+    assert not ok and titre == "Lien invalide"

@@ -69,10 +69,28 @@ ALTER TABLE public.email_optouts ENABLE ROW LEVEL SECURITY;
 -- ici, sous la forme d'un lien de désabonnement qui échoue pour tout le monde.
 --
 -- ALTER DEFAULT PRIVILEGES couvre ce cas, mais UNIQUEMENT pour les objets créés
--- par uti_admin. Cette migration doit donc être jouée en tant qu'uti_admin :
+-- par uti_admin.
 --
---   PGPASSWORD=… psql -h 127.0.0.1 -U uti_admin -d uti \
---     -v ON_ERROR_STOP=1 -f backend/migrations/0021_email_optouts.sql
+-- ⚠️ OÙ JOUER CE FICHIER : DANS LA BASE QUE LE BACKEND LIT, pas dans celle qui
+-- porte le même nom que le projet. Au 9 septembre 2026, `backend/.env` de
+-- production porte encore SUPABASE_URL=https://….supabase.co : la base servie
+-- est SUPABASE. Cette migration a d'abord été jouée sur le PostgreSQL du VPS —
+-- une base réelle, complète, et que rien ne lit. La table existait, et le lien
+-- de désabonnement échouait quand même. Vérifier AVANT :
+--
+--   grep '^SUPABASE_URL=' ~/app/backend/.env
+--
+--   • …supabase.co     → éditeur SQL de la console Supabase. `service_role` y
+--                        existe et porte le contournement de RLS : le fichier
+--                        passe tel quel.
+--   • …127.0.0.1:8080  → sur le VPS, PAR LA SOCKET UNIX. Il n'existe AUCUN mot
+--                        de passe de base (install_db.sh installe une
+--                        authentification « peer » avec correspondance) : ni
+--                        PGPASSWORD, ni -h, qui forceraient TCP puis scram.
+--
+--       ssh -p 1622 julian.talou@164.132.44.212
+--       psql -U uti_admin -d uti -v ON_ERROR_STOP=1 \
+--         -f ~/app/backend/migrations/0021_email_optouts.sql
 --
 -- Le GRANT explicite ci-dessous est une ceinture en plus des bretelles : il rend
 -- la table utilisable même si quelqu'un joue ce fichier en tant que `postgres`,

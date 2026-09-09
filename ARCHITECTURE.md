@@ -1,9 +1,23 @@
 # ARCHITECTURE — cartographie de la plateforme
 
 > Ce document décrit **ce qui existe**, pas ce qui est prévu. Chaque affirmation
-> renvoie au fichier qui la porte. Quand une chose n'est pas vérifiable depuis le
-> dépôt — parce qu'elle vit dans un `.env` sur le VPS — c'est dit explicitement,
-> avec la commande qui tranche.
+> renvoie au fichier qui la porte.
+>
+> **Il distingue partout deux choses que le dépôt confond :** ce qui est
+> INSTALLÉ sur le VPS, et ce qui est BRANCHÉ en production. Le VPS porte une
+> pile de base de données complète, réglée et sauvegardée — que rien ne lit. La
+> première version de ce document les mélangeait et affirmait une bascule qui
+> n'a pas eu lieu.
+>
+> **État mesuré le 9 septembre 2026**, `.env` du VPS lu et base de production
+> interrogée :
+>
+> | | Où | Comment on le sait |
+> |---|---|---|
+> | Base de données | **Supabase**, projet `zeaqvlbimsstzgiabvrr` | `SUPABASE_URL` dans `~/app/backend/.env` |
+> | Fichiers | **Supabase Storage** — 38 objets, 15,3 Mo | `STORAGE_BACKEND` **absent** du `.env` → défaut `"supabase"` |
+> | Backend | VPS OVH | `frontend/vercel.json:5` |
+> | PostgreSQL 18 + PostgREST du VPS | installés, **débranchés** | aucune requête ne les atteint |
 >
 > Pour les procédures d'exploitation : `RUNBOOK.md`.
 > Pour l'histoire de la sortie de Supabase : `BASCULE.md`.
@@ -39,24 +53,25 @@
                                    │  ├─ 22 routeurs           │
                                    │  ├─ scheduler (1 h)       │
                                    │  └─ outbox e-mail (20 s)  │
-                                   └──────┬──────────────┬─────┘
-                                          │              │
-              ┌───────────────────────────┘              └────────────┐
-              ▼                                                       ▼
-  ┌───────────────────────────┐                        ┌──────────────────────┐
-  │ nginx 127.0.0.1:8080      │                        │ /var/lib/uti/files   │
-  │   /rest/v1/ → :3000/      │                        │ (0700 julian.talou)  │
-  └────────────┬──────────────┘                        │  cvs/ avatars/       │
-               ▼                                       │  ao-sources/         │
-  ┌───────────────────────────┐                        │  compliance/         │
-  │ PostgREST 127.0.0.1:3000  │                        │  email-assets/       │
-  │ systemd: postgrest        │                        └──────────────────────┘
-  └────────────┬──────────────┘
-               ▼ socket UNIX
-  ┌───────────────────────────┐
-  │ PostgreSQL 18 — base uti  │
-  │ 4 rôles, RLS, peer auth   │
-  └───────────────────────────┘
+                                   └─────────────┬─────────────┘
+                                                 │ HTTPS sortant
+                                                 ▼
+                                   ╔═══════════════════════════╗
+                                   ║  SUPABASE                 ║
+                                   ║  projet zeaqvlbimsstzgi…  ║
+                                   ║  ├─ PostgreSQL — 24 tables║
+                                   ║  ├─ Storage — 38 objets   ║
+                                   ║  └─ auth.* (GoTrue, MORT) ║
+                                   ╚═══════════════════════════╝
+
+  ┄┄┄ SUR LE MÊME VPS, INSTALLÉ MAIS DÉBRANCHÉ ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄
+  ┊ nginx 127.0.0.1:8080  →  PostgREST :3000  →  PostgreSQL 18 (base « uti »)┊
+  ┊ /var/lib/uti/files (0700)                                                ┊
+  ┊ uti-backup.timer · uti-restore-drill.timer · uti-supervision.timer       ┊
+  ┊                                                                          ┊
+  ┊ Rien n'y accède. La base « uti » contient une restauration du 26 août.    ┊
+  ┊ Bascule scriptée : backend/scripts/bascule.sh                            ┊
+  ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄
 
   TIERS SORTANTS (aucun n'entre) :
    OpenRouter (LLM) · Mistral (repli) · SMTP Resend · OVH Object Storage (sauvegardes)
@@ -75,13 +90,19 @@ seule origine, celle de Vercel — c'est aussi ce qui fait que le CSP du front
 | Plan | Ce qui y tourne | Qui paie | Qui redéploie |
 |---|---|---|---|
 | **Vercel** | frontend statique React (build Vite) | compte Vercel `julian-talous-projects` | push sur `master` → build automatique |
-| **VPS OVH** | backend, base, fichiers, sauvegardes, supervision | compte OVH **du client** | `bash ~/app/backend/deploy.sh` |
-| **Tiers** | LLM, SMTP, observabilité, dépôt hors-site | comptes API dédiés | — |
+| **VPS OVH** | **le backend** — et, débranchée, toute la pile base de données | compte OVH **du client** | `bash ~/app/backend/deploy.sh` |
+| **Supabase** | **la base (24 tables) et les fichiers (38 objets)** | offre de base, gratuite | migrations jouées à la main dans l'éditeur SQL |
+| **Tiers** | LLM, SMTP, observabilité | comptes API dédiés | — |
 
 Un seul VPS, un seul worker uvicorn, une seule base. **Il n'y a pas de
-redondance** : c'est un choix assumé au volume actuel (16 Mo de base, ~38
-fichiers, ~50 Mo), documenté avec ses seuils de bascule dans
+redondance** : c'est un choix assumé au volume actuel (16 Mo de base, 38
+fichiers, 15,3 Mo), documenté avec ses seuils de bascule dans
 `backend/deploy/backup_db.sh` et `backend/nginx.conf`.
+
+**Le VPS ne porte donc AUCUNE donnée de production aujourd'hui** — seulement le
+processus qui les sert. C'est ce qui rend la bascule étroite (deux lignes de
+`.env`) et c'est aussi ce qui rend le dispositif de sauvegarde du VPS inopérant
+sur la production : voir §11.
 
 ---
 
@@ -98,13 +119,22 @@ fichiers, ~50 Mo), documenté avec ses seuils de bascule dans
 5. La dépendance `get_current_user` décode le JWT **et re-vérifie l'état du
    compte en base** (cache 60 s) : une suspension prend effet en moins d'une
    minute au lieu d'attendre l'expiration du jeton à 3 h.
-6. Le routeur appelle `services/supabase_client.supabase` — qui est un client
-   **supabase-py pointé sur la façade PostgREST locale**, pas sur Supabase.
-7. **nginx :8080** traduit `/rest/v1/aos` en `/aos` (la barre oblique finale du
-   `proxy_pass` fait tout le travail) et transmet à **PostgREST :3000**.
-8. **PostgREST** ouvre la socket UNIX de **PostgreSQL** au nom du rôle
-   `authenticator`, qui bascule vers `service_role` selon le JWT.
+6. Le routeur appelle `services/supabase_client.supabase` — un client
+   **supabase-py**, dont la destination est décidée par la seule variable
+   `SUPABASE_URL`.
+7. **Aujourd'hui**, cette variable désigne `https://zeaqvlbimsstzgiabvrr.supabase.co` :
+   la requête sort du VPS en HTTPS et va chez Supabase, qui l'exécute sur son
+   PostgreSQL et répond.
+8. **Après bascule**, elle désignera `http://127.0.0.1:8080` : la requête ne
+   quittera plus la machine. La façade nginx traduira `/rest/v1/aos` en `/aos`
+   (la barre oblique finale du `proxy_pass` fait tout le travail), PostgREST
+   ouvrira la socket UNIX de PostgreSQL au nom du rôle `authenticator`, qui
+   bascule vers `service_role` selon le JWT.
 9. Le JSON remonte la même chaîne en sens inverse.
+
+**Le code est identique dans les deux cas.** C'est tout l'intérêt d'avoir gardé
+supabase-py comme simple client PostgREST : la destination est une ligne de
+configuration, pas une réécriture.
 
 ---
 
@@ -178,25 +208,61 @@ empêcher un lien de réinitialisation de partir.
 
 ---
 
-## 6. Base de données — le remplacement de Supabase
+## 6. Base de données — ce qui sert, et ce qui attend
 
-C'est la partie la plus importante à comprendre, parce que **le code parle
-toujours « supabase »** alors que Supabase n'est plus dans la boucle.
+### Ce qui sert : Supabase
 
-### Le montage
+**24 tables**, mesurées le 9 septembre 2026 dans le projet `zeaqvlbimsstzgiabvrr` :
+
+| Table | Lignes | | Table | Lignes |
+|---|---:|---|---|---:|
+| `audit_log` | 1 397 | | `partner_email_log` | 6 |
+| `ai_usage` | 428 | | `user_credentials` | **5** |
+| `consultants` | 26 | | `human_decision` | 3 |
+| `submissions` | 26 | | `pacs` | 2 |
+| `clients` | 21 | | `pac_clients`, `support_messages`, `scoring_config`, `app_settings` | 1 |
+| `matchings` | 19 | | `email_templates`, `client_reviews`, `partner_compliance_docs`, `email_optouts` | 0 |
+| `appels_offres` | 14 | | | |
+| `profiles`, `invitations` | 11 | | | |
+| `ao_consultant_state` | 12 | | | |
+| `partner_clients` | 9 | | | |
+| `email_outbox` | 8 | | | |
+
+Toutes ont la **RLS activée sans aucune policy** — le verrou décrit plus bas.
+Le schéma `auth` de GoTrue existe encore (`auth.users` : 11 lignes, `auth.sessions` :
+102) mais **plus aucun code ne le lit** : l'authentification maison utilise
+`user_credentials`. C'est du legacy à archiver puis supprimer, pas une dépendance.
+
+> **La dernière écriture dans cette base date du 26 août 2026 à 11 h 20** — et
+> c'était le script de migration des identifiants, pas un utilisateur. La
+> plateforme n'a servi personne depuis. C'est la meilleure fenêtre possible pour
+> basculer : il n'y a rien à perdre en route.
+
+### Ce qui attend : la pile du VPS
+
+Installée, réglée, sauvegardée — et reliée à rien. La base `uti` y contient une
+restauration datant du 26 août, plus la migration 0021 qui y a été jouée par
+erreur (elle visait la production).
 
 ```
 services/supabase_client.py     create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
         │                        ↓ supabase-py construit {URL}/rest/v1/<table>
-        ▼
-nginx 127.0.0.1:8080            /rest/v1/  →  proxy_pass http://127.0.0.1:3000/
-        │                        (la barre finale REMPLACE le préfixe)
-        ▼
-PostgREST 127.0.0.1:3000        sert les tables à la racine
-        │                        rôle authenticator → service_role selon le JWT
-        ▼
-PostgreSQL 18, base « uti »     socket UNIX, authentification peer
+        │
+        ├─ AUJOURD'HUI ────────▶ https://zeaqvlbimsstzgiabvrr.supabase.co/rest/v1/…
+        │
+        └─ APRÈS BASCULE ──────▶ http://127.0.0.1:8080/rest/v1/…
+                                        ▼
+        nginx 127.0.0.1:8080            /rest/v1/  →  proxy_pass http://127.0.0.1:3000/
+                │                        (la barre finale REMPLACE le préfixe)
+                ▼
+        PostgREST 127.0.0.1:3000        sert les tables à la racine
+                │                        rôle authenticator → service_role selon le JWT
+                ▼
+        PostgreSQL 18, base « uti »     socket UNIX, authentification peer
 ```
+
+La bascule d'une flèche à l'autre est scriptée en dix étapes vérifiées :
+`backend/scripts/bascule.sh` (`--dry-run` pour la voir sans rien changer).
 
 `backend/deploy/nginx-postgrest.conf` **n'existe que pour cette traduction** :
 supabase-py code en dur `rest_url = f"{SUPABASE_URL}/rest/v1"`, PostgREST n'a
@@ -293,15 +359,24 @@ vie courte, envoyés via la file d'e-mails.
 `backend/services/storage.py` — **trois backends derrière une seule interface**,
 choisis par `STORAGE_BACKEND` :
 
-| Valeur | Où vont les fichiers |
-|---|---|
-| `supabase` | Supabase Storage (historique) |
-| `s3` | OVH Object Storage via boto3 |
-| `local` | disque du VPS, sous `/var/lib/uti/files` |
+| Valeur | Où vont les fichiers | État |
+|---|---|---|
+| `supabase` | Supabase Storage | ✅ **ACTIF** — c'est le défaut, et `STORAGE_BACKEND` est absent du `.env` |
+| `s3` | OVH Object Storage via boto3 | ❌ piste **abandonnée** — le compte OVH appartient au client et l'accès n'a pas été obtenu |
+| `local` | disque du VPS, sous `/var/lib/uti/files` | 🔧 écrit, testé, **pas activé** |
 
 Les appelants ne voient que des noms logiques de « bucket » : `cvs`, `avatars`,
 `ao-sources`, `compliance`, `email-assets`. En S3 ce sont des préfixes de clé,
 en local des sous-répertoires.
+
+**Aujourd'hui, en production, il y a 38 objets pour 15,3 Mo dans trois buckets
+Supabase** : `avatars` (public), `cvs` (privé), `ao-sources` (privé).
+`compliance` et `email-assets` sont créés à la demande par le code et ne
+contiennent encore rien.
+
+> **Tout ce qui suit décrit le mode `local` — du code qui existe, qui est testé
+> (`tests/test_storage_local.py`, `tests/test_storage_acl.py`), et qui ne
+> s'exécute pas encore en production.** Il s'activera à la bascule.
 
 **Ce qui change vraiment en mode local**, c'est servir les fichiers privés.
 Supabase et S3 signent une URL que le navigateur ouvre directement. En local,
@@ -429,8 +504,25 @@ politique de conservation). Tests anti-biais dans `backend/tests/bias/`.
 
 ## 11. Sauvegardes, supervision, reprise
 
-Depuis que la base **et** les fichiers vivent sur le VPS, plus personne ne les
-sauvegarde à notre place. Le dispositif est dans `backend/deploy/` :
+> ### ⚠️ Le dispositif ne protège pas la production aujourd'hui
+>
+> `backend/deploy/backup_db.sh:86` sauvegarde la base `${PGDATABASE:-uti}` et
+> `:120` archive `/var/lib/uti/files`. **Les deux sont sur le VPS.** Or les
+> données de production sont chez Supabase (§6).
+>
+> Les sauvegardes horaires chiffrées, la répétition de restauration
+> hebdomadaire et la supervision gardent donc une **réplique figée au 26 août**,
+> pendant que les données vivantes sont ailleurs.
+>
+> Ce n'est pas « aucune sauvegarde » : Supabase fait les siennes, et c'était la
+> situation d'avant. Mais tout l'appareil construit en août surveille un décor,
+> et il ne deviendra réel qu'à la bascule. **C'est l'argument le plus fort pour
+> basculer** : le dispositif existe, il est éprouvé, il ne garde rien.
+>
+> Corollaire à ne pas manquer : supprimer le projet Supabase **avant** la
+> bascule effacerait la seule copie vivante des données.
+
+Le dispositif est dans `backend/deploy/` :
 
 | Unité systemd | Cadence | Ce qu'elle fait |
 |---|---|---|
@@ -523,48 +615,74 @@ production.
 
 ## 14. Ce qui reste de Supabase
 
-**Le mot, pas la chose.** Quatre couches, et elles n'en sont pas au même point :
+**Presque tout.** C'est la correction la plus importante de ce document : une
+première version affirmait « le mot, pas la chose ». La mesure dit l'inverse.
 
-| Couche | État | Comment on le sait |
+| Couche | État réel au 9 septembre 2026 | Comment on le sait |
 |---|---|---|
-| Supabase **Auth** (GoTrue) | ❌ mort | `routers/auth.py` lit `user_credentials`, aucun repli ; la façade renvoie 501 sur `/auth/v1/` |
-| Supabase **API/Postgres** | remplacé par PostgREST + PostgreSQL 18 | le code et l'infra sont en place ; **ce qui est réellement branché dépend de `SUPABASE_URL` dans le `.env` du VPS** (voir ci-dessous) |
-| Supabase **Storage** | remplacé par le disque du VPS | idem : dépend de `STORAGE_BACKEND` |
-| Le **nom** dans le code | ✅ toujours là | `supabase_client.py`, `SUPABASE_URL`, `supabase.table(...)` dans 42 fichiers |
+| Supabase **Auth** (GoTrue) | ❌ **mort** — seul point réellement sorti | `routers/auth.py` lit `user_credentials` (5 lignes en base), aucun repli. Le schéma `auth` survit avec 11 comptes que plus rien ne lit |
+| Supabase **Postgres** | ✅ **EN PRODUCTION** — 24 tables, toutes les données | `SUPABASE_URL="https://zeaqvlbimsstzgiabvrr.supabase.co"` dans `~/app/backend/.env` |
+| Supabase **Storage** | ✅ **EN PRODUCTION** — 38 objets, 15,3 Mo, 3 buckets | `STORAGE_BACKEND` **absent** du `.env` → défaut `"supabase"` (`config.py`) |
+| Le **nom** dans le code | présent, et pour l'instant exact | `supabase_client.py`, `SUPABASE_URL`, `supabase.table(...)` dans 42 fichiers |
 
-Garder le nom est **volontaire** : `supabase-py` est resté comme simple client
-HTTP PostgREST, ce qui a réduit la bascule à deux lignes de `.env` au lieu d'une
-réécriture de 42 fichiers. Le renommer un jour est un travail de confort, pas de
-correction.
+Garder `supabase-py` est **volontaire et payant** : il est utilisé comme simple
+client PostgREST, ce qui réduit la bascule à deux lignes de `.env` au lieu d'une
+réécriture de 42 fichiers et 405 sites d'appel.
 
-### Ce qui n'est pas vérifiable depuis le dépôt
+### Pourquoi il est encore là
 
-Deux lignes du `.env` de production décident de tout, et elles ne sont pas dans
-git. La dernière mesure écrite date du 26 août (`BASCULE.md` §0.1) et disait
-alors : base et fichiers **encore sur Supabase**, code prêt mais `.env` non
-basculé. Depuis, la migration `0021` a été appliquée à la base `uti` du VPS.
+Ce n'est pas un problème technique, et `BASCULE.md` §0.6 le dit :
 
-**La commande qui tranche :**
+> Il n'existe aucune destination de sauvegarde hors du VPS, et aucune
+> restauration n'a jamais été prouvée. Ce sont les conditions posées pour
+> supprimer Supabase. […] Mesuré le 26 août : `/var/backups/uti` **n'existait
+> pas**. Pas une sauvegarde, même locale, n'avait jamais abouti — et aucune
+> n'aurait pu.
+
+Les trois scripts appelaient `pg_dump`/`psql` **sans nommer le rôle
+PostgreSQL**, alors que l'installation impose une authentification `peer` avec
+correspondance. Puis, ce défaut corrigé, `uti_admin` s'est révélé sans aucun
+privilège sur les tables qu'il devait sauvegarder. Les deux ont été réparés dans
+le code le 26 août — et personne n'a relancé les scripts depuis.
+
+La chaîne complète tient en une phrase : **la bascule attendait des sauvegardes
+prouvées, les sauvegardes n'avaient jamais tourné, on les a réparées, et le
+chantier s'est arrêté là.**
+
+### La bascule, aujourd'hui
+
+Elle est plus étroite que ne le laisse croire la séquence « minute par minute »
+de `BASCULE.md` §4, parce que le backend n'a pas à bouger : il sert déjà tout le
+trafic depuis le VPS. Seules sa base et ses fichiers changent d'adresse.
+
+Elle est scriptée en dix étapes vérifiées, avec un contrôle bloquant entre
+chacune et un retour arrière :
 
 ```bash
-ssh -p 1622 julian.talou@164.132.44.212 \
-  'grep -E "^(SUPABASE_URL|STORAGE_BACKEND|PUBLIC_BASE_URL)=" ~/app/backend/.env'
+bash ~/app/backend/scripts/bascule.sh --dry-run    # ne modifie rien
+bash ~/app/backend/scripts/bascule.sh              # pour de vrai
+bash ~/app/backend/scripts/bascule.sh --rollback   # revient à Supabase
 ```
 
-Bascule complète attendue :
+| # | Étape | Ce qu'elle prouve avant de rendre la main |
+|---|---|---|
+| 0 | Préalables | outils, `pg_dump` ≥ 17, URI Supabase, espace disque, services actifs |
+| 1 | **Première sauvegarde réussie** | le marqueur `.dernier_succes` date de moins de 15 min — c'est la condition qui bloque depuis août |
+| 2 | Archive « avant » | `sha256sum -c` passe, ≥ 24 CSV produits |
+| 3 | Copie des 38 objets | les fichiers sont sur le disque, en 0700 |
+| 4 | Réécriture des URLs **dans Supabase** | plus aucune URL `supabase.co` dans les 4 colonnes concernées |
+| 5 | Archive « après » | c'est elle qui sert de source de chargement |
+| 6 | Chargement dans `uti_verif` | 24 tables, et toutes appartiennent à `uti_admin` |
+| 7 | Comparaison puis promotion | comptages identiques table par table, puis PostgREST répond 401 |
+| 8 | Les trois lignes de `.env` | plus aucune référence `supabase.co` |
+| 9 | `deploy.sh` | les trois sondes, avec rollback automatique |
+| 10 | `post_bascule_check.sh` | les contrôles d'après-bascule |
 
-```
-SUPABASE_URL=http://127.0.0.1:8080
-STORAGE_BACKEND=local
-PUBLIC_BASE_URL=https://vps-cc93f2a8.vps.ovh.net
-```
+L'ordre n'est pas négociable : les fichiers et les URLs se migrent **pendant que
+`.env` désigne encore Supabase**, sinon le script réécrirait la base neuve et les
+38 objets deviendraient introuvables (`scripts/migrate_storage_to_ovh.py`).
 
-Puis, pour le reste de l'état :
-
-```bash
-bash ~/app/backend/scripts/post_bascule_check.sh   # sortie 0 = tout vert
-bash ~/app/backend/deploy/supervision.sh
-```
+### Ce qu'il faut savoir avant de supprimer le projet
 
 ### Les 12 critères de suppression du projet Supabase
 
@@ -593,7 +711,7 @@ bash ~/app/backend/deploy/supervision.sh
 | **`--workers 1`** | assumé | Plafond de charge. À lever : externaliser rate-limit et scheduler (Redis / worker dédié) **avant** d'ajouter des workers |
 | **Migrations appliquées à la main** | assumé | `check_schema_drift.py` détecte l'écart mais ne le corrige pas |
 | **Pas d'écran d'annulation de désabonnement** | ouvert | Aujourd'hui c'est un `delete` en base |
-| **Anciens `supabase_migration_*.sql` à la racine** | héritage | 28 fichiers doublonnant `backend/migrations/`. Ils ne sont plus la source de vérité |
+| **`supabase_*.sql` à la racine** | héritage | **Ils ne doublonnent rien** : les deux lignées sont disjointes (aucune table en commun). La racine a bâti 16 tables entre juillet et mi-août, `backend/migrations/` en a ajouté 8 sur **la même base**. Ils ne sont plus la source de vérité — `backend/migrations/schema.sql` le dit lui-même dans son en-tête — parce que leur ordre de dépendance n'est écrit nulle part et que l'ordre alphabétique perd six colonnes en silence |
 | **`README.md` / `DEPLOYMENT_OVH.md`** | périmés | Décrivent encore un projet Supabase et Railway |
 
 ---
@@ -615,7 +733,12 @@ backend/
     ai_ledger.py           ← coût réel des LLM
   migrations/              schema.sql + 0001…0021
   deploy/                  PostgreSQL, PostgREST, rôles, sauvegardes, supervision
-  scripts/                 bootstrap, contrôles, migrations de données
+  scripts/
+    bascule.sh             ← LA bascule Supabase → VPS, 10 étapes vérifiées
+    export_supabase_archive.sh   archive hors ligne (24 tables + 5 buckets)
+    migrate_storage_to_ovh.py    copie des fichiers + réécriture des URLs
+    post_bascule_check.sh        les contrôles d'après-bascule
+    bootstrap_admin.py           premier compte sur une base vierge
   tests/                   31 fichiers pytest
   deploy.sh                ← LE chemin de déploiement du backend
   nginx.conf               site public (certbot le réécrit)

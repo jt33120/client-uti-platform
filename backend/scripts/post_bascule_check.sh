@@ -49,13 +49,28 @@ code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$PGRST/auth/v1/token
 [ "$code" = "501" ] && ok "/auth/v1/ renvoie 501 (garde-fou GoTrue en place)" \
                     || ko "/auth/v1/ répond $code — la façade a changé, vérifier nginx-postgrest.conf"
 
-grep -q '^SUPABASE_URL=http://127.0.0.1:8080' "$BACKEND/.env" \
+# Guillemets TOLÉRÉS. Le .env de production écrit ses valeurs entre guillemets
+# (SUPABASE_URL="https://…") : un grep ancré sans eux déclarait rouge une
+# bascule parfaitement faite, pour une raison purement typographique.
+grep -qE '^SUPABASE_URL="?http://127\.0\.0\.1:8080"?$' "$BACKEND/.env" \
   && ok ".env pointe sur la base locale" \
   || ko ".env pointe encore ailleurs : $(grep '^SUPABASE_URL=' "$BACKEND/.env")"
 
-grep -q '^STORAGE_BACKEND=s3' "$BACKEND/.env" \
-  && ok "STORAGE_BACKEND=s3" \
-  || ko "STORAGE_BACKEND n'est pas à s3 — le stockage parle encore à Supabase"
+# `local`, PAS `s3`. Ce contrôle attendait « s3 » — la piste OVH Object Storage,
+# abandonnée faute d'accès au compte (BASCULE.md, « Pourquoi les fichiers vont
+# sur le disque du VPS »). Il aurait donc déclaré ROUGE la bascule correcte, le
+# jour où elle a lieu, et poussé à « corriger » vers un backend qu'on ne peut
+# pas provisionner. Un contrôle faux coûte plus cher que pas de contrôle.
+grep -qE '^STORAGE_BACKEND="?local"?$' "$BACKEND/.env" \
+  && ok "STORAGE_BACKEND=local (fichiers sur le disque du VPS)" \
+  || ko "STORAGE_BACKEND n'est pas à local — le stockage parle encore à Supabase"
+
+# PUBLIC_BASE_URL conditionne le DÉMARRAGE en mode local (config.py refuse de
+# booter sans elle) : si le backend tourne, elle est là. On la vérifie quand
+# même — ce script sert aussi à relire un .env avant de redémarrer.
+grep -qE '^PUBLIC_BASE_URL="?https://' "$BACKEND/.env" \
+  && ok "PUBLIC_BASE_URL posée (liens de CV et d'avatars absolus)" \
+  || ko "PUBLIC_BASE_URL absente — le backend refusera de démarrer en mode local"
 
 grep -qi 'supabase\.co' "$BACKEND/.env" \
   && ko "il reste une URL supabase.co dans .env : $(grep -i 'supabase\.co' "$BACKEND/.env" | cut -d= -f1 | tr '\n' ' ')" \

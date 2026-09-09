@@ -55,7 +55,15 @@ DEST="${1:?Usage: $0 <repertoire_destination> [--with-secrets]}"
 WITH_SECRETS="${2:-}"
 URI_FILE="${SUPABASE_URI_FILE:-$HOME/.supabase_db_uri}"
 
-# Les 22 tables applicatives, dans l'ordre de backend/migrations/schema.sql.
+# Les 24 tables applicatives.
+#
+# ⚠️ `user_credentials` et `email_optouts` manquaient à cette liste : elles
+# naissent des migrations 0019 et 0021, POSTÉRIEURES à schema.sql, et la liste
+# n'avait pas suivi. Le `pg_dump` ci-dessous les emportait (il prend le schéma
+# entier), mais les CSV — la partie relisible sans outil, celle qu'on conserve
+# APRÈS la suppression du projet — omettaient la table des mots de passe et
+# celle des désabonnements. Le contrôle « une table non déclarée doit être
+# remarquée » existait ; c'est la liste qui n'était plus à jour.
 # Liste EXPLICITE et non « toutes les tables du schéma » : une table qui
 # apparaîtrait sans être déclarée ici doit être remarquée, pas archivée en
 # silence.
@@ -65,6 +73,7 @@ TABLES=(
   human_decision invitations matchings pac_clients pacs
   partner_clients partner_compliance_docs partner_email_log profiles
   scoring_config submissions support_messages
+  user_credentials email_optouts
 )
 
 # Les cinq buckets réellement utilisés par le code. « compliance » et

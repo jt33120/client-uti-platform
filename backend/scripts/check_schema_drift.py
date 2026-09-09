@@ -9,13 +9,16 @@ COMMENT ÇA MARCHE
 
 Le script rejoue, sur une base jetable, tout le SQL versionné dans l'ordre :
 
-    supabase_schema.sql → supabase_migration_*.sql → backend/migrations/0*.sql
+    backend/migrations/schema.sql → backend/migrations/00NN_*.sql (NN >= 19)
 
 puis compare table par table et colonne par colonne avec la base de référence.
-Deux passes sur les migrations : les fichiers `supabase_migration_*.sql` sont
-joués par ordre alphabétique, qui n'est pas l'ordre de dépendance — certains
-ALTER portent sur une table créée par un fichier situé plus loin dans l'alphabet.
-La seconde passe les rattrape.
+
+`schema.sql` est le schéma consolidé : un seul fichier, un seul ordre, extrait
+d'une base réelle. Il remplace les ~46 fichiers de la racine
+(`supabase_schema.sql`, `supabase_migration_*.sql`), qui restent dans le dépôt
+pour l'historique et ne sont plus rejoués. Mais la consolidation s'arrête à la
+migration 0018 : tout ce qui a suivi doit être rejoué PAR-DESSUS, sinon la
+reconstruction est muette sur la moitié la plus récente du schéma.
 
 CE QU'IL TROUVE
 
@@ -96,25 +99,55 @@ def _with_dbname(dsn: str, dbname: str) -> str:
     return urlunsplit(parts._replace(path="/" + dbname))
 
 
-SCHEMA = REPO / "backend" / "migrations" / "schema.sql"
+MIGRATIONS = REPO / "backend" / "migrations"
+SCHEMA = MIGRATIONS / "schema.sql"
+
+#: Première migration NON incluse dans `schema.sql`.
+#:
+#: Le schéma consolidé a été extrait d'une base à jour des migrations 0001 à
+#: 0018 : on y retrouve `idx_clients_name` (0018) et la clé étrangère de 0017,
+#: mais pas `user_credentials` — son propre en-tête l'annonce, « ce fichier ne
+#: crée AUCUNE table d'identifiants », parce que l'authentification maison
+#: (0019) était encore à venir quand il a été produit.
+#:
+#: Rejouer 0001 à 0018 par-dessus serait au mieux redondant et au pire faux :
+#: c'est exactement l'ordre alphabétique bancal que la consolidation a supprimé.
+#: On rejoue donc `schema.sql`, puis ce qui l'a suivi, et rien d'autre.
+#:
+#: Le jour où `schema.sql` est ré-extrait d'une base à jour, remonter ce nombre
+#: au numéro de la première migration postérieure à l'extraction.
+PREMIERE_MIGRATION_HORS_SCHEMA = 19
+
+
+def _numero(chemin: Path) -> int:
+    """Numéro d'une migration `00NN_libelle.sql`, ou -1 si le nom ne s'y prête pas."""
+    tete = chemin.name.split("_", 1)[0]
+    return int(tete) if tete.isdigit() else -1
 
 
 def sql_files() -> list[Path]:
-    """Le SQL à rejouer pour reconstruire le schéma.
+    """Le SQL à rejouer pour reconstruire le schéma, dans l'ordre.
 
-    Depuis la consolidation, c'est UN fichier. Auparavant il fallait rejouer
-    ~46 fichiers dans un ordre que personne n'avait écrit, puis recommencer une
-    seconde fois pour rattraper les dépendances que l'ordre alphabétique
-    inversait — deux migrations altèrent `ao_consultant_state`, créée par un
-    fichier situé plus loin dans l'alphabet. Une reconstruction qui a besoin
-    d'être jouée deux fois pour être juste n'est pas une reconstruction fiable.
+    `schema.sql` d'abord, puis les migrations qu'il ne contient pas, triées par
+    NUMÉRO et non par nom — `0100_x.sql` doit passer après `0021_x.sql`, ce que
+    l'ordre lexicographique ferait déjà ici mais cesserait de faire au premier
+    changement de largeur de numérotation.
 
-    Les anciens fichiers restent dans le dépôt pour l'historique ; ils ne sont
-    plus la source de vérité et ne sont plus rejoués ici.
+    Cette liste se met à jour toute seule : une migration ajoutée demain est
+    rejouée sans que personne n'ait à se souvenir de ce fichier. C'est
+    volontaire — la version précédente ne rendait que `schema.sql`, et les
+    migrations 0019 et 0020 étaient donc signalées comme de la DÉRIVE depuis
+    leur écriture, c'est-à-dire toute l'authentification maison. Un contrôle qui
+    signale à tort finit par ne plus être lu.
     """
     if not SCHEMA.exists():
         sys.exit(f"Fichier de schéma introuvable : {SCHEMA}")
-    return [SCHEMA]
+    posterieures = sorted(
+        (f for f in MIGRATIONS.glob("0*.sql")
+         if _numero(f) >= PREMIERE_MIGRATION_HORS_SCHEMA),
+        key=_numero,
+    )
+    return [SCHEMA, *posterieures]
 
 
 def rebuild(scratch_dsn: str, dbname: str) -> set[str]:

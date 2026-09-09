@@ -711,7 +711,7 @@ L'ordre n'est pas négociable : les fichiers et les URLs se migrent **pendant qu
 | **`--workers 1`** | assumé | Plafond de charge. À lever : externaliser rate-limit et scheduler (Redis / worker dédié) **avant** d'ajouter des workers |
 | **Migrations appliquées à la main** | assumé | `check_schema_drift.py` détecte l'écart mais ne le corrige pas |
 | **Pas d'écran d'annulation de désabonnement** | ouvert | Aujourd'hui c'est un `delete` en base |
-| **`supabase_*.sql` à la racine** | héritage | **Ils ne doublonnent rien** : les deux lignées sont disjointes (aucune table en commun). La racine a bâti 16 tables entre juillet et mi-août, `backend/migrations/` en a ajouté 8 sur **la même base**. Ils ne sont plus la source de vérité — `backend/migrations/schema.sql` le dit lui-même dans son en-tête — parce que leur ordre de dépendance n'est écrit nulle part et que l'ordre alphabétique perd six colonnes en silence |
+| **`supabase_*.sql` à la racine** | héritage | Mesuré : la racine crée **16 tables**, les migrations numérotées `0001…0021` en créent **8 autres**, et ces deux ensembles-là ne se recoupent pas (16 + 8 = 24, le compte de la production). Mais `backend/migrations/schema.sql` **recrée les 16 de la racine** — c'est sa raison d'être : un instantané consolidé, extrait d'une base réelle puis vérifié objet par objet contre la production. C'est donc lui qu'on rejoue, et non les fichiers de la racine, dont l'ordre de dépendance n'est écrit nulle part et dont l'ordre alphabétique perd six colonnes en silence |
 | **`README.md` / `DEPLOYMENT_OVH.md`** | périmés | Décrivent encore un projet Supabase et Railway |
 
 ---

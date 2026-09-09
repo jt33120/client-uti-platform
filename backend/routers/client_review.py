@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
-from services.supabase_client import supabase
+from services.postgrest_client import db
 from services import storage, audit
 from services.ratelimit import rate_limit_public
 
@@ -47,7 +47,7 @@ def _load_review(token: str) -> dict:
     (revoked_at) ou expiré (expires_at passé). C'est ce lien qui définit le
     périmètre (ao_id) — jamais les paramètres du client."""
     try:
-        rows = supabase.table("client_reviews").select("*").eq("token", token).limit(1).execute().data or []
+        rows = db.table("client_reviews").select("*").eq("token", token).limit(1).execute().data or []
     except Exception:
         rows = []
     review = rows[0] if rows else None
@@ -61,12 +61,12 @@ def _presented_states(ao_id: str) -> list[dict]:
     sent_to_client_at est renseigné. C'est l'allowlist du token. Best-effort :
     repli sans les colonnes de retour client si elles ne sont pas encore migrées."""
     try:
-        rows = supabase.table("ao_consultant_state").select(
+        rows = db.table("ao_consultant_state").select(
             "consultant_id, sent_to_client_at, client_decision, client_decision_note"
         ).eq("ao_id", ao_id).execute().data or []
     except Exception:
         try:
-            rows = supabase.table("ao_consultant_state").select(
+            rows = db.table("ao_consultant_state").select(
                 "consultant_id, sent_to_client_at"
             ).eq("ao_id", ao_id).execute().data or []
         except Exception:
@@ -84,7 +84,7 @@ async def get_client_review(token: str):
     # Métadonnées AO (titre / référence / nom du client). Best-effort.
     ao_meta = {"title": None, "reference": None, "client_name": None}
     try:
-        ao = (supabase.table("appels_offres").select(
+        ao = (db.table("appels_offres").select(
             "title, reference, clients(name)"
         ).eq("id", ao_id).limit(1).execute().data or [None])[0]
         if ao:
@@ -101,7 +101,7 @@ async def get_client_review(token: str):
     names: dict = {}
     if cids:
         try:
-            for c in supabase.table("consultants").select("id, name").in_("id", cids).execute().data or []:
+            for c in db.table("consultants").select("id, name").in_("id", cids).execute().data or []:
                 names[c["id"]] = c.get("name")
         except Exception:
             names = {}
@@ -112,7 +112,7 @@ async def get_client_review(token: str):
         # URL signée FRAÎCHE (900s) du CV de la soumission la plus récente. Best-effort → null.
         cv_url = None
         try:
-            sub = (supabase.table("submissions").select("cv_url").eq(
+            sub = (db.table("submissions").select("cv_url").eq(
                 "ao_id", ao_id
             ).eq("consultant_id", cid).order("submitted_at", desc=True).limit(1).execute().data or [None])[0]
             if sub and sub.get("cv_url"):
@@ -165,7 +165,7 @@ async def respond_client_review(token: str, body: ClientDecisionRequest):
         "updated_at": now,
     }
     try:
-        supabase.table("ao_consultant_state").upsert(
+        db.table("ao_consultant_state").upsert(
             payload, on_conflict="ao_id,consultant_id"
         ).execute()
     except Exception as e:

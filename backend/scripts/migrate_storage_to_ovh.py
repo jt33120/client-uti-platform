@@ -53,7 +53,7 @@ except ImportError:
     pass
 
 from config import settings  # noqa: E402
-from services.supabase_client import supabase  # noqa: E402
+from services.postgrest_client import db  # noqa: E402
 
 from services import storage  # noqa: E402
 from services.storage import PUBLIC_BUCKETS  # noqa: E402
@@ -90,10 +90,25 @@ def _s3():
     )
 
 
+class BucketAbsent(RuntimeError):
+    """Le bucket n'existe pas côté Supabase — cas NORMAL, pas une panne.
+
+    « compliance » et « email-assets » ne sont créés qu'à la demande
+    (routers/partners.py, routers/email_templates.py) : tant qu'aucun document
+    n'a été déposé, ils n'existent pas. Sans cette distinction, la copie levait
+    sur le premier bucket absent et `main()` n'atteignait JAMAIS `rewrite_db()`
+    — c'est-à-dire la seule partie qui compte. Le script frère
+    (export_supabase_archive.sh) traite déjà ce cas explicitement.
+    """
+
+
 def _walk_supabase(bucket: str, prefix: str = "") -> list:
     """Recursively list every object path inside a Supabase bucket."""
     paths = []
-    entries = supabase.storage.from_(bucket).list(prefix) or []
+    try:
+        entries = db.storage.from_(bucket).list(prefix) or []
+    except Exception as exc:  # noqa: BLE001 - bucket absent, droits, réseau
+        raise BucketAbsent(str(exc)) from exc
     for entry in entries:
         name = entry["name"]
         child = f"{prefix}/{name}" if prefix else name
@@ -109,7 +124,11 @@ def migrate_files(dry_run: bool, vers: str) -> int:
     s3 = None if (dry_run or vers != "s3") else _s3()
     total = 0
     for bucket in BUCKETS:
-        paths = _walk_supabase(bucket)
+        try:
+            paths = _walk_supabase(bucket)
+        except BucketAbsent as exc:
+            print(f"\n[{bucket}] absent ou illisible ({exc}) — ignoré")
+            continue
         print(f"\n[{bucket}] {len(paths)} objet(s) à migrer")
         for path in paths:
             key = f"{bucket}/{path}"
@@ -117,7 +136,7 @@ def migrate_files(dry_run: bool, vers: str) -> int:
             if dry_run:
                 print(f"  DRY-RUN copierait → {key}  [{'privé' if prive else 'public'}]")
                 continue
-            data = supabase.storage.from_(bucket).download(path)
+            data = db.storage.from_(bucket).download(path)
             if vers == "local":
                 # local_write() plutôt qu'un open() maison : c'est elle qui
                 # valide le chemin (traversée) et impose 0600/0700 quel que soit
@@ -161,7 +180,19 @@ def _nouvelle_valeur(ancienne: str, bucket: str, vers: str) -> Optional[str]:
     déjà — storage._object_path() rend le chemin tel quel quand il n'y trouve
     pas de marqueur (routers/submissions.py:210, routers/partners.py:428).
     """
-    chemin = _chemin_objet(ancienne or "", bucket)
+    ancienne = ancienne or ""
+    if vers == "local" and bucket in PUBLIC_BUCKETS:
+        # DÉJÀ RÉÉCRITE : ne pas y toucher. Sans ce test, un second passage
+        # ré-encode le chemin déjà encodé — « mon avatar.png » devient
+        # « mon%20avatar.png » puis « mon%2520avatar.png », et l'image casse.
+        # Les buckets privés n'ont pas ce problème (chemin nu, aucun marqueur à
+        # retrouver, donc _chemin_objet renvoie None au second passage) ; les
+        # publics l'ont, parce que leur URL cible CONTIENT « /<bucket>/ » et se
+        # laisse donc re-découper indéfiniment.
+        deja = f"{(settings.public_base_url or '').rstrip('/')}/files/public/{bucket}/"
+        if ancienne.startswith(deja):
+            return None
+    chemin = _chemin_objet(ancienne, bucket)
     if not chemin:
         return None
     if vers == "local":
@@ -175,7 +206,7 @@ def _nouvelle_valeur(ancienne: str, bucket: str, vers: str) -> Optional[str]:
 
 def _reecrire_colonne(table: str, colonne: str, bucket: str, vers: str, dry_run: bool) -> int:
     """Réécrit `table.colonne` pour toutes les lignes qui portent encore une URL."""
-    lignes = supabase.table(table).select(f"id, {colonne}").execute().data or []
+    lignes = db.table(table).select(f"id, {colonne}").execute().data or []
     modifiees = 0
     for row in lignes:
         ancienne = row.get(colonne) or ""
@@ -183,7 +214,7 @@ def _reecrire_colonne(table: str, colonne: str, bucket: str, vers: str, dry_run:
         if nouvelle and nouvelle != ancienne:
             print(f"  {table} {row['id']}: → {nouvelle}")
             if not dry_run:
-                supabase.table(table).update({colonne: nouvelle}).eq("id", row["id"]).execute()
+                db.table(table).update({colonne: nouvelle}).eq("id", row["id"]).execute()
             modifiees += 1
     return modifiees
 
@@ -201,7 +232,7 @@ def _reecrire_modeles_email(vers: str, dry_run: bool) -> int:
     lien avec ce chantier.
     """
     motif = re.compile(r"https?://[^\s\"'<>)]+?/email-assets/([^\s\"'<>)?]+)")
-    lignes = supabase.table("email_templates").select("key, body").execute().data or []
+    lignes = db.table("email_templates").select("key, body").execute().data or []
     modifiees = 0
     for row in lignes:
         corps = row.get("body") or ""
@@ -213,7 +244,7 @@ def _reecrire_modeles_email(vers: str, dry_run: bool) -> int:
         if nouveau != corps:
             print(f"  email_templates {row['key']}: {len(motif.findall(corps))} image(s) réécrite(s)")
             if not dry_run:
-                supabase.table("email_templates").update({"body": nouveau}).eq(
+                db.table("email_templates").update({"body": nouveau}).eq(
                     "key", row["key"]
                 ).execute()
             modifiees += 1
@@ -269,14 +300,26 @@ def main() -> int:
     print(f"  Destination : [{args.vers}] {destination}")
     print(f"  Mode        : {'DRY-RUN' if args.dry_run else 'RÉEL'}")
 
-    copied = migrate_files(args.dry_run, args.vers)
-    print(f"\n{copied} fichier(s) copié(s).")
+    # La copie et la réécriture sont INDÉPENDANTES : une copie partielle ne doit
+    # pas empêcher la réécriture, qui est ce dont dépend l'application. L'échec
+    # est signalé par le code de sortie, jamais avalé.
+    souci = 0
+    try:
+        copied = migrate_files(args.dry_run, args.vers)
+        print(f"\n{copied} fichier(s) copié(s).")
+    except Exception as exc:  # noqa: BLE001
+        print(f"\n❌ Copie interrompue : {exc}")
+        souci = 1
 
     if args.rewrite_db:
-        rewrite_db(args.dry_run, args.vers)
+        try:
+            rewrite_db(args.dry_run, args.vers)
+        except Exception as exc:  # noqa: BLE001
+            print(f"❌ Réécriture interrompue : {exc}")
+            souci = 1
 
-    print("\n✅ Terminé.")
-    return 0
+    print("\n✅ Terminé." if not souci else "\n⚠️  Terminé AVEC ERREURS — relire ci-dessus.")
+    return souci
 
 
 if __name__ == "__main__":

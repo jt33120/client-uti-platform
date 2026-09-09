@@ -20,7 +20,7 @@ on double la prudence sur une opération destructive).
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from services.supabase_client import supabase
+from services.postgrest_client import db
 from services.app_settings import get_retention_settings
 from services.error_log import record as _record_err
 from services import storage
@@ -46,15 +46,15 @@ def _purge_one(sub: dict, now_iso: str) -> bool:
     #    optionnelle : si absente, on nettoie quand même le contenu).
     cleared = {"cv_url": None, "cv_filename": None, "cv_text": None, "cv_structured": None}
     try:
-        supabase.table("submissions").update({**cleared, "purged_at": now_iso}).eq("id", sid).execute()
+        db.table("submissions").update({**cleared, "purged_at": now_iso}).eq("id", sid).execute()
     except Exception:
-        supabase.table("submissions").update(cleared).eq("id", sid).execute()
+        db.table("submissions").update(cleared).eq("id", sid).execute()
     # 3. Retour client en texte libre (PII potentielle) sur la même paire (ao, consultant).
     #    Best-effort : colonne/table absente (migration en retard) → on ignore.
     ao_id, cid = sub.get("ao_id"), sub.get("consultant_id")
     if ao_id and cid:
         try:
-            supabase.table("ao_consultant_state").update(
+            db.table("ao_consultant_state").update(
                 {"client_decision_note": None}
             ).eq("ao_id", ao_id).eq("consultant_id", cid).execute()
         except Exception:
@@ -83,7 +83,7 @@ def _purge_consultant(cid: str, now_iso: str) -> bool:
         "latitude": None, "longitude": None,
         "cv_url": None, "cv_text": None, "cv_filename": None,
     }
-    supabase.table("consultants").update({**cleared, "purged_at": now_iso}).eq("id", cid).execute()
+    db.table("consultants").update({**cleared, "purged_at": now_iso}).eq("id", cid).execute()
     return True
 
 
@@ -96,7 +96,7 @@ def _process_consultants(now: datetime, cutoff: str) -> int:
     l'implémenter.
     """
     rows = (
-        supabase.table("consultants")
+        db.table("consultants")
         .select("id, created_at")
         .is_("purged_at", "null")
         .lt("created_at", cutoff)
@@ -114,7 +114,7 @@ def _process_consultants(now: datetime, cutoff: str) -> int:
     last_sub: dict[str, str] = {}
     try:
         subs = (
-            supabase.table("submissions")
+            db.table("submissions")
             .select("consultant_id, submitted_at")
             .in_("consultant_id", ids)
             .execute()
@@ -171,13 +171,13 @@ def retention_state(now: Optional[datetime] = None) -> dict:
             return None
 
     out["overdue_submissions"] = _count(
-        supabase.table("submissions").select("id", count="exact")
+        db.table("submissions").select("id", count="exact")
         .lt("submitted_at", cutoff)
         .or_("cv_url.not.is.null,cv_text.not.is.null")
         .limit(1)
     )
     out["overdue_consultants"] = _count(
-        supabase.table("consultants").select("id", count="exact")
+        db.table("consultants").select("id", count="exact")
         .is_("purged_at", "null")
         .lt("created_at", cutoff)
         .limit(1)
@@ -200,7 +200,7 @@ async def process_data_retention(now: datetime) -> dict:
         # toujours anciennes occupent en permanence la fenêtre des 200 plus vieilles
         # → la purge n'avancerait plus jamais dès qu'il y a ≥ _BATCH lignes sans CV.
         rows = (
-            supabase.table("submissions")
+            db.table("submissions")
             .select("id, cv_url, cv_text, submitted_at, ao_id, consultant_id")
             .lt("submitted_at", cutoff)
             .or_("cv_url.not.is.null,cv_text.not.is.null")

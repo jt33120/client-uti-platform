@@ -17,7 +17,7 @@ remplace toutes les `{clé}` présentes dans le contexte fourni.
 import re
 import html as _html
 from datetime import date, datetime
-from services.supabase_client import supabase
+from services.postgrest_client import db
 
 
 def format_date_fr(value) -> str:
@@ -312,7 +312,7 @@ DEFAULTS = {
 def _stored() -> dict:
     """Lignes stockées indexées par clé (best-effort : {} si table absente)."""
     try:
-        rows = supabase.table("email_templates").select("*").execute().data or []
+        rows = db.table("email_templates").select("*").execute().data or []
         return {r["key"]: r for r in rows}
     except Exception:
         return {}

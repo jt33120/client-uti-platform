@@ -27,7 +27,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from services.supabase_client import supabase
+from services.postgrest_client import db
 from services import passwords
 
 TABLE = "user_credentials"
@@ -138,7 +138,7 @@ def by_email(email: str) -> Optional[dict]:
     ouvrent le même compte, comme le faisait GoTrue.
     """
     return _first(
-        supabase.table(TABLE).select("*").eq("email", (email or "").strip().lower())
+        db.table(TABLE).select("*").eq("email", (email or "").strip().lower())
         .limit(1).execute()
     )
 
@@ -152,7 +152,7 @@ def by_user_id(user_id: str) -> Optional[dict]:
     changé d'adresse depuis. Chercher par identifiant ne peut pas se désynchroniser.
     """
     return _first(
-        supabase.table(TABLE).select("*").eq("user_id", user_id).limit(1).execute()
+        db.table(TABLE).select("*").eq("user_id", user_id).limit(1).execute()
     )
 
 
@@ -161,7 +161,7 @@ def by_reset_token_hash(token_hash: str) -> Optional[dict]:
     if not token_hash:
         return None
     return _first(
-        supabase.table(TABLE).select("*").eq("reset_token_hash", token_hash)
+        db.table(TABLE).select("*").eq("reset_token_hash", token_hash)
         .limit(1).execute()
     )
 
@@ -179,7 +179,7 @@ def existing_user_ids() -> set:
     d'échecs. Un appelant qui n'a besoin que de savoir « qui existe » ne doit
     pas se retrouver un secret entre les mains.
     """
-    rows = supabase.table(TABLE).select("user_id").execute().data or []
+    rows = db.table(TABLE).select("user_id").execute().data or []
     return {r["user_id"] for r in rows if r.get("user_id")}
 
 
@@ -195,7 +195,7 @@ def defined_user_ids() -> set:
     Sert à savoir qui reste à contacter : quelqu'un qui a cliqué une fois sur
     « mot de passe oublié » sans aller au bout doit rester dans la liste.
     """
-    rows = supabase.table(TABLE).select("user_id, password_defini").execute().data or []
+    rows = db.table(TABLE).select("user_id, password_defini").execute().data or []
     return {
         r["user_id"] for r in rows
         # Colonne absente (migration 0020 non appliquée) → on considère le mot
@@ -240,7 +240,7 @@ def create(user_id: str, email: str, password_hash: str, defini: bool = True) ->
     n'est alors connu de personne et la personne n'a rien choisi (cf. 0020).
     """
     now = datetime.now(timezone.utc).isoformat()
-    res = supabase.table(TABLE).insert({
+    res = db.table(TABLE).insert({
         "user_id": user_id,
         "email": (email or "").strip().lower(),
         "password_hash": password_hash,
@@ -278,7 +278,7 @@ def record_failure(row: dict, now: Optional[datetime] = None) -> None:
     incorrect » (401) en erreur serveur (500), ce qui distinguerait ce compte.
     """
     try:
-        supabase.table(TABLE).update(failure_patch(row, now)).eq(
+        db.table(TABLE).update(failure_patch(row, now)).eq(
             "user_id", row["user_id"]
         ).execute()
     except Exception as e:  # noqa: BLE001
@@ -288,7 +288,7 @@ def record_failure(row: dict, now: Optional[datetime] = None) -> None:
 def record_success(user_id: str) -> None:
     """Remet le compteur d'échecs à zéro. Best-effort, pour la même raison."""
     try:
-        supabase.table(TABLE).update(success_patch()).eq("user_id", user_id).execute()
+        db.table(TABLE).update(success_patch()).eq("user_id", user_id).execute()
     except Exception as e:  # noqa: BLE001
         print(f"[AUTH] remise à zéro du compteur impossible pour {user_id}: {e}")
 
@@ -301,7 +301,7 @@ def set_password(user_id: str, password_hash: str, now: Optional[datetime] = Non
     via `consume_reset`) n'a plus à purger la pénalité laissée par un tiers.
     """
     now = now or datetime.now(timezone.utc)
-    res = supabase.table(TABLE).update({
+    res = db.table(TABLE).update({
         "password_hash": password_hash,
         "password_changed_at": now.isoformat(),
         "failed_attempts": 0,
@@ -316,7 +316,7 @@ def set_password(user_id: str, password_hash: str, now: Optional[datetime] = Non
 
 def set_email(user_id: str, email: str) -> bool:
     """Change l'adresse de CONNEXION. Laisse remonter un doublon (23505 → 409)."""
-    res = supabase.table(TABLE).update({
+    res = db.table(TABLE).update({
         "email": (email or "").strip().lower(),
     }).eq("user_id", user_id).execute()
     return bool(res.data)
@@ -329,7 +329,7 @@ def issue_reset(user_id: str, token_hash: str, expires_at: datetime) -> bool:
     le dernier. Sinon chaque demande ajouterait une clé d'entrée supplémentaire
     au compte, pour une heure.
     """
-    res = supabase.table(TABLE).update({
+    res = db.table(TABLE).update({
         "reset_token_hash": token_hash,
         "reset_token_expires_at": expires_at.isoformat(),
     }).eq("user_id", user_id).execute()
@@ -350,7 +350,7 @@ def consume_reset(token_hash: str, password_hash: str, now: Optional[datetime] =
     Retourne True si le jeton a bien été consommé par CET appel.
     """
     now = now or datetime.now(timezone.utc)
-    res = supabase.table(TABLE).update({
+    res = db.table(TABLE).update({
         "password_hash": password_hash,
         "password_changed_at": now.isoformat(),
         # C'est ICI, et nulle part ailleurs, qu'un compte cesse d'être « en
@@ -377,7 +377,7 @@ def delete(user_id: str) -> int:
     effacées, table par table — un « effacement » sans décompte ne prouve rien.
     """
     try:
-        res = supabase.table(TABLE).delete().eq("user_id", user_id).execute()
+        res = db.table(TABLE).delete().eq("user_id", user_id).execute()
         return len(res.data or [])
     except Exception:  # noqa: BLE001
         return 0

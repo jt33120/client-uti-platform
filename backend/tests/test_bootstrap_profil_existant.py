@@ -98,14 +98,14 @@ def _charger_script():
 @pytest.fixture
 def script(monkeypatch):
     monkeypatch.syspath_prepend(str(BACKEND))
-    # `services.supabase_client` construit un vrai client PostgREST au
+    # `services.postgrest_client` construit un vrai client PostgREST au
     # chargement, et supabase-py refuse la clé de test (elle n'a pas la forme
     # d'un JWT). On pose un bouchon AVANT l'import : ce qui est vérifié ici est
     # la logique du script, pas le client. `services.credentials` est retiré du
     # cache pour qu'il se lie au bouchon et non à un client déjà importé.
-    bouchon = types.ModuleType("services.supabase_client")
-    bouchon.supabase = None
-    monkeypatch.setitem(sys.modules, "services.supabase_client", bouchon)
+    bouchon = types.ModuleType("services.postgrest_client")
+    bouchon.db = None
+    monkeypatch.setitem(sys.modules, "services.postgrest_client", bouchon)
     monkeypatch.delitem(sys.modules, "services.credentials", raising=False)
 
     module = _charger_script()
@@ -117,8 +117,8 @@ def _brancher(monkeypatch, script, client):
     """Le script et services.credentials tiennent chacun leur référence au client."""
     from services import credentials
 
-    monkeypatch.setattr(script, "supabase", client)
-    monkeypatch.setattr(credentials, "supabase", client)
+    monkeypatch.setattr(script, "db", client)
+    monkeypatch.setattr(credentials, "db", client)
 
 
 def _lancer(monkeypatch, script, argv):

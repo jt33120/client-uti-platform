@@ -6,7 +6,7 @@ compétences, puis on la **fusionne** dans `consultant.skills` sans jamais
 écraser une saisie manuelle.
 """
 from typing import Optional
-from services.supabase_client import supabase
+from services.postgrest_client import db
 from services.ai_matching import extract_features
 
 
@@ -29,7 +29,7 @@ async def extract_and_store_skills(consultant_id: str, *, only_if_empty: bool = 
     - only_if_empty : ne fait rien si des compétences sont déjà présentes
       (utilisé par le hook automatique à la soumission).
     """
-    c = supabase.table("consultants").select("id, skills").eq(
+    c = db.table("consultants").select("id, skills").eq(
         "id", consultant_id
     ).single().execute().data
     if not c:
@@ -37,7 +37,7 @@ async def extract_and_store_skills(consultant_id: str, *, only_if_empty: bool = 
     if only_if_empty and (c.get("skills") or "").strip():
         return c.get("skills") or ""
 
-    subs = supabase.table("submissions").select("cv_text, submitted_at").eq(
+    subs = db.table("submissions").select("cv_text, submitted_at").eq(
         "consultant_id", consultant_id
     ).order("submitted_at", desc=True).limit(5).execute().data or []
     cv_text = next((s["cv_text"] for s in subs if s.get("cv_text")), None)
@@ -46,7 +46,7 @@ async def extract_and_store_skills(consultant_id: str, *, only_if_empty: bool = 
 
     features, _cost = await extract_features(cv_text)
     merged = _merge_skills(c.get("skills"), features.get("skills") or [])
-    supabase.table("consultants").update({"skills": merged}).eq("id", consultant_id).execute()
+    db.table("consultants").update({"skills": merged}).eq("id", consultant_id).execute()
     return merged
 
 

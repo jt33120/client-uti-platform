@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form
 from fastapi.responses import Response
 from pydantic import BaseModel
 from typing import Optional, Literal
-from services.supabase_client import supabase
+from services.postgrest_client import db
 from services import storage, partner_compliance
 from routers.auth import get_current_user, require_admin, require_staff
 
@@ -27,12 +27,12 @@ async def list_partners(user: dict = Depends(require_staff)):
     """List all users with role='ao' (partners)."""
     try:
         try:
-            response = supabase.table("profiles").select(
+            response = db.table("profiles").select(
                 "id, email, name, role, status, created_at"
             ).eq("role", "ao").order("name").execute()
         except Exception:
             # 'status' column not migrated yet — degrade gracefully.
-            response = supabase.table("profiles").select(
+            response = db.table("profiles").select(
                 "id, email, name, role, created_at"
             ).eq("role", "ao").order("name").execute()
         return response.data
@@ -45,7 +45,7 @@ async def list_partners(user: dict = Depends(require_staff)):
 async def list_all_access(user: dict = Depends(require_staff)):
     """Return all partner_clients rows. Used to build the access matrix UI."""
     try:
-        response = supabase.table("partner_clients").select("*").execute()
+        response = db.table("partner_clients").select("*").execute()
         return response.data
     except Exception:
         # Détail loggé côté serveur ; réponse 500 générique (handler global).
@@ -62,21 +62,21 @@ async def list_clients_for_partner(partner_id: str, user: dict = Depends(require
     try:
         # Verify partner exists
         try:
-            partner = supabase.table("profiles").select("id, email, name, status, created_at").eq(
+            partner = db.table("profiles").select("id, email, name, status, created_at").eq(
                 "id", partner_id
             ).eq("role", "ao").single().execute()
         except Exception:
-            partner = supabase.table("profiles").select("id, email, name, created_at").eq(
+            partner = db.table("profiles").select("id, email, name, created_at").eq(
                 "id", partner_id
             ).eq("role", "ao").single().execute()
         if not partner.data:
             raise HTTPException(status_code=404, detail="Partenaire introuvable")
 
-        clients = supabase.table("clients").select(
+        clients = db.table("clients").select(
             "id, name, sector, logo_url, created_at"
         ).order("name").execute().data
 
-        access_rows = supabase.table("partner_clients").select("client_id, tier").eq(
+        access_rows = db.table("partner_clients").select("client_id, tier").eq(
             "partner_id", partner_id
         ).execute().data
 
@@ -99,17 +99,17 @@ async def upsert_access(body: AccessUpsert, user: dict = Depends(require_admin))
     """
     try:
         # Check if row exists
-        existing = supabase.table("partner_clients").select("id").eq(
+        existing = db.table("partner_clients").select("id").eq(
             "partner_id", body.partner_id
         ).eq("client_id", body.client_id).execute()
 
         if existing.data:
-            response = supabase.table("partner_clients").update({
+            response = db.table("partner_clients").update({
                 "tier": body.tier,
                 "assigned_by": user["sub"],
             }).eq("partner_id", body.partner_id).eq("client_id", body.client_id).execute()
         else:
-            response = supabase.table("partner_clients").insert({
+            response = db.table("partner_clients").insert({
                 "partner_id": body.partner_id,
                 "client_id": body.client_id,
                 "tier": body.tier,
@@ -131,19 +131,19 @@ async def apply_pac_to_partner(partner_id: str, pac_id: str, user: dict = Depend
     """
     try:
         # Verify partner exists and is an AO
-        partner = supabase.table("profiles").select("id").eq(
+        partner = db.table("profiles").select("id").eq(
             "id", partner_id
         ).eq("role", "ao").execute()
         if not partner.data:
             raise HTTPException(status_code=404, detail="Partenaire introuvable")
 
         # Verify PAC exists
-        pac = supabase.table("pacs").select("id, name").eq("id", pac_id).execute()
+        pac = db.table("pacs").select("id, name").eq("id", pac_id).execute()
         if not pac.data:
             raise HTTPException(status_code=404, detail="PAC introuvable")
 
         # Get PAC client rows
-        pac_clients = supabase.table("pac_clients").select("client_id, tier").eq(
+        pac_clients = db.table("pac_clients").select("client_id, tier").eq(
             "pac_id", pac_id
         ).execute().data
 
@@ -152,7 +152,7 @@ async def apply_pac_to_partner(partner_id: str, pac_id: str, user: dict = Depend
 
         # Get existing partner_clients rows for the clients in the PAC
         client_ids = [r["client_id"] for r in pac_clients]
-        existing = supabase.table("partner_clients").select("client_id").eq(
+        existing = db.table("partner_clients").select("client_id").eq(
             "partner_id", partner_id
         ).in_("client_id", client_ids).execute().data
         existing_set = {r["client_id"] for r in existing}
@@ -161,7 +161,7 @@ async def apply_pac_to_partner(partner_id: str, pac_id: str, user: dict = Depend
         to_insert = []
         for row in pac_clients:
             if row["client_id"] in existing_set:
-                supabase.table("partner_clients").update({
+                db.table("partner_clients").update({
                     "tier": row["tier"],
                     "assigned_by": user["sub"],
                 }).eq("partner_id", partner_id).eq("client_id", row["client_id"]).execute()
@@ -174,7 +174,7 @@ async def apply_pac_to_partner(partner_id: str, pac_id: str, user: dict = Depend
                 })
 
         if to_insert:
-            supabase.table("partner_clients").insert(to_insert).execute()
+            db.table("partner_clients").insert(to_insert).execute()
 
         return {
             "message": f"PAC « {pac.data[0]['name']} » appliqué",
@@ -191,7 +191,7 @@ async def apply_pac_to_partner(partner_id: str, pac_id: str, user: dict = Depend
 async def suspend_partner_globally(partner_id: str, user: dict = Depends(require_admin)):
     """Set all existing partner_clients rows for this partner to 'suspended'."""
     try:
-        supabase.table("partner_clients").update({
+        db.table("partner_clients").update({
             "tier": "suspended",
             "assigned_by": user["sub"],
         }).eq("partner_id", partner_id).execute()
@@ -205,7 +205,7 @@ async def suspend_partner_globally(partner_id: str, user: dict = Depends(require
 async def remove_access(partner_id: str, client_id: str, user: dict = Depends(require_admin)):
     """Remove a partner's access to a client entirely."""
     try:
-        supabase.table("partner_clients").delete().eq(
+        db.table("partner_clients").delete().eq(
             "partner_id", partner_id
         ).eq("client_id", client_id).execute()
         return {"message": "Accès retiré"}
@@ -221,7 +221,7 @@ async def update_partner(partner_id: str, body: PartnerUpdate, user: dict = Depe
     if len(name) < 2:
         raise HTTPException(status_code=422, detail="Le nom doit contenir au moins 2 caractères.")
     try:
-        response = supabase.table("profiles").update({"name": name}).eq(
+        response = db.table("profiles").update({"name": name}).eq(
             "id", partner_id
         ).eq("role", "ao").execute()
         if not response.data:
@@ -249,7 +249,7 @@ async def delete_partner(partner_id: str, user: dict = Depends(require_admin)):
     possible : il n'y a qu'une seule suppression, et elle est filtrée.
     """
     try:
-        supabase.table("profiles").delete().eq("id", partner_id).eq("role", "ao").execute()
+        db.table("profiles").delete().eq("id", partner_id).eq("role", "ao").execute()
         return {"message": "Partenaire supprimé"}
     except HTTPException:
         raise
@@ -276,7 +276,7 @@ _MAX_DOC_BYTES = 10 * 1024 * 1024
 
 def _load_docs(partner_id: str) -> list[dict]:
     try:
-        return supabase.table("partner_compliance_docs").select("*").eq(
+        return db.table("partner_compliance_docs").select("*").eq(
             "partner_id", partner_id
         ).order("issued_at", desc=True).execute().data or []
     except Exception:
@@ -299,13 +299,13 @@ async def compliance_overview(user: dict = Depends(require_staff)):
     précisément ce qu'on oublie de faire. D'où une vue agrégée.
     """
     try:
-        partners = supabase.table("profiles").select("id, name, email").eq(
+        partners = db.table("profiles").select("id, name, email").eq(
             "role", "ao"
         ).eq("status", "active").execute().data or []
     except Exception:
         partners = []
     try:
-        all_docs = supabase.table("partner_compliance_docs").select("*").execute().data or []
+        all_docs = db.table("partner_compliance_docs").select("*").execute().data or []
     except Exception:
         all_docs = []
 
@@ -375,7 +375,7 @@ async def upload_compliance_doc(
             record["filename"] = safe
 
     try:
-        created = supabase.table("partner_compliance_docs").insert(record).execute().data
+        created = db.table("partner_compliance_docs").insert(record).execute().data
     except Exception:
         raise HTTPException(status_code=500, detail="Enregistrement de la pièce impossible.")
     return (created or [{}])[0]
@@ -404,7 +404,7 @@ async def verify_compliance_doc(
     if body.authenticity_ref:
         patch["authenticity_ref"] = body.authenticity_ref.strip()[:64]
     try:
-        supabase.table("partner_compliance_docs").update(patch).eq(
+        db.table("partner_compliance_docs").update(patch).eq(
             "id", doc_id
         ).eq("partner_id", partner_id).execute()
     except Exception:
@@ -416,7 +416,7 @@ async def verify_compliance_doc(
 async def get_compliance_file(partner_id: str, doc_id: str, user: dict = Depends(require_staff)):
     """Octets de la pièce, servis par le backend (bucket privé)."""
     try:
-        doc = supabase.table("partner_compliance_docs").select(
+        doc = db.table("partner_compliance_docs").select(
             "file_url, filename"
         ).eq("id", doc_id).eq("partner_id", partner_id).single().execute().data
     except Exception:

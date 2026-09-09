@@ -60,7 +60,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from config import settings                          # noqa: E402
-from services.supabase_client import supabase        # noqa: E402
+from services.postgrest_client import db        # noqa: E402
 from services import credentials, email_outbox, email_templates, passwords  # noqa: E402
 
 #: Validité du lien, en jours. Sans rapport avec l'heure d'un « mot de passe
@@ -81,7 +81,7 @@ def _validite_humaine(jours: int) -> str:
 
 
 def _profils(email_cible: str | None, inclure_suspendus: bool) -> list[dict]:
-    req = supabase.table("profiles").select("id, email, name, role, status")
+    req = db.table("profiles").select("id, email, name, role, status")
     if email_cible:
         # `ilike` sans joker : égalité insensible à la casse. `profiles.email`
         # conserve la casse d'origine, une comparaison exacte raterait

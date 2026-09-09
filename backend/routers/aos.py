@@ -3,7 +3,7 @@ from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, BackgroundTasks
 from pydantic import BaseModel, Field
 from typing import Optional
-from services.supabase_client import supabase
+from services.postgrest_client import db
 from services.cv_parser import extract_text_from_pdf, extract_text_from_docx, extract_text_from_xlsx
 from services import ao_drafter, storage, notifications, ai_ledger
 from services.app_settings import get_notification_settings
@@ -50,14 +50,14 @@ def _sources_with_urls(items: Optional[list]) -> list:
 async def _generate_and_store_summary(ao_id: str):
     """Tâche de fond : génère le résumé IA d'un AO et le stocke (best-effort)."""
     try:
-        ao = supabase.table("appels_offres").select("*").eq("id", ao_id).single().execute().data
+        ao = db.table("appels_offres").select("*").eq("id", ao_id).single().execute().data
         if not ao:
             return
         summary = await ao_drafter.summarize_ao(ao)
         if not summary:
             return
         try:
-            supabase.table("appels_offres").update({"ai_summary": summary}).eq("id", ao_id).execute()
+            db.table("appels_offres").update({"ai_summary": summary}).eq("id", ao_id).execute()
         except Exception:
             pass  # colonne ai_summary pas encore migrée
     except Exception as e:
@@ -74,7 +74,7 @@ async def _geocode_and_store_ao(ao_id: str, location: Optional[str], work_mode: 
         if not geo:
             return
         try:
-            supabase.table("appels_offres").update(
+            db.table("appels_offres").update(
                 {"latitude": geo["latitude"], "longitude": geo["longitude"]}
             ).eq("id", ao_id).execute()
         except Exception:
@@ -169,7 +169,7 @@ def _accessible_client_ids(user: dict) -> Optional[list[str]]:
     """
     if is_staff(user):
         return None
-    access = supabase.table("partner_clients").select("client_id").eq(
+    access = db.table("partner_clients").select("client_id").eq(
         "partner_id", user["sub"]
     ).in_("tier", ["list_1", "list_2"]).execute()
     return [row["client_id"] for row in (access.data or [])]
@@ -187,7 +187,7 @@ def _looks_like_missing_archive(err: Exception) -> bool:
 def _responded_ao_ids(uid: str) -> list[str]:
     """ao_id distincts auxquels ce partenaire a soumis au moins un CV (historique)."""
     try:
-        rows = supabase.table("submissions").select("ao_id").eq(
+        rows = db.table("submissions").select("ao_id").eq(
             "submitted_by", uid).execute().data or []
     except Exception:  # noqa: BLE001
         return []
@@ -213,7 +213,7 @@ def _looks_like_missing_draft(err: Exception) -> bool:
 def _winner_submitters(ao_id: str) -> set:
     """profiles.id des partenaires ayant répondu à cet AO (= submitted_by valides)."""
     try:
-        rows = supabase.table("submissions").select("submitted_by").eq("ao_id", ao_id).execute().data or []
+        rows = db.table("submissions").select("submitted_by").eq("ao_id", ao_id).execute().data or []
     except Exception:  # noqa: BLE001
         return set()
     return {r["submitted_by"] for r in rows if r.get("submitted_by")}
@@ -344,14 +344,14 @@ async def create_ao(body: AOCreate, background_tasks: BackgroundTasks, user: dic
         }
         overrides = _overrides_for_storage(body.scoring_overrides)
         try:
-            response = supabase.table("appels_offres").insert(
+            response = db.table("appels_offres").insert(
                 {**record, "scoring_overrides": overrides}
             ).execute()
         except Exception:
             # Colonnes récentes (scoring_overrides / work_mode / reference / langue_requise
             # / is_draft) pas migrées : on retire les optionnelles et on réessaie.
             slim = {k: v for k, v in record.items() if k not in ("work_mode", "reference", "langue_requise", "is_draft")}
-            response = supabase.table("appels_offres").insert(slim).execute()
+            response = db.table("appels_offres").insert(slim).execute()
         ao = response.data[0]
         # Matching (recommandations vivier) SEULEMENT pour un AO publié — un
         # brouillon n'est pas matché tant qu'il n'est pas publié.
@@ -386,7 +386,7 @@ async def list_aos(view: str = "active", user: dict = Depends(get_current_user))
     if view in ("archived", "draft") and role == "ao":
         return []
 
-    q = supabase.table("appels_offres").select(
+    q = db.table("appels_offres").select(
         "*, clients(id, name, sector, logo_url), submissions(count)"
     ).order("created_at", desc=True)
 
@@ -438,7 +438,7 @@ async def list_aos(view: str = "active", user: dict = Depends(get_current_user))
         ao_ids = [a["id"] for a in aos if a.get("id")]
         potential: dict = {}
         if ao_ids:
-            rows = supabase.table("matchings").select(
+            rows = db.table("matchings").select(
                 "ao_id, score_total, score_hybride"
             ).in_("ao_id", ao_ids).execute().data or []
             for r in rows:
@@ -455,7 +455,7 @@ async def list_aos(view: str = "active", user: dict = Depends(get_current_user))
 
     # Attach the partner's tier per client
     if role == "ao":
-        access = supabase.table("partner_clients").select("client_id, tier").eq(
+        access = db.table("partner_clients").select("client_id, tier").eq(
             "partner_id", uid
         ).execute().data or []
         tiers = {row["client_id"]: row["tier"] for row in access}
@@ -478,13 +478,13 @@ async def ao_pipeline(user: dict = Depends(require_staff)):
         # Publiés uniquement (is_draft=false), et : actifs + tout AO CLÔTURÉ (bilan
         # posé) même archivé — sinon les colonnes terminales Gagné/Perdu resteraient
         # vides, l'issue étant souvent posée APRÈS l'auto-archivage à l'échéance.
-        aos = supabase.table("appels_offres").select(_cols_full).eq("is_draft", False).or_(
+        aos = db.table("appels_offres").select(_cols_full).eq("is_draft", False).or_(
             "archived.eq.false,ao_outcome.not.is.null").order("created_at", desc=True).execute().data or []
     except Exception as e:  # noqa: BLE001
         # Migration 0004/0005 non appliquée : dégradation propre -> AO actifs seuls
         # (issue/brouillon traités comme absents). Jamais de 500.
         if _looks_like_missing_outcome(e) or _looks_like_missing_draft(e):
-            aos = supabase.table("appels_offres").select(_cols_slim).eq(
+            aos = db.table("appels_offres").select(_cols_slim).eq(
                 "archived", False).order("created_at", desc=True).execute().data or []
         else:
             raise
@@ -494,7 +494,7 @@ async def ao_pipeline(user: dict = Depends(require_staff)):
     states: dict[str, dict] = {}
     if ao_ids:
         try:
-            rows = supabase.table("ao_consultant_state").select(
+            rows = db.table("ao_consultant_state").select(
                 "ao_id, sent_to_client_at, deal_status").in_("ao_id", ao_ids).execute().data or []
         except Exception:  # noqa: BLE001
             rows = []
@@ -510,7 +510,7 @@ async def ao_pipeline(user: dict = Depends(require_staff)):
     winner_names: dict = {}
     if winner_ids:
         try:
-            for p in supabase.table("profiles").select("id, name, email").in_(
+            for p in db.table("profiles").select("id, name, email").in_(
                     "id", list(winner_ids)).execute().data or []:
                 winner_names[p["id"]] = p.get("name") or p.get("email")
         except Exception:  # noqa: BLE001
@@ -543,7 +543,7 @@ async def set_ao_outcome(ao_id: str, body: OutcomeRequest, user: dict = Depends(
     if outcome is not None and outcome not in AO_OUTCOMES:
         raise HTTPException(status_code=422, detail="Issue invalide.")
     try:
-        ao = supabase.table("appels_offres").select("id").eq("id", ao_id).single().execute().data
+        ao = db.table("appels_offres").select("id").eq("id", ao_id).single().execute().data
     except Exception:
         raise HTTPException(status_code=404, detail="AO introuvable")
     if not ao:
@@ -568,7 +568,7 @@ async def set_ao_outcome(ao_id: str, body: OutcomeRequest, user: dict = Depends(
         "outcome_by": user["sub"] if outcome is not None else None,
     }
     try:
-        row = supabase.table("appels_offres").update(payload).eq("id", ao_id).execute().data
+        row = db.table("appels_offres").update(payload).eq("id", ao_id).execute().data
     except Exception as e:  # noqa: BLE001
         if _looks_like_missing_outcome(e):
             raise HTTPException(status_code=501,
@@ -582,7 +582,7 @@ async def set_ao_outcome(ao_id: str, body: OutcomeRequest, user: dict = Depends(
 @router.get("/{ao_id}")
 async def get_ao(ao_id: str, user: dict = Depends(get_current_user)):
     try:
-        response = supabase.table("appels_offres").select(
+        response = db.table("appels_offres").select(
             "*, clients(id, name, sector, description, logo_url), submissions(count)"
         ).eq("id", ao_id).single().execute()
         ao = response.data
@@ -593,7 +593,7 @@ async def get_ao(ao_id: str, user: dict = Depends(get_current_user)):
 
         # Access check for partners
         if user["role"] == "ao":
-            access = supabase.table("partner_clients").select("tier").eq(
+            access = db.table("partner_clients").select("tier").eq(
                 "partner_id", user["sub"]
             ).eq("client_id", ao["client_id"]).in_("tier", ["list_1", "list_2"]).execute()
             if not access.data:
@@ -623,7 +623,7 @@ async def add_ao_sources(
     """Stocke les pièces jointes d'origine d'un AO (email/PDF/DOCX) pour pouvoir
     les retrouver à l'édition. Best-effort : ne casse pas si le stockage échoue."""
     try:
-        ao = supabase.table("appels_offres").select("id, source_files").eq("id", ao_id).single().execute().data
+        ao = db.table("appels_offres").select("id, source_files").eq("id", ao_id).single().execute().data
     except Exception:
         raise HTTPException(status_code=404, detail="AO introuvable")
 
@@ -656,7 +656,7 @@ async def add_ao_sources(
         current.append({"name": name, "path": path, "content_type": f.content_type, "size": len(data)})
 
     try:
-        supabase.table("appels_offres").update({"source_files": current}).eq("id", ao_id).execute()
+        db.table("appels_offres").update({"source_files": current}).eq("id", ao_id).execute()
     except Exception:
         pass  # colonne source_files pas encore migrée
     return {"source_files": _sources_with_urls(current)}
@@ -666,7 +666,7 @@ async def add_ao_sources(
 async def list_ao_sources(ao_id: str, user: dict = Depends(require_staff)):
     """Pièces jointes d'origine d'un AO, avec URLs signées temporaires."""
     try:
-        ao = supabase.table("appels_offres").select("source_files").eq("id", ao_id).single().execute().data
+        ao = db.table("appels_offres").select("source_files").eq("id", ao_id).single().execute().data
     except Exception:
         raise HTTPException(status_code=404, detail="AO introuvable")
     return {"source_files": _sources_with_urls(ao.get("source_files") or [])}
@@ -680,7 +680,7 @@ class DeleteSourceRequest(BaseModel):
 async def delete_ao_source(ao_id: str, body: DeleteSourceRequest, user: dict = Depends(require_staff)):
     """Supprime une pièce jointe source (objet stocké + métadonnée)."""
     try:
-        ao = supabase.table("appels_offres").select("source_files").eq("id", ao_id).single().execute().data
+        ao = db.table("appels_offres").select("source_files").eq("id", ao_id).single().execute().data
     except Exception:
         raise HTTPException(status_code=404, detail="AO introuvable")
     remaining = [f for f in (ao.get("source_files") or []) if f.get("path") != body.path]
@@ -689,7 +689,7 @@ async def delete_ao_source(ao_id: str, body: DeleteSourceRequest, user: dict = D
     except Exception:
         pass
     try:
-        supabase.table("appels_offres").update({"source_files": remaining}).eq("id", ao_id).execute()
+        db.table("appels_offres").update({"source_files": remaining}).eq("id", ao_id).execute()
     except Exception:
         pass
     return {"source_files": _sources_with_urls(remaining)}
@@ -699,14 +699,14 @@ async def delete_ao_source(ao_id: str, body: DeleteSourceRequest, user: dict = D
 async def regenerate_summary(ao_id: str, user: dict = Depends(require_staff)):
     """(Re)génère le résumé IA d'un AO et le renvoie. Best-effort de persistance."""
     try:
-        ao = supabase.table("appels_offres").select("*").eq("id", ao_id).single().execute().data
+        ao = db.table("appels_offres").select("*").eq("id", ao_id).single().execute().data
     except Exception:
         raise HTTPException(status_code=404, detail="AO introuvable")
     summary = await ao_drafter.summarize_ao(ao)
     if not summary:
         raise HTTPException(status_code=503, detail="Résumé indisponible (IA non configurée ou contenu insuffisant).")
     try:
-        supabase.table("appels_offres").update({"ai_summary": summary}).eq("id", ao_id).execute()
+        db.table("appels_offres").update({"ai_summary": summary}).eq("id", ao_id).execute()
     except Exception:
         pass  # colonne pas encore migrée — on renvoie quand même le résumé
     return {"ai_summary": summary}
@@ -725,7 +725,7 @@ async def get_ao_stats(ao_id: str, user: dict = Depends(require_staff)):
       (skill overlap with the AO, owned by an eligible partner, not yet submitted)
     """
     try:
-        ao = supabase.table("appels_offres").select("*").eq("id", ao_id).single().execute().data
+        ao = db.table("appels_offres").select("*").eq("id", ao_id).single().execute().data
     except Exception:
         raise HTTPException(status_code=404, detail="AO introuvable")
 
@@ -734,7 +734,7 @@ async def get_ao_stats(ao_id: str, user: dict = Depends(require_staff)):
     # ── Partners who could answer (eligible access on this client) ──
     eligible_rows = []
     if client_id:
-        eligible_rows = supabase.table("partner_clients").select("partner_id, tier").eq(
+        eligible_rows = db.table("partner_clients").select("partner_id, tier").eq(
             "client_id", client_id
         ).in_("tier", ["list_1", "list_2"]).execute().data or []
     eligible_partner_ids = {r["partner_id"] for r in eligible_rows}
@@ -742,7 +742,7 @@ async def get_ao_stats(ao_id: str, user: dict = Depends(require_staff)):
     partners_list_2 = sum(1 for r in eligible_rows if r["tier"] == "list_2")
 
     # ── Submissions for this AO ────────────────────────────────────
-    subs = supabase.table("submissions").select(
+    subs = db.table("submissions").select(
         "id, submitted_by, consultant_id"
     ).eq("ao_id", ao_id).execute().data or []
     responded_partner_ids = {s["submitted_by"] for s in subs if s.get("submitted_by")}
@@ -753,7 +753,7 @@ async def get_ao_stats(ao_id: str, user: dict = Depends(require_staff)):
     pool_eligible = 0
     eligible_not_proposed = 0
     if eligible_partner_ids:
-        consultants = supabase.table("consultants").select(
+        consultants = db.table("consultants").select(
             "id, skills, created_by"
         ).in_("created_by", list(eligible_partner_ids)).execute().data or []
         for c in consultants:
@@ -787,12 +787,12 @@ async def update_ao(ao_id: str, body: AOUpdate, background_tasks: BackgroundTask
             # Revalide la cohérence des seuils et normalise pour le stockage.
             update_data["scoring_overrides"] = _overrides_for_storage(body.scoring_overrides)
         try:
-            response = supabase.table("appels_offres").update(update_data).eq("id", ao_id).execute()
+            response = db.table("appels_offres").update(update_data).eq("id", ao_id).execute()
         except Exception:
             # Colonnes récentes pas encore migrées → on met à jour le reste.
             for k in ("scoring_overrides", "work_mode", "langue_requise"):
                 update_data.pop(k, None)
-            response = supabase.table("appels_offres").update(update_data).eq("id", ao_id).execute()
+            response = db.table("appels_offres").update(update_data).eq("id", ao_id).execute()
         # Localisation ou mode de travail modifié → re-géocoder pour la carte.
         if "location" in update_data or "work_mode" in update_data:
             ao = response.data[0] if response.data else {}
@@ -811,7 +811,7 @@ async def update_ao(ao_id: str, body: AOUpdate, background_tasks: BackgroundTask
 
 def _fetch_ao_for_notify(ao_id: str) -> dict:
     try:
-        ao = supabase.table("appels_offres").select(
+        ao = db.table("appels_offres").select(
             "*, clients(name)"
         ).eq("id", ao_id).single().execute().data
     except Exception:
@@ -852,7 +852,7 @@ async def notify_partners(ao_id: str, user: dict = Depends(require_staff)):
         update["list2_notified_at"] = now.isoformat()
 
     try:
-        supabase.table("appels_offres").update(update).eq("id", ao_id).execute()
+        db.table("appels_offres").update(update).eq("id", ao_id).execute()
     except Exception as e:
         # Colonnes de notification pas encore migrées : l'envoi liste 1 a tout de
         # même eu lieu, on signale sans planifier la liste 2.
@@ -874,7 +874,7 @@ async def relance_partners(ao_id: str, user: dict = Depends(require_staff)):
     now = datetime.now(timezone.utc)
     sent = notifications.relance(ao, only_pending=True, actor_id=user["sub"])
     try:
-        supabase.table("appels_offres").update({
+        db.table("appels_offres").update({
             "last_relance_at": now.isoformat(),
             "relance_count": (ao.get("relance_count") or 0) + 1,
         }).eq("id", ao_id).execute()
@@ -914,7 +914,7 @@ async def bulk_delete_aos(body: BulkDeleteRequest, user: dict = Depends(require_
     if not body.ids:
         raise HTTPException(status_code=422, detail="Aucun AO sélectionné")
     try:
-        supabase.table("appels_offres").delete().in_("id", body.ids).execute()
+        db.table("appels_offres").delete().in_("id", body.ids).execute()
         return {"message": f"{len(body.ids)} AO(s) supprimé(s)", "count": len(body.ids)}
     except Exception:
         # Détail loggé côté serveur ; réponse 500 générique (handler global).
@@ -929,7 +929,7 @@ async def archive_ao(ao_id: str, user: dict = Depends(require_staff)):
     archivé mais resté « ouvert » continuerait de recevoir list 2 / relances
     automatiques (le planificateur ne filtre que sur status='open')."""
     try:
-        row = supabase.table("appels_offres").update(
+        row = db.table("appels_offres").update(
             {"archived": True, "archived_at": datetime.now(timezone.utc).isoformat(), "status": "closed"}
         ).eq("id", ao_id).execute().data
     except Exception as e:  # noqa: BLE001
@@ -947,7 +947,7 @@ async def unarchive_ao(ao_id: str, user: dict = Depends(require_staff)):
     """Désarchive un AO. On NE remet PAS archived_at à null : ce marqueur empêche
     l'auto-archivage de le reprendre au prochain tick (voir migration 0003)."""
     try:
-        row = supabase.table("appels_offres").update(
+        row = db.table("appels_offres").update(
             {"archived": False}
         ).eq("id", ao_id).execute().data
     except Exception as e:  # noqa: BLE001
@@ -965,7 +965,7 @@ async def publish_ao(ao_id: str, background_tasks: BackgroundTasks, user: dict =
     """Publie un brouillon (is_draft -> false) : il devient visible des partenaires
     habilités et déclenche le matching. Sens unique (pas de dé-publication)."""
     try:
-        draft = supabase.table("appels_offres").select(
+        draft = db.table("appels_offres").select(
             "id, is_draft, reference, ao_type, deadline, budget_max, location, duration"
         ).eq("id", ao_id).eq("is_draft", True).maybe_single().execute().data
     except Exception as e:  # noqa: BLE001
@@ -983,7 +983,7 @@ async def publish_ao(ao_id: str, background_tasks: BackgroundTasks, user: dict =
             detail=f"Champ(s) requis pour publier : {', '.join(missing)}. Modifiez le brouillon pour les compléter.",
         )
     try:
-        row = supabase.table("appels_offres").update({"is_draft": False}).eq(
+        row = db.table("appels_offres").update({"is_draft": False}).eq(
             "id", ao_id).eq("is_draft", True).execute().data
     except Exception as e:  # noqa: BLE001
         if _looks_like_missing_draft(e):
@@ -1003,13 +1003,13 @@ async def delete_ao(ao_id: str, user: dict = Depends(require_staff)):
     try:
         # Nettoyage best-effort des pièces jointes sources stockées.
         try:
-            ao = supabase.table("appels_offres").select("source_files").eq("id", ao_id).single().execute().data
+            ao = db.table("appels_offres").select("source_files").eq("id", ao_id).single().execute().data
             paths = [f["path"] for f in (ao.get("source_files") or []) if f.get("path")]
             if paths:
                 storage.remove(AO_SOURCES_BUCKET, paths)
         except Exception:
             pass
-        supabase.table("appels_offres").delete().eq("id", ao_id).execute()
+        db.table("appels_offres").delete().eq("id", ao_id).execute()
         return {"message": "AO supprimé"}
     except Exception:
         # Détail loggé côté serveur ; réponse 500 générique (handler global).

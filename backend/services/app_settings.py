@@ -5,7 +5,7 @@ Stockés dans la table `app_settings` (clé → valeur JSON). Best-effort : si l
 table n'existe pas encore, on retombe sur les valeurs par défaut.
 """
 from typing import Any
-from services.supabase_client import supabase
+from services.postgrest_client import db
 
 # Réglages des notifications partenaires + relances (tous éditables par l'admin).
 NOTIFICATION_DEFAULTS: dict[str, Any] = {
@@ -21,7 +21,7 @@ _NOTIF_KEY = "notifications"
 
 def get_setting(key: str, default: Any = None) -> Any:
     try:
-        rows = supabase.table("app_settings").select("value").eq("key", key).limit(1).execute().data or []
+        rows = db.table("app_settings").select("value").eq("key", key).limit(1).execute().data or []
         if rows:
             return rows[0].get("value")
     except Exception as e:  # noqa: BLE001
@@ -30,7 +30,7 @@ def get_setting(key: str, default: Any = None) -> Any:
 
 
 def set_setting(key: str, value: Any) -> None:
-    supabase.table("app_settings").upsert({"key": key, "value": value}).execute()
+    db.table("app_settings").upsert({"key": key, "value": value}).execute()
 
 
 def _coerce_notifications(raw: Any) -> dict:

@@ -83,7 +83,7 @@ class _Supabase:
 @pytest.fixture
 def faux_supabase(monkeypatch):
     faux = _Supabase({"appels_offres": APPELS_OFFRES, "matchings": MATCHINGS})
-    monkeypatch.setattr(matching, "supabase", faux)
+    monkeypatch.setattr(matching, "db", faux)
     return faux
 
 
@@ -123,7 +123,7 @@ def test_tous_archives_donne_zero(monkeypatch):
         "appels_offres": [{"id": AO_ARCHIVE, "is_draft": False, "archived": True}],
         "matchings": [{"id": "m", "ao_id": AO_ARCHIVE, "score_total": 99, "cost_usd": 0.0}],
     })
-    monkeypatch.setattr(matching, "supabase", faux)
+    monkeypatch.setattr(matching, "db", faux)
     stats = _stats()
     assert stats["aos_matched"] == 0
     assert stats["matched_ao_ids"] == []
@@ -141,7 +141,7 @@ def test_lecture_des_ao_en_echec_ne_ressuscite_pas_les_archives(monkeypatch):
                 raise RuntimeError("PostgREST injoignable")
             return super().table(nom)
 
-    monkeypatch.setattr(matching, "supabase", _Cassee({"matchings": MATCHINGS}))
+    monkeypatch.setattr(matching, "db", _Cassee({"matchings": MATCHINGS}))
     stats = _stats()
     assert stats["aos_matched"] == 0
     assert stats["matched_ao_ids"] == []

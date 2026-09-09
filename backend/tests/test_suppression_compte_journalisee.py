@@ -85,8 +85,8 @@ class _Supabase:
 
 
 def _supprimer(faux, monkeypatch):
-    monkeypatch.setattr(admin, "supabase", faux)
-    monkeypatch.setattr(admin.audit, "supabase", faux, raising=False)
+    monkeypatch.setattr(admin, "db", faux)
+    monkeypatch.setattr(admin.audit, "db", faux, raising=False)
     return asyncio.run(admin.delete_account(COMPTE, user={"sub": ADMIN, "role": "admin"}))
 
 
@@ -133,8 +133,8 @@ def test_le_profil_est_lu_avant_d_etre_supprime(monkeypatch):
 def test_rien_n_est_journalise_si_la_suppression_echoue(monkeypatch):
     """Une trace de suppression pour un compte vivant ferait chercher à tort."""
     faux = _Supabase([PROFIL], delete_leve=True)
-    monkeypatch.setattr(admin, "supabase", faux)
-    monkeypatch.setattr(admin.audit, "supabase", faux, raising=False)
+    monkeypatch.setattr(admin, "db", faux)
+    monkeypatch.setattr(admin.audit, "db", faux, raising=False)
     with pytest.raises(RuntimeError):
         asyncio.run(admin.delete_account(COMPTE, user={"sub": ADMIN, "role": "admin"}))
     assert _lignes_audit(faux) == [], "Suppression échouée, mais journalisée."
@@ -154,7 +154,7 @@ def test_on_ne_supprime_toujours_pas_son_propre_compte(monkeypatch):
     """Garde-fou préexistant : il ne doit pas tomber en ajoutant l'audit."""
     from fastapi import HTTPException
     faux = _Supabase([PROFIL])
-    monkeypatch.setattr(admin, "supabase", faux)
+    monkeypatch.setattr(admin, "db", faux)
     with pytest.raises(HTTPException) as e:
         asyncio.run(admin.delete_account(ADMIN, user={"sub": ADMIN, "role": "admin"}))
     assert e.value.status_code == 400

@@ -11,7 +11,7 @@ import json
 import hashlib
 import uuid
 from typing import Optional
-from services.supabase_client import supabase
+from services.postgrest_client import db
 
 
 def new_run_id() -> str:
@@ -39,7 +39,7 @@ def log_event(
 ) -> None:
     """Écrit une ligne d'audit. Best-effort : log l'échec mais ne lève jamais."""
     try:
-        supabase.table("audit_log").insert({
+        db.table("audit_log").insert({
             "run_id": run_id,
             "ao_id": ao_id,
             "event_type": event_type,

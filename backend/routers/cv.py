@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional
-from services.supabase_client import supabase
+from services.postgrest_client import db
 from services import cv_harmonizer
 from routers.auth import require_staff
 
@@ -17,7 +17,7 @@ class HarmonizeRequest(BaseModel):
 def _cv_text_for(body: HarmonizeRequest) -> Optional[str]:
     if body.submission_id:
         try:
-            s = supabase.table("submissions").select("cv_text").eq(
+            s = db.table("submissions").select("cv_text").eq(
                 "id", body.submission_id
             ).single().execute().data
             if s and s.get("cv_text"):
@@ -26,7 +26,7 @@ def _cv_text_for(body: HarmonizeRequest) -> Optional[str]:
             pass
     if body.consultant_id:
         try:
-            rows = supabase.table("submissions").select("cv_text, submitted_at").eq(
+            rows = db.table("submissions").select("cv_text, submitted_at").eq(
                 "consultant_id", body.consultant_id
             ).order("submitted_at", desc=True).limit(5).execute().data or []
             return next((r["cv_text"] for r in rows if r.get("cv_text")), None)

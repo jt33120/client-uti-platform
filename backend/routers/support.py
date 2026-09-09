@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Literal, Optional
 from routers.auth import get_current_user
-from services.supabase_client import supabase
+from services.postgrest_client import db
 from services.email import send_email, render_email_html
 from services.ratelimit import rate_limit, rate_limit_public
 from config import settings
@@ -88,14 +88,14 @@ async def contact(body: ContactRequest, user: dict = Depends(get_current_user)):
 
     # Fetch name from profiles
     try:
-        profile = supabase.table("profiles").select("name").eq("id", user_id).single().execute()
+        profile = db.table("profiles").select("name").eq("id", user_id).single().execute()
         from_name = profile.data.get("name", user_email)
     except Exception:
         from_name = user_email
 
     # Persist in DB (service role bypasses RLS)
     try:
-        supabase.table("support_messages").insert({
+        db.table("support_messages").insert({
             "user_id": user_id,
             "from_name": from_name,
             "from_email": user_email,

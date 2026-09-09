@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, EmailStr
 from typing import Optional, Literal
-from services.supabase_client import supabase
+from services.postgrest_client import db
 from services.email import send_email, render_email_html
 from services import email_templates
 from routers.auth import require_admin
@@ -92,7 +92,7 @@ async def create_invitation(body: CreateInviteRequest, user: dict = Depends(requ
     name = _greeting_name(name) or name
 
     # Revoke any existing unused invites for this email
-    supabase.table("invitations").delete() \
+    db.table("invitations").delete() \
         .eq("email", body.email).is_("used_at", "null").execute()
 
     token = secrets.token_urlsafe(32)
@@ -110,11 +110,11 @@ async def create_invitation(body: CreateInviteRequest, user: dict = Depends(requ
         "org": org,
     }
     try:
-        supabase.table("invitations").insert(record).execute()
+        db.table("invitations").insert(record).execute()
     except Exception:
         # 'org' column not migrated yet — degrade gracefully.
         record.pop("org", None)
-        supabase.table("invitations").insert(record).execute()
+        db.table("invitations").insert(record).execute()
 
     invite_url = f"{settings.frontend_url}/register?invite={token}"
 
@@ -141,7 +141,7 @@ class ResendInviteRequest(BaseModel):
 async def resend_invitation(body: ResendInviteRequest, user: dict = Depends(require_admin)):
     """Re-send an existing invite email (e.g. partner lost it). Does not regenerate the token."""
     try:
-        result = supabase.table("invitations").select("*").eq("token", body.token).single().execute()
+        result = db.table("invitations").select("*").eq("token", body.token).single().execute()
     except Exception:
         raise HTTPException(status_code=404, detail="Invitation introuvable")
 
@@ -167,7 +167,7 @@ async def validate_invitation(token: str):
     Returns invite metadata (email, name, role) if valid; 400/410 otherwise.
     """
     try:
-        result = supabase.table("invitations").select("*").eq("token", token).single().execute()
+        result = db.table("invitations").select("*").eq("token", token).single().execute()
     except Exception:
         raise HTTPException(status_code=400, detail="Lien d'invitation invalide.")
 

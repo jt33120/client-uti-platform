@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field, EmailStr
 
 from services import email_templates, audit, storage, email_optout
 from services.email import send_email
-from services.supabase_client import supabase
+from services.postgrest_client import db
 from routers.auth import require_staff, require_admin
 from config import settings
 
@@ -132,7 +132,7 @@ async def broadcast_to_partners(req: BroadcastRequest, user: dict = Depends(requ
 
     # Partenaires (rôle 'ao') habilités list_1/list_2 sur ce client.
     try:
-        access = supabase.table("partner_clients").select("partner_id").eq(
+        access = db.table("partner_clients").select("partner_id").eq(
             "client_id", req.client_id
         ).in_("tier", ["list_1", "list_2"]).execute().data or []
     except Exception:
@@ -142,7 +142,7 @@ async def broadcast_to_partners(req: BroadcastRequest, user: dict = Depends(requ
         return {"recipients": 0, "sent": 0, "failed": 0,
                 "message": "Aucun partenaire habilité sur ce client."}
 
-    profs = supabase.table("profiles").select("id, email, name, role").in_(
+    profs = db.table("profiles").select("id, email, name, role").in_(
         "id", pids
     ).eq("role", "ao").execute().data or []
 
@@ -200,11 +200,11 @@ async def update_template(key: str, body: TemplateUpdate, user: dict = Depends(r
         # La colonne `format` peut ne pas exister (migration non appliquée) :
         # on tente avec, puis on retombe sans pour rester fonctionnel.
         try:
-            supabase.table("email_templates").upsert(
+            db.table("email_templates").upsert(
                 {**base, "format": fmt}, on_conflict="key"
             ).execute()
         except Exception:
-            supabase.table("email_templates").upsert(base, on_conflict="key").execute()
+            db.table("email_templates").upsert(base, on_conflict="key").execute()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur enregistrement: {e}")
     audit.log_event(
@@ -220,7 +220,7 @@ async def reset_template(key: str, user: dict = Depends(require_admin)):
     if key not in email_templates.DEFAULTS:
         raise HTTPException(status_code=404, detail="Template inconnu")
     try:
-        supabase.table("email_templates").delete().eq("key", key).execute()
+        db.table("email_templates").delete().eq("key", key).execute()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur réinitialisation: {e}")
     audit.log_event(

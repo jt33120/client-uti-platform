@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional, List, Literal
-from services.supabase_client import supabase
+from services.postgrest_client import db
 from routers.auth import require_admin
 
 router = APIRouter(prefix="/pacs", tags=["pacs"])
@@ -35,9 +35,9 @@ class PacClientUpsert(BaseModel):
 async def list_pacs(user: dict = Depends(require_admin)):
     """List all PACs with their client counts."""
     try:
-        pacs = supabase.table("pacs").select("*").order("created_at", desc=True).execute().data
+        pacs = db.table("pacs").select("*").order("created_at", desc=True).execute().data
         # Get all pac_clients rows in a single query and aggregate
-        all_rows = supabase.table("pac_clients").select("pac_id").execute().data
+        all_rows = db.table("pac_clients").select("pac_id").execute().data
         counts = {}
         for row in all_rows:
             counts[row["pac_id"]] = counts.get(row["pac_id"], 0) + 1
@@ -57,11 +57,11 @@ async def create_pac(body: PacCreate, user: dict = Depends(require_admin)):
         raise HTTPException(status_code=422, detail="Le nom doit contenir au moins 2 caractères.")
     try:
         # Case-insensitive duplicate check
-        existing = supabase.table("pacs").select("id, name").ilike("name", name).execute()
+        existing = db.table("pacs").select("id, name").ilike("name", name).execute()
         if existing.data:
             raise HTTPException(status_code=400, detail=f"Un PAC nommé « {existing.data[0]['name']} » existe déjà")
 
-        pac = supabase.table("pacs").insert({
+        pac = db.table("pacs").insert({
             "name": name,
             "description": body.description,
             "created_by": user["sub"],
@@ -72,7 +72,7 @@ async def create_pac(body: PacCreate, user: dict = Depends(require_admin)):
                 {"pac_id": pac["id"], "client_id": c.client_id, "tier": c.tier}
                 for c in body.clients
             ]
-            supabase.table("pac_clients").insert(rows).execute()
+            db.table("pac_clients").insert(rows).execute()
 
         pac["client_count"] = len(body.clients)
         return pac
@@ -87,11 +87,11 @@ async def create_pac(body: PacCreate, user: dict = Depends(require_admin)):
 async def get_pac(pac_id: str, user: dict = Depends(require_admin)):
     """Get a PAC with its full client list and tiers."""
     try:
-        pac = supabase.table("pacs").select("*").eq("id", pac_id).single().execute().data
+        pac = db.table("pacs").select("*").eq("id", pac_id).single().execute().data
         if not pac:
             raise HTTPException(status_code=404, detail="PAC introuvable")
 
-        rows = supabase.table("pac_clients").select("client_id, tier").eq(
+        rows = db.table("pac_clients").select("client_id, tier").eq(
             "pac_id", pac_id
         ).execute().data
 
@@ -99,7 +99,7 @@ async def get_pac(pac_id: str, user: dict = Depends(require_admin)):
         client_ids = [r["client_id"] for r in rows]
         clients_map = {}
         if client_ids:
-            clients_data = supabase.table("clients").select(
+            clients_data = db.table("clients").select(
                 "id, name, sector, logo_url"
             ).in_("id", client_ids).execute().data
             clients_map = {c["id"]: c for c in clients_data}
@@ -124,13 +124,13 @@ async def update_pac(pac_id: str, body: PacUpdate, user: dict = Depends(require_
         update["name"] = update["name"].strip()
         if len(update["name"]) < 2:
             raise HTTPException(status_code=422, detail="Le nom doit contenir au moins 2 caractères.")
-        existing = supabase.table("pacs").select("id, name").ilike(
+        existing = db.table("pacs").select("id, name").ilike(
             "name", update["name"]
         ).neq("id", pac_id).execute()
         if existing.data:
             raise HTTPException(status_code=400, detail=f"Un PAC nommé « {existing.data[0]['name']} » existe déjà")
     try:
-        response = supabase.table("pacs").update(update).eq("id", pac_id).execute()
+        response = db.table("pacs").update(update).eq("id", pac_id).execute()
         if not response.data:
             raise HTTPException(status_code=404, detail="PAC introuvable")
         return response.data[0]
@@ -145,7 +145,7 @@ async def update_pac(pac_id: str, body: PacUpdate, user: dict = Depends(require_
 async def delete_pac(pac_id: str, user: dict = Depends(require_admin)):
     """Delete a PAC (cascades to pac_clients). Does NOT touch partner_clients."""
     try:
-        supabase.table("pacs").delete().eq("id", pac_id).execute()
+        db.table("pacs").delete().eq("id", pac_id).execute()
         return {"message": "PAC supprimé"}
     except Exception:
         # Détail loggé côté serveur ; réponse 500 générique (handler global).
@@ -156,16 +156,16 @@ async def delete_pac(pac_id: str, user: dict = Depends(require_admin)):
 async def upsert_pac_client(pac_id: str, body: PacClientUpsert, user: dict = Depends(require_admin)):
     """Add a client to a PAC or update its tier."""
     try:
-        existing = supabase.table("pac_clients").select("id").eq(
+        existing = db.table("pac_clients").select("id").eq(
             "pac_id", pac_id
         ).eq("client_id", body.client_id).execute()
 
         if existing.data:
-            response = supabase.table("pac_clients").update({
+            response = db.table("pac_clients").update({
                 "tier": body.tier,
             }).eq("pac_id", pac_id).eq("client_id", body.client_id).execute()
         else:
-            response = supabase.table("pac_clients").insert({
+            response = db.table("pac_clients").insert({
                 "pac_id": pac_id,
                 "client_id": body.client_id,
                 "tier": body.tier,
@@ -180,7 +180,7 @@ async def upsert_pac_client(pac_id: str, body: PacClientUpsert, user: dict = Dep
 async def remove_pac_client(pac_id: str, client_id: str, user: dict = Depends(require_admin)):
     """Remove a client from a PAC."""
     try:
-        supabase.table("pac_clients").delete().eq("pac_id", pac_id).eq(
+        db.table("pac_clients").delete().eq("pac_id", pac_id).eq(
             "client_id", client_id
         ).execute()
         return {"message": "Client retiré du PAC"}

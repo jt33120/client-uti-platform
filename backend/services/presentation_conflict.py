@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import unicodedata
 
-from services.supabase_client import supabase
+from services.postgrest_client import db
 
 # Seuil « même personne » sur noms complets normalisés. Un match exact du nom
 # normalisé est considéré comme certain ; sinon Dice ≥ SIMILARITY_THRESHOLD.
@@ -82,7 +82,7 @@ def _consultant_names(consultant_ids: list[str]) -> dict[str, str]:
     ids = [c for c in {cid for cid in consultant_ids} if c]
     if not ids:
         return {}
-    rows = supabase.table("consultants").select("id, name").in_("id", ids).execute().data or []
+    rows = db.table("consultants").select("id, name").in_("id", ids).execute().data or []
     return {r["id"]: r.get("name") for r in rows}
 
 
@@ -91,7 +91,7 @@ def _partner_names(partner_ids: list[str]) -> dict[str, str]:
     ids = [p for p in {pid for pid in partner_ids} if p]
     if not ids:
         return {}
-    rows = supabase.table("profiles").select("id, name").in_("id", ids).execute().data or []
+    rows = db.table("profiles").select("id, name").in_("id", ids).execute().data or []
     return {r["id"]: r.get("name") for r in rows}
 
 
@@ -117,7 +117,7 @@ def find_conflicts(ao_id: str) -> dict[str, dict]:
     """
     try:
         # 1. Soumissions de CET AO.
-        this_ao_subs = supabase.table("submissions").select(
+        this_ao_subs = db.table("submissions").select(
             "id, consultant_id, submitted_by"
         ).eq("ao_id", ao_id).execute().data or []
         if not this_ao_subs:
@@ -126,7 +126,7 @@ def find_conflicts(ao_id: str) -> dict[str, dict]:
         # 2. Client de l'AO → AOs frères actifs (mêmes client, hors archivés/brouillons).
         sibling_ao_ids: list[str] = []
         try:
-            ao_row = supabase.table("appels_offres").select("id, client_id").eq(
+            ao_row = db.table("appels_offres").select("id, client_id").eq(
                 "id", ao_id
             ).single().execute().data
         except Exception:
@@ -134,12 +134,12 @@ def find_conflicts(ao_id: str) -> dict[str, dict]:
         client_id = (ao_row or {}).get("client_id")
         if client_id:
             try:
-                sib_rows = supabase.table("appels_offres").select(
+                sib_rows = db.table("appels_offres").select(
                     "id, archived, is_draft"
                 ).eq("client_id", client_id).execute().data or []
             except Exception:
                 # Colonnes récentes (archived/is_draft) possiblement absentes → repli.
-                sib_rows = supabase.table("appels_offres").select(
+                sib_rows = db.table("appels_offres").select(
                     "id"
                 ).eq("client_id", client_id).execute().data or []
             sibling_ao_ids = [
@@ -151,7 +151,7 @@ def find_conflicts(ao_id: str) -> dict[str, dict]:
         # 3. Soumissions des AOs frères (en bloc).
         sibling_subs: list[dict] = []
         if sibling_ao_ids:
-            sibling_subs = supabase.table("submissions").select(
+            sibling_subs = db.table("submissions").select(
                 "id, ao_id, consultant_id, submitted_by"
             ).in_("ao_id", sibling_ao_ids).execute().data or []
 

@@ -13,7 +13,7 @@ import asyncio
 import re
 from typing import Optional
 
-from services.supabase_client import supabase
+from services.postgrest_client import db
 from services import cv_harmonizer, cv_vision, storage
 from services.error_log import record as _record_err
 
@@ -99,7 +99,7 @@ def get_structured(submission_id: str) -> Optional[dict]:
     if _STRUCTURED_DISABLED or not submission_id:
         return None
     try:
-        row = supabase.table("submissions").select("cv_structured").eq(
+        row = db.table("submissions").select("cv_structured").eq(
             "id", submission_id).single().execute().data
     except Exception as e:  # noqa: BLE001
         # Colonne absente (migration non appliquée) → on coupe la structuration
@@ -114,7 +114,7 @@ def get_structured(submission_id: str) -> Optional[dict]:
 def _persist(submission_id: str, cv: dict) -> None:
     """Écrit le CV structuré (best-effort — jamais bloquant, colonne peut manquer)."""
     try:
-        supabase.table("submissions").update({"cv_structured": cv}).eq("id", submission_id).execute()
+        db.table("submissions").update({"cv_structured": cv}).eq("id", submission_id).execute()
     except Exception as e:  # noqa: BLE001
         # Colonne non migrée / cache PostgREST périmé : on ne persiste pas, mais
         # l'appelant a quand même le CV (recalculé au besoin). Pas une panne.
@@ -199,7 +199,7 @@ async def ensure_structured(
         return None
     # Texte + URL du CV + nom (pour masquer l'identité sur l'image) en une lecture.
     try:
-        row = supabase.table("submissions").select(
+        row = db.table("submissions").select(
             "cv_text, cv_url, cv_filename, consultants(name)").eq(
             "id", submission_id).single().execute().data or {}
     except Exception:

@@ -14,7 +14,7 @@ submission-based run (which clears previous matchings for the AO).
 """
 import asyncio
 from typing import Optional
-from services.supabase_client import supabase
+from services.postgrest_client import db
 from services.ai_matching import extract_features, EXTRACTION_MODEL
 from services.scoring import score_consultant, GRID_VERSION, DEFAULTS, stars_to_weights, STAR_CRITERIA
 from services.llm_scoring import llm_score, combine_hybrid
@@ -67,7 +67,7 @@ def _human_feedback_map(ao_id: str) -> dict:
     Ce texte est réinjecté dans le prompt du 2e avis IA au ré-scoring : l'humain
     corrige, l'IA en tient compte (AI Act Art. 14 — supervision effective)."""
     try:
-        rows = supabase.table("human_decision").select(
+        rows = db.table("human_decision").select(
             "consultant_id, justification, decided_at"
         ).eq("ao_id", ao_id).eq("decision", "overridden").order(
             "decided_at", desc=True
@@ -123,7 +123,7 @@ def _insert_matchings(rows: list[dict]) -> set:
 
     while True:
         try:
-            supabase.table("matchings").insert(_pruned()).execute()
+            db.table("matchings").insert(_pruned()).execute()
             return dropped
         except Exception as e:  # noqa: BLE001
             m = re.search(r"'([a-z0-9_]+)' column", str(e))
@@ -184,7 +184,7 @@ def _persist(ao_id: str, results: list[dict], cost_usd: float, ran_by: Optional[
     # ids du classement courant : on ne les supprime qu'après un insert réussi.
     old_ids = [
         o["id"] for o in
-        (supabase.table("matchings").select("id").eq("ao_id", ao_id).execute().data or [])
+        (db.table("matchings").select("id").eq("ao_id", ao_id).execute().data or [])
     ]
 
     # Insert résilient : retire à la volée toute colonne absente du schéma/cache
@@ -195,10 +195,10 @@ def _persist(ao_id: str, results: list[dict], cost_usd: float, ran_by: Optional[
         # Si ce delete échoue, l'ancien ET le nouveau classement coexistent dans
         # la table (doublons à l'écran) : on retente une fois puis on alerte.
         try:
-            supabase.table("matchings").delete().in_("id", old_ids).execute()
+            db.table("matchings").delete().in_("id", old_ids).execute()
         except Exception as e:
             try:
-                supabase.table("matchings").delete().in_("id", old_ids).execute()
+                db.table("matchings").delete().in_("id", old_ids).execute()
             except Exception:
                 _record_err(
                     "matching.persist",
@@ -306,11 +306,11 @@ def _fetch_submissions(ao_id: str) -> list:
         "consultants(id, name, tjm, skills, experience_years, employment_type)"
     )
     try:
-        return supabase.table("submissions").select(
+        return db.table("submissions").select(
             base_cols + ", cv_structured"
         ).eq("ao_id", ao_id).execute().data
     except Exception:
-        return supabase.table("submissions").select(base_cols).eq("ao_id", ao_id).execute().data
+        return db.table("submissions").select(base_cols).eq("ao_id", ao_id).execute().data
 
 
 async def run_submission_matching(ao_id: str, ran_by: Optional[str], top_n: int = 5) -> dict:
@@ -321,7 +321,7 @@ async def run_submission_matching(ao_id: str, ran_by: Optional[str], top_n: int 
     ai_ledger.set_context(user_id=ran_by, entity_type="ao", entity_id=ao_id)
     run_id = audit.new_run_id()
     try:
-        ao = supabase.table("appels_offres").select("*").eq("id", ao_id).single().execute().data
+        ao = db.table("appels_offres").select("*").eq("id", ao_id).single().execute().data
     except Exception:
         raise LookupError("AO introuvable")
 
@@ -401,28 +401,28 @@ async def run_vivier_matching(ao_id: str, ran_by: Optional[str], top_n: int = 5)
     ai_ledger.set_context(user_id=ran_by, entity_type="ao", entity_id=ao_id)
     run_id = audit.new_run_id()
     try:
-        ao = supabase.table("appels_offres").select("*").eq("id", ao_id).single().execute().data
+        ao = db.table("appels_offres").select("*").eq("id", ao_id).single().execute().data
         if not ao:
             return None
 
         # Don't overwrite real submission-based results
-        existing = supabase.table("submissions").select("id").eq("ao_id", ao_id).limit(1).execute().data
+        existing = db.table("submissions").select("id").eq("ao_id", ao_id).limit(1).execute().data
         if existing:
             return None
 
         # Eligible owners: partners with list_1/list_2 on the client + UTI staff
         eligible_ids = set()
         if ao.get("client_id"):
-            rows = supabase.table("partner_clients").select("partner_id").eq(
+            rows = db.table("partner_clients").select("partner_id").eq(
                 "client_id", ao["client_id"]
             ).in_("tier", ["list_1", "list_2"]).execute().data or []
             eligible_ids = {r["partner_id"] for r in rows}
-        staff = supabase.table("profiles").select("id").in_(
+        staff = db.table("profiles").select("id").in_(
             "role", ["admin", "commerce"]
         ).execute().data or []
         eligible_ids |= {r["id"] for r in staff}
 
-        consultants = supabase.table("consultants").select("*").order(
+        consultants = db.table("consultants").select("*").order(
             "created_at", desc=True
         ).limit(200).execute().data or []
         pool = [c for c in consultants if c.get("created_by") in eligible_ids][:VIVIER_MAX_CONSULTANTS]

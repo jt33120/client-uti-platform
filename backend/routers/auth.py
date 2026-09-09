@@ -5,7 +5,7 @@ from pydantic import BaseModel, EmailStr
 from typing import Optional
 from jose import jwt, JWTError
 from datetime import datetime, timedelta, timezone
-from services.supabase_client import supabase
+from services.postgrest_client import db
 from services import storage
 from services.email import send_email, render_email_html
 from services import email_templates
@@ -119,10 +119,10 @@ def _live_profile_state(user_id: str) -> Optional[dict]:
     if hit and now - hit[0] < _PROFILE_STATE_TTL:
         return hit[1]
     try:
-        rows = supabase.table("profiles").select("id, role, status").eq("id", user_id).execute().data
+        rows = db.table("profiles").select("id, role, status").eq("id", user_id).execute().data
     except Exception:
         try:  # colonne status pas migrée — on vérifie au moins l'existence + le rôle
-            rows = supabase.table("profiles").select("id, role").eq("id", user_id).execute().data
+            rows = db.table("profiles").select("id, role").eq("id", user_id).execute().data
         except Exception:
             return hit[1] if hit else {"_unverified": True}
     state = rows[0] if rows else None
@@ -216,13 +216,13 @@ def _finalize_login(user_id: str, email: str, profile: dict, ip: Optional[str] =
     """Ouvre la session : met à jour la dernière connexion (date + IP) et émet le jeton."""
     now = datetime.now(timezone.utc).isoformat()
     try:
-        supabase.table("profiles").update(
+        db.table("profiles").update(
             {"last_login_at": now, "last_login_ip": ip} if ip else {"last_login_at": now}
         ).eq("id", user_id).execute()
     except Exception:
         # Colonne last_login_ip pas encore migrée : on enregistre au moins la date.
         try:
-            supabase.table("profiles").update({"last_login_at": now}).eq("id", user_id).execute()
+            db.table("profiles").update({"last_login_at": now}).eq("id", user_id).execute()
         except Exception:
             pass
     token = create_token(user_id, email, profile["role"])
@@ -329,7 +329,7 @@ async def register(body: RegisterRequest, request: Request):
     invitation = None
     if body.invite_token:
         try:
-            inv_result = supabase.table("invitations").select("*") \
+            inv_result = db.table("invitations").select("*") \
                 .eq("token", body.invite_token).single().execute()
             invitation = inv_result.data
         except Exception:
@@ -383,11 +383,11 @@ async def register(body: RegisterRequest, request: Request):
     }
     try:
         try:
-            supabase.table("profiles").insert(profile_row).execute()
+            db.table("profiles").insert(profile_row).execute()
         except Exception:
             # 'org' column not migrated yet — retry without it.
             profile_row.pop("org", None)
-            supabase.table("profiles").insert(profile_row).execute()
+            db.table("profiles").insert(profile_row).execute()
     except Exception as e:
         print(f"[AUTH] insertion du profil échouée pour {user_id}:\n{traceback.format_exc()}")
         status, detail = _parse_db_error(str(e))
@@ -413,7 +413,7 @@ async def register(body: RegisterRequest, request: Request):
         # les vraies suppressions — celles qui laissent des UUID orphelins dans
         # audit_log, human_decision et submissions.
         try:
-            supabase.table("profiles").delete().eq("id", user_id).execute()
+            db.table("profiles").delete().eq("id", user_id).execute()
             print(f"[AUTH] profil orphelin {user_id} supprimé")
         except Exception as cleanup_err:  # noqa: BLE001
             print(f"[AUTH] nettoyage du profil orphelin impossible: {cleanup_err}")
@@ -423,7 +423,7 @@ async def register(body: RegisterRequest, request: Request):
     # ── Consume invitation token ──────────────────────────────────
     if invitation:
         try:
-            supabase.table("invitations").update({
+            db.table("invitations").update({
                 "used_at": datetime.now(timezone.utc).isoformat(),
                 "used_by": user_id,
             }).eq("token", body.invite_token).execute()
@@ -546,7 +546,7 @@ async def login(body: LoginRequest, request: Request):
 
     # ── Step 2: Fetch profile ─────────────────────────────────────
     try:
-        profile_response = supabase.table("profiles").select("*").eq("id", user_id).single().execute()
+        profile_response = db.table("profiles").select("*").eq("id", user_id).single().execute()
         profile = profile_response.data
     except Exception as e:
         print(f"[AUTH] profiles fetch failed for {user_id}: {e}")
@@ -612,7 +612,7 @@ async def mfa_verify(body: MfaCodeRequest, request: Request):
     # (10 min de validité) et énumérer des codes à haute cadence.
     _throttle(f"mfa:verify:{user_id}", 5, 300)
     try:
-        profile = supabase.table("profiles").select("*").eq("id", user_id).single().execute().data
+        profile = db.table("profiles").select("*").eq("id", user_id).single().execute().data
     except Exception:
         raise HTTPException(status_code=404, detail="Profil introuvable")
     secret = (profile or {}).get("mfa_secret")
@@ -635,12 +635,12 @@ async def mfa_enroll(body: MfaCodeRequest, request: Request):
     if not pyotp.TOTP(secret).verify(_clean_code(body.code), valid_window=1):
         raise HTTPException(status_code=401, detail="Code invalide. Vérifiez l'heure de votre téléphone et réessayez.")
     try:
-        supabase.table("profiles").update({"mfa_secret": secret, "mfa_enabled": True}).eq("id", user_id).execute()
+        db.table("profiles").update({"mfa_secret": secret, "mfa_enabled": True}).eq("id", user_id).execute()
     except Exception as e:
         print(f"[AUTH] activation MFA échouée pour {user_id}: {e}")
         raise HTTPException(status_code=500, detail="Impossible d'activer la MFA (colonnes MFA migrées ?). Réessayez ou contactez un administrateur.")
     try:
-        profile = supabase.table("profiles").select("*").eq("id", user_id).single().execute().data
+        profile = db.table("profiles").select("*").eq("id", user_id).single().execute().data
     except Exception:
         raise HTTPException(status_code=404, detail="Profil introuvable")
     return _finalize_login(user_id, email, profile, public_client_ip(request))
@@ -651,7 +651,7 @@ async def mfa_reset(user_id: str, admin: dict = Depends(require_admin)):
     """Réinitialise la MFA d'un utilisateur (perte de téléphone). Il devra la
     reconfigurer à sa prochaine connexion."""
     try:
-        supabase.table("profiles").update({"mfa_enabled": False, "mfa_secret": None}).eq("id", user_id).execute()
+        db.table("profiles").update({"mfa_enabled": False, "mfa_secret": None}).eq("id", user_id).execute()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Échec de la réinitialisation MFA : {e}")
     return {"message": "MFA réinitialisée. L'utilisateur devra la reconfigurer à sa prochaine connexion."}
@@ -670,7 +670,7 @@ async def mfa_set_required(user_id: str, body: MfaRequiredRequest, admin: dict =
     connexion se fait sans second facteur.
     """
     try:
-        supabase.table("profiles").update({"mfa_required": body.required}).eq("id", user_id).execute()
+        db.table("profiles").update({"mfa_required": body.required}).eq("id", user_id).execute()
     except Exception:
         raise HTTPException(
             status_code=501,
@@ -718,7 +718,7 @@ async def mfa_self_confirm(body: MfaSelfConfirmRequest, user: dict = Depends(get
     if not pyotp.TOTP(secret).verify(_clean_code(body.code), valid_window=1):
         raise HTTPException(status_code=401, detail="Code invalide. Vérifiez l'heure de votre téléphone et réessayez.")
     try:
-        supabase.table("profiles").update({"mfa_secret": secret, "mfa_enabled": True}).eq("id", user_id).execute()
+        db.table("profiles").update({"mfa_secret": secret, "mfa_enabled": True}).eq("id", user_id).execute()
     except Exception as e:
         print(f"[AUTH] activation MFA self-service échouée pour {user_id}: {e}")
         raise HTTPException(status_code=500, detail="Impossible d'activer la double authentification (colonnes MFA migrées ?).")
@@ -746,13 +746,13 @@ async def mfa_self_disable(body: MfaSelfDisableRequest, user: dict = Depends(get
     # 2FA obligatoire (défaut) : la désactivation serait illusoire — ré-enrôlement
     # forcé à la prochaine connexion. On refuse proprement et on renvoie vers l'admin.
     try:
-        prof = supabase.table("profiles").select("mfa_required").eq("id", user_id).single().execute().data or {}
+        prof = db.table("profiles").select("mfa_required").eq("id", user_id).single().execute().data or {}
     except Exception:
         prof = {}
     if prof.get("mfa_required", True):
         raise HTTPException(status_code=403, detail="La double authentification est obligatoire sur votre compte. Un administrateur doit l'exonérer avant que vous puissiez la désactiver.")
     try:
-        supabase.table("profiles").update({"mfa_enabled": False, "mfa_secret": None}).eq("id", user_id).execute()
+        db.table("profiles").update({"mfa_enabled": False, "mfa_secret": None}).eq("id", user_id).execute()
     except Exception:
         raise HTTPException(status_code=500, detail="Impossible de désactiver la double authentification.")
     return {"mfa_enabled": False}
@@ -761,7 +761,7 @@ async def mfa_self_disable(body: MfaSelfDisableRequest, user: dict = Depends(get
 @router.get("/me")
 async def me(user: dict = Depends(get_current_user)):
     try:
-        profile = supabase.table("profiles").select("*").eq("id", user["sub"]).single().execute()
+        profile = db.table("profiles").select("*").eq("id", user["sub"]).single().execute()
         data = dict(profile.data or {})
         # Ne jamais exposer le secret TOTP au client.
         data.pop("mfa_secret", None)
@@ -775,7 +775,7 @@ async def get_ai_literacy(user: dict = Depends(get_current_user)):
     """État de sensibilisation IA de l'utilisateur courant (AI Act, art. 4)."""
     from services import ai_literacy
     try:
-        row = supabase.table("profiles").select(
+        row = db.table("profiles").select(
             "ai_literacy_ack_at, ai_literacy_version"
         ).eq("id", user["sub"]).single().execute().data or {}
     except Exception:  # noqa: BLE001 - colonnes non migrées, base injoignable…
@@ -796,7 +796,7 @@ async def ack_ai_literacy(user: dict = Depends(get_current_user)):
     from services import ai_literacy
     now = datetime.now(timezone.utc).isoformat()
     try:
-        supabase.table("profiles").update({
+        db.table("profiles").update({
             "ai_literacy_ack_at": now,
             "ai_literacy_version": ai_literacy.VERSION,
         }).eq("id", user["sub"]).execute()
@@ -862,7 +862,7 @@ def _profil_a_migrer(email: str) -> Optional[dict]:
     désactivés sont exclus : la suspension est une décision d'administration, et
     ce n'est pas à un formulaire public de la défaire.
     """
-    lignes = supabase.table("profiles").select("id, email, name, status").ilike(
+    lignes = db.table("profiles").select("id, email, name, status").ilike(
         "email", (email or "").strip().lower()
     ).limit(2).execute().data or []
     if len(lignes) != 1:
@@ -1118,13 +1118,13 @@ async def update_profile(body: UpdateProfileRequest, user: dict = Depends(get_cu
 
     if profile_update:
         try:
-            supabase.table("profiles").update(profile_update).eq("id", user_id).execute()
+            db.table("profiles").update(profile_update).eq("id", user_id).execute()
         except Exception as e:
             # Colonnes 0009 non encore migrées : ne bloque pas la mise à jour des
             # champs historiques (name/email), retente sans les nouveaux champs.
             legacy = {k: v for k, v in profile_update.items() if k in ("name", "email")}
             if legacy and legacy != profile_update:
-                supabase.table("profiles").update(legacy).eq("id", user_id).execute()
+                db.table("profiles").update(legacy).eq("id", user_id).execute()
                 raise HTTPException(status_code=501, detail="Certains champs de profil ne sont pas encore disponibles : appliquez la migration 0009_profile_fields.sql.")
             # Remise en cohérence : l'adresse de connexion a déjà changé, mais le
             # profil non. Sans ce retour arrière, l'utilisateur se connecterait
@@ -1136,7 +1136,7 @@ async def update_profile(body: UpdateProfileRequest, user: dict = Depends(get_cu
                     print(f"[AUTH] retour arrière de l'email de connexion impossible pour {user_id}: {revert_err}")
             raise HTTPException(status_code=500, detail=f"Mise à jour du profil impossible : {e}")
 
-    profile = supabase.table("profiles").select("*").eq("id", user_id).single().execute()
+    profile = db.table("profiles").select("*").eq("id", user_id).single().execute()
     data = dict(profile.data or {})
     data.pop("mfa_secret", None)  # ne jamais exposer le secret TOTP
     return data
@@ -1179,7 +1179,7 @@ async def upload_avatar(file: UploadFile = File(...), user: dict = Depends(get_c
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur upload avatar: {str(e)}")
 
-    supabase.table("profiles").update({"avatar_url": avatar_url}).eq("id", user_id).execute()
+    db.table("profiles").update({"avatar_url": avatar_url}).eq("id", user_id).execute()
     return {"avatar_url": avatar_url}
 
 
@@ -1192,5 +1192,5 @@ async def delete_avatar(user: dict = Depends(get_current_user)):
             storage.remove("avatars", [f"{user_id}/{f['name']}" for f in existing])
     except Exception:
         pass
-    supabase.table("profiles").update({"avatar_url": None}).eq("id", user_id).execute()
+    db.table("profiles").update({"avatar_url": None}).eq("id", user_id).execute()
     return {"avatar_url": None}

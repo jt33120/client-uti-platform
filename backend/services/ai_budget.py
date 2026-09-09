@@ -16,7 +16,7 @@ from datetime import datetime
 import httpx
 
 from config import settings
-from services.supabase_client import supabase
+from services.postgrest_client import db
 from services.app_settings import get_ai_budget_settings, get_setting, set_setting
 from services.email import send_email, render_email_html
 from services.error_log import record as _record_err
@@ -64,7 +64,7 @@ def _period_ids(now: datetime) -> dict:
 def _admin_recipients() -> list[dict]:
     """Tous les administrateurs (profiles.role == 'admin'), repli sur ADMIN_EMAIL."""
     try:
-        rows = supabase.table("profiles").select("email, name").eq("role", "admin").execute().data or []
+        rows = db.table("profiles").select("email, name").eq("role", "admin").execute().data or []
         out = [r for r in rows if r.get("email")]
         if out:
             return out

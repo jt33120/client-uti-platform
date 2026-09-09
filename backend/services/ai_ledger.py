@@ -24,7 +24,7 @@ import contextvars
 import threading
 from typing import Any, Optional
 
-from services.supabase_client import supabase
+from services.postgrest_client import db
 
 # extra_body à passer à ``chat.completions.create`` sur le client OpenRouter :
 # force OpenRouter à renvoyer le coût réel et les tokens détaillés dans
@@ -118,7 +118,7 @@ def _insert(row: dict) -> None:
     droppable = set(_OPTIONAL_COLS)
     for _ in range(len(_OPTIONAL_COLS) + 1):
         try:
-            supabase.table("ai_usage").insert(payload).execute()
+            db.table("ai_usage").insert(payload).execute()
             return
         except Exception as e:  # noqa: BLE001
             msg = str(e)

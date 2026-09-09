@@ -10,7 +10,7 @@ from pydantic import BaseModel, EmailStr
 from typing import Literal, Optional
 import httpx
 
-from services.supabase_client import supabase
+from services.postgrest_client import db
 from services import credentials, audit
 from services.app_settings import (
     get_notification_settings, set_notification_settings,
@@ -34,7 +34,7 @@ async def overview(user: dict = Depends(require_admin)):
     def _count(table, since_col=None, **filters):
         """COUNT côté base (count=exact) : aucune ligne rapatriée, tient la volumétrie."""
         try:
-            q = supabase.table(table).select("id", count="exact").limit(1)
+            q = db.table(table).select("id", count="exact").limit(1)
             for k, v in filters.items():
                 q = q.eq(k, v)
             if since_col:
@@ -46,10 +46,10 @@ async def overview(user: dict = Depends(require_admin)):
 
     profiles = []
     try:
-        profiles = supabase.table("profiles").select("id, role, last_login_at").execute().data or []
+        profiles = db.table("profiles").select("id, role, last_login_at").execute().data or []
     except Exception:
         try:
-            profiles = supabase.table("profiles").select("id, role").execute().data or []
+            profiles = db.table("profiles").select("id, role").execute().data or []
         except Exception:
             degraded.append("profiles")
 
@@ -62,12 +62,12 @@ async def overview(user: dict = Depends(require_admin)):
 
     tickets_open = None
     try:
-        tickets_open = supabase.table("support_messages").select(
+        tickets_open = db.table("support_messages").select(
             "id", count="exact"
         ).neq("status", "resolved").limit(1).execute().count
     except Exception:
         try:
-            tickets_open = supabase.table("support_messages").select(
+            tickets_open = db.table("support_messages").select(
                 "id", count="exact"
             ).limit(1).execute().count
         except Exception:
@@ -78,7 +78,7 @@ async def overview(user: dict = Depends(require_admin)):
     matchings_total = _count("matchings")
     matching_cost_usd = None
     try:
-        rows = supabase.table("matchings").select("cost_usd").execute().data or []
+        rows = db.table("matchings").select("cost_usd").execute().data or []
         matching_cost_usd = round(sum(float(r.get("cost_usd") or 0) for r in rows), 2)
     except Exception:
         degraded.append("matchings.cost")
@@ -124,7 +124,7 @@ def _ai_usage_from_ledger(
     complet, avant filtrage, pour que les menus déroulants restent stables quel
     que soit le filtre actif."""
     try:
-        rows = supabase.table("ai_usage").select(
+        rows = db.table("ai_usage").select(
             "created_at, provider, model, operation, cost_usd, cost_source, "
             "input_tokens, output_tokens, cached_tokens, entity_type, entity_id, user_id, user_email"
         ).gte("created_at", since_iso).order("created_at", desc=True).limit(50000).execute().data
@@ -211,7 +211,7 @@ def _ai_usage_from_ledger(
     if top_aos:
         try:
             ids = [a["ao_id"] for a in top_aos]
-            aos = supabase.table("appels_offres").select("id, title").in_("id", ids).execute().data or []
+            aos = db.table("appels_offres").select("id, title").in_("id", ids).execute().data or []
             titles = {a["id"]: a.get("title") for a in aos}
             for a in top_aos:
                 a["title"] = titles.get(a["ao_id"]) or "AO supprimé"
@@ -225,7 +225,7 @@ def _ai_usage_from_ledger(
         try:
             ids = [u["user_id"] for u in top_users if u.get("user_id")]
             if ids:
-                profs = supabase.table("profiles").select("id, name, email").in_("id", ids).execute().data or []
+                profs = db.table("profiles").select("id, name, email").in_("id", ids).execute().data or []
                 names = {p["id"]: p for p in profs}
                 for u in top_users:
                     p = names.get(u.get("user_id")) or {}
@@ -238,7 +238,7 @@ def _ai_usage_from_ledger(
     try:
         fa_ids = [v["id"] for v in facet_accounts.values() if v.get("id")]
         if fa_ids:
-            profs = supabase.table("profiles").select("id, name, email").in_("id", fa_ids).execute().data or []
+            profs = db.table("profiles").select("id, name, email").in_("id", fa_ids).execute().data or []
             names = {p["id"]: p for p in profs}
             for v in facet_accounts.values():
                 p = names.get(v.get("id")) or {}
@@ -319,7 +319,7 @@ async def ai_usage(
     # ── Fallback : ancienne vue basée sur matchings.cost_usd ──────────────
     total_cost, total_runs, series = None, None, []
     try:
-        rows = supabase.table("matchings").select(
+        rows = db.table("matchings").select(
             "cost_usd, created_at"
         ).gt("cost_usd", 0).gte("created_at", since_iso).execute().data or []
         total_runs = len(rows)
@@ -620,17 +620,17 @@ async def rum_vitals(window: str = "7d", series: str = "LCP", user: dict = Depen
 async def list_accounts(user: dict = Depends(require_admin)):
     """All accounts (admin, commerce, partners) + pending invitations."""
     try:
-        accounts = supabase.table("profiles").select(
+        accounts = db.table("profiles").select(
             "id, email, name, role, org, status, created_at, last_login_at, last_login_ip, avatar_url, mfa_enabled, mfa_required"
         ).order("created_at", desc=True).execute().data or []
     except Exception:
         # colonnes (org/status/last_login_*/mfa_*) pas encore migrées — dégrade proprement
         try:
-            accounts = supabase.table("profiles").select(
+            accounts = db.table("profiles").select(
                 "id, email, name, role, org, status, created_at, last_login_at, avatar_url"
             ).order("created_at", desc=True).execute().data or []
         except Exception:
-            accounts = supabase.table("profiles").select(
+            accounts = db.table("profiles").select(
                 "id, email, name, role, created_at, avatar_url"
             ).order("created_at", desc=True).execute().data or []
 
@@ -638,14 +638,14 @@ async def list_accounts(user: dict = Depends(require_admin)):
     try:
         now = datetime.now(timezone.utc).isoformat()
         try:
-            pending = supabase.table("invitations").select(
+            pending = db.table("invitations").select(
                 "id, email, name, role, org, expires_at, created_at"
             ).is_("used_at", "null").gte("expires_at", now).order(
                 "created_at", desc=True
             ).execute().data or []
         except Exception:
             # 'org' column not migrated yet — degrade gracefully.
-            pending = supabase.table("invitations").select(
+            pending = db.table("invitations").select(
                 "id, email, name, role, expires_at, created_at"
             ).is_("used_at", "null").gte("expires_at", now).order(
                 "created_at", desc=True
@@ -723,14 +723,14 @@ async def update_account(account_id: str, body: AccountUpdate, user: dict = Depe
             raise HTTPException(status_code=500, detail="Impossible de mettre à jour l'email.")
 
     try:
-        updated = supabase.table("profiles").update(profile_update).eq("id", account_id).execute()
+        updated = db.table("profiles").update(profile_update).eq("id", account_id).execute()
     except Exception as e:
         # 'org'/'status' columns missing — retry without them so the rest applies.
         profile_update.pop("org", None)
         profile_update.pop("status", None)
         if not profile_update:
             raise HTTPException(status_code=500, detail="Colonnes org/status absentes : migration requise.")
-        updated = supabase.table("profiles").update(profile_update).eq("id", account_id).execute()
+        updated = db.table("profiles").update(profile_update).eq("id", account_id).execute()
 
     if not updated.data:
         # Le profil n'existe pas alors que l'adresse de connexion vient d'être
@@ -783,7 +783,7 @@ async def delete_account(account_id: str, user: dict = Depends(require_admin)):
     # pas empêcher le DELETE (il peut s'agir d'un rattrapage), mais on saura le
     # dire dans la trace plutôt que d'inventer une identité.
     try:
-        lignes = supabase.table("profiles").select(
+        lignes = db.table("profiles").select(
             "id, email, name, role, status, created_at"
         ).eq("id", account_id).limit(1).execute().data or []
         profil = lignes[0] if lignes else None
@@ -791,7 +791,7 @@ async def delete_account(account_id: str, user: dict = Depends(require_admin)):
         profil = None
 
     try:
-        supabase.table("profiles").delete().eq("id", account_id).execute()
+        db.table("profiles").delete().eq("id", account_id).execute()
     except Exception:
         # Détail loggé côté serveur ; réponse 500 générique (handler global).
         # Rien n'est journalisé : la suppression n'a pas eu lieu.
@@ -879,7 +879,7 @@ async def ai_literacy_register(user: dict = Depends(require_admin)):
     """
     from services import ai_literacy
     try:
-        rows = supabase.table("profiles").select(
+        rows = db.table("profiles").select(
             "id, name, email, role, status, ai_literacy_ack_at, ai_literacy_version"
         ).order("name").execute().data or []
     except Exception as e:  # noqa: BLE001
@@ -965,7 +965,7 @@ async def list_errors(limit: int = 100, level: Optional[str] = None, user: dict 
 @router.get("/tickets")
 async def list_tickets(user: dict = Depends(require_admin)):
     try:
-        return supabase.table("support_messages").select("*").order(
+        return db.table("support_messages").select("*").order(
             "created_at", desc=True
         ).execute().data or []
     except Exception:
@@ -980,7 +980,7 @@ class TicketUpdate(BaseModel):
 @router.patch("/tickets/{ticket_id}")
 async def update_ticket(ticket_id: str, body: TicketUpdate, user: dict = Depends(require_admin)):
     try:
-        response = supabase.table("support_messages").update(
+        response = db.table("support_messages").update(
             {"status": body.status}
         ).eq("id", ticket_id).execute()
         if not response.data:
@@ -1007,7 +1007,7 @@ async def decision_insights(days: int = 90, user: dict = Depends(require_admin))
     days = max(7, min(int(days or 90), 365))
     since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     try:
-        rows = supabase.table("human_decision").select(
+        rows = db.table("human_decision").select(
             "ao_id, consultant_id, ai_rank, ai_score, decision, justification, decided_by, decided_at"
         ).gte("decided_at", since).order("decided_at", desc=True).execute().data or []
     except Exception:
@@ -1066,13 +1066,13 @@ async def decision_insights(days: int = 90, user: dict = Depends(require_admin))
     ao_titles, op_names = {}, {}
     if ao_ids:
         try:
-            for a in supabase.table("appels_offres").select("id, title").in_("id", list(ao_ids)).execute().data or []:
+            for a in db.table("appels_offres").select("id, title").in_("id", list(ao_ids)).execute().data or []:
                 ao_titles[a["id"]] = a.get("title")
         except Exception:
             pass
     if op_ids:
         try:
-            for p in supabase.table("profiles").select("id, name, email").in_("id", list(op_ids)).execute().data or []:
+            for p in db.table("profiles").select("id, name, email").in_("id", list(op_ids)).execute().data or []:
                 op_names[p["id"]] = p.get("name") or p.get("email")
         except Exception:
             pass
@@ -1111,7 +1111,7 @@ async def ao_outcomes(days: int = 180, user: dict = Depends(require_admin)):
              "by_outcome": {"pourvu": 0, "non_pourvu": 0, "sans_suite": 0},
              "pourvu_rate": 0, "by_partner": [], "weekly": [], "to_close": []}
     try:
-        rows = supabase.table("appels_offres").select(
+        rows = db.table("appels_offres").select(
             "id, ao_outcome, winning_partner_id, outcome_at"
         ).not_.is_("ao_outcome", "null").gte("outcome_at", since).execute().data or []
     except Exception:
@@ -1142,7 +1142,7 @@ async def ao_outcomes(days: int = 180, user: dict = Depends(require_admin)):
     names: dict = {}
     if by_partner:
         try:
-            for p in supabase.table("profiles").select("id, name, email").in_(
+            for p in db.table("profiles").select("id, name, email").in_(
                     "id", list(by_partner)).execute().data or []:
                 names[p["id"]] = p.get("name") or p.get("email")
         except Exception:
@@ -1156,7 +1156,7 @@ async def ao_outcomes(days: int = 180, user: dict = Depends(require_admin)):
     # les clôturer. Best-effort (colonnes 0003/0004 requises).
     to_close = []
     try:
-        rows2 = supabase.table("appels_offres").select(
+        rows2 = db.table("appels_offres").select(
             "id, title, reference, archived_at, clients(name)"
         ).eq("archived", True).is_("ao_outcome", "null").order(
             "archived_at", desc=True).limit(30).execute().data or []
@@ -1216,7 +1216,7 @@ async def business_kpis(user: dict = Depends(require_admin)):
     # --- Chargement des tables (une passe, colonnes minimales) -----------------
     aos = []
     try:
-        aos = supabase.table("appels_offres").select(
+        aos = db.table("appels_offres").select(
             "id, notified_at, created_at, ao_outcome, outcome_at, status, archived, budget_max"
         ).execute().data or []
     except Exception:
@@ -1224,7 +1224,7 @@ async def business_kpis(user: dict = Depends(require_admin)):
 
     states = []
     try:
-        states = supabase.table("ao_consultant_state").select(
+        states = db.table("ao_consultant_state").select(
             "ao_id, consultant_id, contact_status, validation, sent_to_client_at, deal_status"
         ).execute().data or []
     except Exception:
@@ -1232,7 +1232,7 @@ async def business_kpis(user: dict = Depends(require_admin)):
 
     subs = []
     try:
-        subs = supabase.table("submissions").select(
+        subs = db.table("submissions").select(
             "id, ao_id, consultant_id, submitted_by"
         ).execute().data or []
     except Exception:
@@ -1343,7 +1343,7 @@ async def business_kpis(user: dict = Depends(require_admin)):
         ao_ids: set = set()
         if per_partner:
             try:
-                for p in supabase.table("profiles").select(
+                for p in db.table("profiles").select(
                         "id, name, email, role").in_("id", list(per_partner)).execute().data or []:
                     if p.get("role") == "ao":
                         ao_ids.add(p["id"])
@@ -1397,7 +1397,7 @@ async def business_kpis(user: dict = Depends(require_admin)):
     try:
         # États avec les colonnes marge (repli sans elles -> agrégat vide)
         try:
-            marge_states = supabase.table("ao_consultant_state").select(
+            marge_states = db.table("ao_consultant_state").select(
                 "ao_id, consultant_id, deal_status, sent_to_client_at, tjm_achat, tjm_vente"
             ).execute().data or []
         except Exception:
@@ -1406,7 +1406,7 @@ async def business_kpis(user: dict = Depends(require_admin)):
         # TJM d'achat de repli (coût consultant) si tjm_achat non renseigné
         tjm_by_consultant: dict = {}
         try:
-            for c in supabase.table("consultants").select("id, tjm").execute().data or []:
+            for c in db.table("consultants").select("id, tjm").execute().data or []:
                 tjm_by_consultant[c.get("id")] = c.get("tjm")
         except Exception:
             tjm_by_consultant = {}
@@ -1493,7 +1493,7 @@ async def backfill_structured(background_tasks: BackgroundTasks, limit: int = 50
     nombre mis en file. Nécessite la migration 0002 (sinon rien n'est persisté)."""
     from services.cv_structured import build_structured_bg
     try:
-        rows = supabase.table("submissions").select(
+        rows = db.table("submissions").select(
             "id, cv_structured, cv_text").limit(1000).execute().data or []
         todo = [r["id"] for r in rows if r.get("cv_text") and not r.get("cv_structured")]
     except Exception:

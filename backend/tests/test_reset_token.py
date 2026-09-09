@@ -163,7 +163,7 @@ def credentials(monkeypatch):
         "reset_token_expires_at": passwords.reset_token_expiry(NOW).isoformat(),
     }
     faux = _FakeTable([ligne])
-    monkeypatch.setattr(mod, "supabase", faux)
+    monkeypatch.setattr(mod, "db", faux)
     return mod, ligne, clear, token_hash
 
 

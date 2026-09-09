@@ -97,8 +97,8 @@ class _FausseRequete:
 def _brancher(monkeypatch, auth, client, envois):
     from services import credentials
 
-    monkeypatch.setattr(auth, "supabase", client)
-    monkeypatch.setattr(credentials, "supabase", client)
+    monkeypatch.setattr(auth, "db", client)
+    monkeypatch.setattr(credentials, "db", client)
     monkeypatch.setattr(
         auth, "_send_reset_email",
         lambda to_email, url, cle="password_reset", contexte_sup=None:

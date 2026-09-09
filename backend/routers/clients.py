@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional
-from services.supabase_client import supabase
+from services.postgrest_client import db
 from services.geocoding import geocode
 from routers.auth import get_current_user, require_admin, require_staff, is_staff
 
@@ -14,20 +14,20 @@ _CLIENT_GEO_COLS = ("city", "latitude", "longitude")
 
 def _insert_client(record: dict):
     try:
-        return supabase.table("clients").insert(record).execute()
+        return db.table("clients").insert(record).execute()
     except Exception:
         slim = {k: v for k, v in record.items() if k not in _CLIENT_GEO_COLS}
-        return supabase.table("clients").insert(slim).execute()
+        return db.table("clients").insert(slim).execute()
 
 
 def _update_client(record: dict, client_id: str):
     try:
-        return supabase.table("clients").update(record).eq("id", client_id).execute()
+        return db.table("clients").update(record).eq("id", client_id).execute()
     except Exception:
         slim = {k: v for k, v in record.items() if k not in _CLIENT_GEO_COLS}
         if not slim:  # ne restait que des colonnes géo non migrées → no-op
-            return supabase.table("clients").select("*").eq("id", client_id).execute()
-        return supabase.table("clients").update(slim).eq("id", client_id).execute()
+            return db.table("clients").select("*").eq("id", client_id).execute()
+        return db.table("clients").update(slim).eq("id", client_id).execute()
 
 
 class ClientCreate(BaseModel):
@@ -61,7 +61,7 @@ async def create_client(body: ClientCreate, user: dict = Depends(require_admin))
         if not normalized_name:
             raise HTTPException(status_code=400, detail="Le nom du client est requis")
         # Case-insensitive duplicate check
-        existing = supabase.table("clients").select("id, name").ilike("name", normalized_name).execute()
+        existing = db.table("clients").select("id, name").ilike("name", normalized_name).execute()
         if existing.data:
             raise HTTPException(
                 status_code=400,
@@ -102,11 +102,11 @@ async def list_clients(user: dict = Depends(get_current_user)):
     """
     try:
         if is_staff(user):
-            response = supabase.table("clients").select("*").order("name").execute()
+            response = db.table("clients").select("*").order("name").execute()
             return response.data
 
         # Partner: filter by access
-        access = supabase.table("partner_clients").select("client_id, tier").eq(
+        access = db.table("partner_clients").select("client_id, tier").eq(
             "partner_id", user["sub"]
         ).in_("tier", ["list_1", "list_2"]).execute()
 
@@ -116,7 +116,7 @@ async def list_clients(user: dict = Depends(get_current_user)):
         client_ids = [row["client_id"] for row in access.data]
         tiers = {row["client_id"]: row["tier"] for row in access.data}
 
-        clients = supabase.table("clients").select("*").in_("id", client_ids).order("name").execute()
+        clients = db.table("clients").select("*").in_("id", client_ids).order("name").execute()
         # Annotate each client with the partner's tier
         for c in clients.data:
             c["tier"] = tiers.get(c["id"])
@@ -133,11 +133,11 @@ async def list_partners_for_client(client_id: str, user: dict = Depends(require_
     Partners without any row in partner_clients get tier=None.
     """
     try:
-        partners = supabase.table("profiles").select(
+        partners = db.table("profiles").select(
             "id, email, name, created_at"
         ).eq("role", "ao").order("name").execute().data
 
-        access_rows = supabase.table("partner_clients").select("partner_id, tier").eq(
+        access_rows = db.table("partner_clients").select("partner_id, tier").eq(
             "client_id", client_id
         ).execute().data
 
@@ -157,7 +157,7 @@ async def get_client(client_id: str, user: dict = Depends(get_current_user)):
     # (nom, contacts) de n'importe quel client du groupement.
     tier = None
     if not is_staff(user):
-        access = supabase.table("partner_clients").select("tier").eq(
+        access = db.table("partner_clients").select("tier").eq(
             "partner_id", user["sub"]
         ).eq("client_id", client_id).in_("tier", ["list_1", "list_2"]).execute().data
         if not access:
@@ -165,7 +165,7 @@ async def get_client(client_id: str, user: dict = Depends(get_current_user)):
             raise HTTPException(status_code=404, detail="Client introuvable")
         tier = access[0]["tier"]
 
-    response = supabase.table("clients").select("*").eq("id", client_id).execute()
+    response = db.table("clients").select("*").eq("id", client_id).execute()
     if not response.data:
         raise HTTPException(status_code=404, detail="Client introuvable")
     client = response.data[0]
@@ -190,7 +190,7 @@ async def update_client(client_id: str, body: ClientUpdate, user: dict = Depends
         if "name" in update_data:
             update_data["name"] = update_data["name"].strip()
             # Case-insensitive duplicate check, excluding this client
-            existing = supabase.table("clients").select("id, name").ilike(
+            existing = db.table("clients").select("id, name").ilike(
                 "name", update_data["name"]
             ).neq("id", client_id).execute()
             if existing.data:
@@ -210,7 +210,7 @@ async def update_client(client_id: str, body: ClientUpdate, user: dict = Depends
 @router.delete("/{client_id}")
 async def delete_client(client_id: str, user: dict = Depends(require_admin)):
     try:
-        supabase.table("clients").delete().eq("id", client_id).execute()
+        db.table("clients").delete().eq("id", client_id).execute()
         return {"message": "Client supprimé"}
     except Exception:
         # Détail loggé côté serveur ; réponse 500 générique (handler global).

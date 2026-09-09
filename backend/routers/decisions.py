@@ -9,7 +9,7 @@ compliance/ai-act/phase-3-technique/04-spec-supervision-humaine.md.
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional
-from services.supabase_client import supabase
+from services.postgrest_client import db
 from services import audit
 from routers.auth import require_staff
 
@@ -44,7 +44,7 @@ async def record_decision(body: DecisionRequest, user: dict = Depends(require_st
         )
 
     try:
-        row = supabase.table("human_decision").insert({
+        row = db.table("human_decision").insert({
             "ao_id": body.ao_id,
             "submission_id": body.submission_id,
             "consultant_id": body.consultant_id,
@@ -76,7 +76,7 @@ async def record_decision(body: DecisionRequest, user: dict = Depends(require_st
 async def list_decisions(ao_id: str, user: dict = Depends(require_staff)):
     """Liste les décisions humaines enregistrées pour un AO (staff UTI)."""
     try:
-        return supabase.table("human_decision").select("*").eq(
+        return db.table("human_decision").select("*").eq(
             "ao_id", ao_id
         ).order("decided_at", desc=True).execute().data or []
     except Exception:

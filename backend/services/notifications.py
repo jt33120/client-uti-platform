@@ -9,7 +9,7 @@ d'email n'interrompt jamais le flux.
 from typing import Optional
 from datetime import datetime, timezone
 
-from services.supabase_client import supabase
+from services.postgrest_client import db
 from services import email_templates, email_outbox
 from config import settings
 
@@ -19,7 +19,7 @@ def _client_name(ao: dict) -> str:
     if isinstance(c, dict) and c.get("name"):
         return c["name"]
     try:
-        row = supabase.table("clients").select("name").eq("id", ao["client_id"]).single().execute().data
+        row = db.table("clients").select("name").eq("id", ao["client_id"]).single().execute().data
         return (row or {}).get("name") or "—"
     except Exception:
         return "—"
@@ -28,7 +28,7 @@ def _client_name(ao: dict) -> str:
 def _emails_for_tiers(client_id: str, tiers: list[str]) -> list[dict]:
     """Partenaires (id, email, name) ayant accès au client pour les tiers donnés."""
     try:
-        access = supabase.table("partner_clients").select("partner_id").eq(
+        access = db.table("partner_clients").select("partner_id").eq(
             "client_id", client_id
         ).in_("tier", tiers).execute().data or []
     except Exception:
@@ -37,7 +37,7 @@ def _emails_for_tiers(client_id: str, tiers: list[str]) -> list[dict]:
     if not ids:
         return []
     try:
-        profiles = supabase.table("profiles").select("id, email, name").in_("id", ids).execute().data or []
+        profiles = db.table("profiles").select("id, email, name").in_("id", ids).execute().data or []
     except Exception:
         return []
     return [p for p in profiles if p.get("email")]
@@ -46,7 +46,7 @@ def _emails_for_tiers(client_id: str, tiers: list[str]) -> list[dict]:
 def _partner_ids_with_submission(ao_id: str) -> set:
     """Partenaires ayant déjà soumis un CV sur cet AO (pour ne pas les relancer)."""
     try:
-        subs = supabase.table("submissions").select("submitted_by").eq("ao_id", ao_id).execute().data or []
+        subs = db.table("submissions").select("submitted_by").eq("ao_id", ao_id).execute().data or []
         return {s["submitted_by"] for s in subs if s.get("submitted_by")}
     except Exception:
         return set()
@@ -151,7 +151,7 @@ def eligible_partners(ao: dict) -> list[dict]:
     déjà soumis un CV, et si leur compte est bloqué. Sert au renvoi ciblé.
     """
     try:
-        access = supabase.table("partner_clients").select("partner_id, tier").eq(
+        access = db.table("partner_clients").select("partner_id, tier").eq(
             "client_id", ao["client_id"]
         ).in_("tier", ["list_1", "list_2"]).execute().data or []
     except Exception:
@@ -161,7 +161,7 @@ def eligible_partners(ao: dict) -> list[dict]:
     if not ids:
         return []
     try:
-        profiles = supabase.table("profiles").select("id, name, email, status").in_("id", ids).execute().data or []
+        profiles = db.table("profiles").select("id, name, email, status").in_("id", ids).execute().data or []
     except Exception:
         return []
     submitted = _partner_ids_with_submission(ao["id"])

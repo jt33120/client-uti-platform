@@ -7,7 +7,7 @@ vides plutôt que d'échouer.
 """
 from collections import defaultdict
 from fastapi import APIRouter, Depends, HTTPException
-from services.supabase_client import supabase
+from services.postgrest_client import db
 from routers.auth import require_staff, require_admin
 
 router = APIRouter(prefix="/map", tags=["cartography"])
@@ -22,14 +22,14 @@ async def map_points(user: dict = Depends(require_staff)):
     activité) — utile immédiatement, sans ressaisie."""
     consultants = []
     try:
-        rows = supabase.table("consultants").select(
+        rows = db.table("consultants").select(
             "id, name, city, latitude, longitude, skills, tjm, availability_status"
         ).execute().data or []
         consultants = [r for r in rows if r.get("latitude") is not None and r.get("longitude") is not None]
     except Exception:
         # Repli si availability_status pas migrée.
         try:
-            rows = supabase.table("consultants").select(
+            rows = db.table("consultants").select(
                 "id, name, city, latitude, longitude, skills, tjm"
             ).execute().data or []
             consultants = [r for r in rows if r.get("latitude") is not None and r.get("longitude") is not None]
@@ -38,14 +38,14 @@ async def map_points(user: dict = Depends(require_staff)):
 
     aos = []
     try:
-        aos = supabase.table("appels_offres").select(
+        aos = db.table("appels_offres").select(
             "id, title, location, work_mode, latitude, longitude, status, client_id, clients(name)"
         ).execute().data or []
     except Exception:
         # Repli si `client_id` n'est pas sélectionnable : on garde les AO sur la
         # carte (les clients perdent juste leur position par centroïde d'AO).
         try:
-            aos = supabase.table("appels_offres").select(
+            aos = db.table("appels_offres").select(
                 "id, title, location, work_mode, latitude, longitude, status, clients(name)"
             ).execute().data or []
         except Exception:
@@ -59,13 +59,13 @@ async def map_points(user: dict = Depends(require_staff)):
 
     clients = []
     try:
-        crows = supabase.table("clients").select(
+        crows = db.table("clients").select(
             "id, name, sector, city, latitude, longitude"
         ).execute().data or []
     except Exception:
         # Colonnes géo pas encore migrées : on garde le repli par centroïde AO.
         try:
-            crows = supabase.table("clients").select("id, name, sector").execute().data or []
+            crows = db.table("clients").select("id, name, sector").execute().data or []
         except Exception:
             crows = []
     for c in crows:
@@ -108,7 +108,7 @@ async def backfill_geocoding(user: dict = Depends(require_admin)):
 
     ao_done = 0
     try:
-        aos = supabase.table("appels_offres").select(
+        aos = db.table("appels_offres").select(
             "id, location, work_mode, latitude, longitude"
         ).execute().data or []
         for a in aos:
@@ -120,7 +120,7 @@ async def backfill_geocoding(user: dict = Depends(require_admin)):
             if not geo:
                 continue
             try:
-                supabase.table("appels_offres").update(
+                db.table("appels_offres").update(
                     {"latitude": geo["latitude"], "longitude": geo["longitude"]}
                 ).eq("id", a["id"]).execute()
                 ao_done += 1
@@ -131,7 +131,7 @@ async def backfill_geocoding(user: dict = Depends(require_admin)):
 
     co_done = 0
     try:
-        cons = supabase.table("consultants").select(
+        cons = db.table("consultants").select(
             "id, city, latitude, longitude"
         ).execute().data or []
         for c in cons:
@@ -143,7 +143,7 @@ async def backfill_geocoding(user: dict = Depends(require_admin)):
             if not geo:
                 continue
             try:
-                supabase.table("consultants").update(
+                db.table("consultants").update(
                     {"latitude": geo["latitude"], "longitude": geo["longitude"]}
                 ).eq("id", c["id"]).execute()
                 co_done += 1
@@ -155,7 +155,7 @@ async def backfill_geocoding(user: dict = Depends(require_admin)):
     # Clients : géocode ceux qui ont une ville renseignée mais pas de coordonnées.
     cl_done = 0
     try:
-        cls = supabase.table("clients").select("id, city, latitude, longitude").execute().data or []
+        cls = db.table("clients").select("id, city, latitude, longitude").execute().data or []
         for c in cls:
             if c.get("latitude") is not None and c.get("longitude") is not None:
                 continue
@@ -165,7 +165,7 @@ async def backfill_geocoding(user: dict = Depends(require_admin)):
             if not geo:
                 continue
             try:
-                supabase.table("clients").update(
+                db.table("clients").update(
                     {"latitude": geo["latitude"], "longitude": geo["longitude"]}
                 ).eq("id", c["id"]).execute()
                 cl_done += 1

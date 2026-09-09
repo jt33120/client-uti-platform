@@ -4,7 +4,7 @@ Chargement de la configuration de scoring (pilotable par l'admin).
 Sépare l'accès base (ici) du moteur pur (`services.scoring`, sans I/O). Best-effort :
 si la table n'existe pas ou est vide, on retombe sur les valeurs par défaut.
 """
-from services.supabase_client import supabase
+from services.postgrest_client import db
 from services.scoring import DEFAULT_STARS, STAR_CRITERIA
 
 
@@ -22,7 +22,7 @@ def get_config() -> dict:
     ses DEFAULTS (grille par défaut à 6 axes).
     """
     try:
-        rows = supabase.table("scoring_config").select("*").limit(1).execute().data or []
+        rows = db.table("scoring_config").select("*").limit(1).execute().data or []
         if rows:
             row = rows[0]
             out = {}

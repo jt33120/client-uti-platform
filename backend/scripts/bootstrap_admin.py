@@ -62,7 +62,7 @@ from pathlib import Path
 # Le script vit dans backend/scripts/ ; les modules sont dans backend/.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from services.supabase_client import supabase  # noqa: E402
+from services.postgrest_client import db  # noqa: E402
 from services import credentials, passwords    # noqa: E402
 
 #: Plus exigeant que les 8 caractères imposés aux comptes ordinaires
@@ -132,7 +132,7 @@ def main() -> int:
     # Supabase, PostgREST arrêté) se manifesterait par une trace illisible au
     # milieu de la création.
     try:
-        admins = supabase.table("profiles").select("id, email").eq(
+        admins = db.table("profiles").select("id, email").eq(
             "role", "admin"
         ).limit(5).execute().data or []
     except Exception as e:  # noqa: BLE001
@@ -161,7 +161,7 @@ def main() -> int:
             # `profiles.email` conserve la casse d'origine et son index UNIQUE
             # porte sur la valeur brute : `ilike` sans joker fait une égalité
             # insensible à la casse, qu'une comparaison exacte raterait.
-            trouves = supabase.table("profiles").select("id, email, name, role").ilike(
+            trouves = db.table("profiles").select("id, email, name, role").ilike(
                 "email", email
             ).limit(2).execute().data or []
         except Exception as e:  # noqa: BLE001
@@ -239,10 +239,10 @@ def main() -> int:
         }
         try:
             try:
-                supabase.table("profiles").insert(profil).execute()
+                db.table("profiles").insert(profil).execute()
             except Exception:
                 profil.pop("org", None)  # colonne 'org' non migrée
-                supabase.table("profiles").insert(profil).execute()
+                db.table("profiles").insert(profil).execute()
         except Exception as e:  # noqa: BLE001
             return _erreur(f"Insertion du profil impossible : {e}")
 
@@ -254,7 +254,7 @@ def main() -> int:
         # mais UNIQUEMENT sur un profil que ce script vient de créer.
         if profil_existant is None:
             try:
-                supabase.table("profiles").delete().eq("id", user_id).execute()
+                db.table("profiles").delete().eq("id", user_id).execute()
             except Exception:  # noqa: BLE001
                 pass
         return _erreur(f"Insertion des identifiants impossible : {e}")

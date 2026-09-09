@@ -36,6 +36,11 @@ router = APIRouter(prefix="/emails", tags=["emails"])
 #: laissent largement passer un humain qui reclique, et rien d'autre.
 _LIMITE = rate_limit_public(30, 3600)
 
+#: Plafond de taille du jeton, vérifié DANS le handler et non déclaré sur le
+#: paramètre de requête. Un vrai jeton fait environ 150 caractères ; au-delà de
+#: celui-ci c'est du bruit, qu'on refuse avant de le donner à PyJWT.
+JETON_MAX = 4096
+
 
 def _page(titre: str, message: str, ok: bool) -> HTMLResponse:
     """Page de confirmation autoportante.
@@ -75,7 +80,22 @@ def _page(titre: str, message: str, ok: bool) -> HTMLResponse:
 
 
 def _desabonner(token: str, source: str) -> tuple[bool, str, str]:
-    """(succès, titre, message) — logique commune au clic humain et au bouton natif."""
+    """(succès, titre, message) — logique commune au clic humain et au bouton natif.
+
+    AUCUNE CONTRAINTE DE LONGUEUR N'EST DÉCLARÉE SUR LE PARAMÈTRE DE REQUÊTE, ET
+    C'EST DÉLIBÉRÉ. Une contrainte déclarée là-bas fait refuser FastAPI AVANT
+    d'entrer ici, avec un 422 et un corps JSON — un cul-de-sac pour quelqu'un
+    qui voulait seulement ne plus recevoir d'emails, donc précisément ce qui
+    pousse au bouton « Spam ». Constaté en production le 9 septembre : une URL
+    tapée à la main avec un jeton trop court rendait ce JSON.
+
+    Tout jeton malformé, absent ou absurdement long doit donc ressortir par la
+    page lisible, et le plafond est vérifié ICI plutôt que déclaré là-bas.
+    """
+    if not token or len(token) > JETON_MAX:
+        return (False, "Lien invalide",
+                "Ce lien de désabonnement est incomplet. Répondez à cet email "
+                "pour être retiré de la liste.")
     try:
         email, categorie = email_optout.verify(token)
     except ValueError:
@@ -97,14 +117,14 @@ def _desabonner(token: str, source: str) -> tuple[bool, str, str]:
 
 @router.get("/unsubscribe", response_class=HTMLResponse,
             dependencies=[Depends(_LIMITE)])
-async def unsubscribe(token: str = Query(..., min_length=16, max_length=2048)):
+async def unsubscribe(token: str = Query(default="")):
     """Lien du pied de page, ouvert dans un navigateur."""
     ok, titre, message = _desabonner(token, source="lien")
     return _page(titre, message, ok)
 
 
 @router.post("/unsubscribe", dependencies=[Depends(_LIMITE)])
-async def unsubscribe_one_click(token: str = Query(..., min_length=16, max_length=2048)):
+async def unsubscribe_one_click(token: str = Query(default="")):
     """Bouton natif du client mail (RFC 8058).
 
     Le corps envoyé est `List-Unsubscribe=One-Click` ; on ne le lit pas — la

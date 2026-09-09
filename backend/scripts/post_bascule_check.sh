@@ -167,15 +167,19 @@ done
 manquants=$(psql -d uti -tA -f "$BACKEND/migrations/verify_seed.sql" | grep -cE 'MANQUANT|INERTE' || true)
 [ "$manquants" -gt 0 ] && ROUGE=$((ROUGE+manquants))
 
-titre "4. Stockage OVH — ce qui doit être privé l'est"
+titre "4. Stockage — ce qui doit être privé l'est"
 
-# services/storage.py distingue les buckets publics des privés par une ACL posée
-# objet par objet. Si le conteneur OVH est lui-même en lecture publique, cette
-# distinction ne sert à rien : tout devient lisible par URL. Un CV, c'est un nom,
-# un téléphone et un parcours — le contrôle ci-dessous n'est pas théorique.
-BASE=$(grep '^S3_PUBLIC_BASE_URL=' "$BACKEND/.env" | cut -d= -f2-)
-if [ -n "$BASE" ]; then
-  CLE_CV=$(BACKEND_DIR="$BACKEND" "$BACKEND/venv/bin/python" - <<'PY'
+# CE CONTRÔLE ÉTAIT ROUGE PAR CONSTRUCTION APRÈS UNE BASCULE RÉUSSIE.
+#
+# Il exigeait S3_PUBLIC_BASE_URL, donc le backend « s3 » — la piste OVH Object
+# Storage, abandonnée faute d'accès au compte. Une bascule correcte vers le
+# disque du VPS le faisait donc échouer, et l'opérateur aurait « corrigé » vers
+# un backend qu'on ne peut pas provisionner. Il branche désormais sur le backend
+# RÉELLEMENT actif, chacun ayant son propre mode de fuite.
+BACKEND_ACTIF=$(grep -E '^STORAGE_BACKEND=' "$BACKEND/.env" | cut -d= -f2- | tr -d '"')
+BACKEND_ACTIF="${BACKEND_ACTIF:-supabase}"     # même défaut que backend/config.py
+
+CLE_CV=$(BACKEND_DIR="$BACKEND" "$BACKEND/venv/bin/python" - <<'PY' 2>/dev/null
 import os, sys
 sys.path.insert(0, os.environ["BACKEND_DIR"])
 from services import storage
@@ -183,17 +187,54 @@ objets = storage.list("cvs", "")
 print(objets[0]["name"] if objets else "")
 PY
 )
-  if [ -n "$CLE_CV" ]; then
-    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "${BASE%/}/cvs/$CLE_CV")
-    [ "$code" = "403" ] || [ "$code" = "401" ] \
-      && ok "un CV n'est PAS lisible anonymement (HTTP $code)" \
-      || ko "un CV répond $code en anonyme — le conteneur OVH est public, corriger MAINTENANT"
-  else
-    ok "aucun CV en stockage (base neuve) — contrôle à refaire après le premier envoi"
-  fi
-else
-  ko "S3_PUBLIC_BASE_URL absent de .env"
-fi
+
+case "$BACKEND_ACTIF" in
+  local)
+    # En local, la fuite possible est le service PUBLIC d'un bucket privé :
+    # routers/files.py ne sert sans jeton que les buckets de storage.PUBLIC_BUCKETS,
+    # dont « cvs » ne fait PAS partie. On vérifie que la porte est bien fermée.
+    BASE=$(grep -E '^PUBLIC_BASE_URL=' "$BACKEND/.env" | cut -d= -f2- | tr -d '"')
+    if [ -z "$BASE" ]; then
+      ko "PUBLIC_BASE_URL absent alors que STORAGE_BACKEND=local — le backend ne devrait pas démarrer"
+    elif [ -n "$CLE_CV" ]; then
+      code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "${BASE%/}/files/public/cvs/$CLE_CV")
+      { [ "$code" = "404" ] || [ "$code" = "403" ]; } \
+        && ok "un CV n'est PAS servi par la route publique (HTTP $code)" \
+        || ko "un CV répond $code sur /files/public/ — « cvs » est traité comme public, corriger MAINTENANT"
+      code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "${BASE%/}/files/d/jeton-invalide")
+      { [ "$code" = "403" ] || [ "$code" = "400" ]; } \
+        && ok "un jeton invalide est refusé (HTTP $code)" \
+        || ko "un jeton invalide répond $code — la signature des URLs ne protège rien"
+    else
+      ok "aucun CV en stockage — contrôle à refaire après le premier envoi"
+    fi
+    MODE=$(stat -c %a "${FILES_DIR:-/var/lib/uti/files}" 2>/dev/null)
+    [ "$MODE" = "700" ] && ok "répertoire des fichiers en 0700" \
+                        || ko "répertoire des fichiers en ${MODE:-absent} — attendu 700"
+    ;;
+  s3)
+    # Si le conteneur OVH est lui-même en lecture publique, l'ACL objet par objet
+    # ne sert à rien : tout devient lisible par URL. Un CV, c'est un nom, un
+    # téléphone et un parcours — le contrôle n'est pas théorique.
+    BASE=$(grep '^S3_PUBLIC_BASE_URL=' "$BACKEND/.env" | cut -d= -f2- | tr -d '"')
+    if [ -z "$BASE" ]; then
+      ko "S3_PUBLIC_BASE_URL absent alors que STORAGE_BACKEND=s3"
+    elif [ -n "$CLE_CV" ]; then
+      code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "${BASE%/}/cvs/$CLE_CV")
+      { [ "$code" = "403" ] || [ "$code" = "401" ]; } \
+        && ok "un CV n'est PAS lisible anonymement (HTTP $code)" \
+        || ko "un CV répond $code en anonyme — le conteneur OVH est public, corriger MAINTENANT"
+    else
+      ok "aucun CV en stockage — contrôle à refaire après le premier envoi"
+    fi
+    ;;
+  supabase)
+    ko "STORAGE_BACKEND=supabase : les fichiers sont ENCORE chez Supabase, la bascule du stockage n'est pas faite"
+    ;;
+  *)
+    ko "STORAGE_BACKEND=$BACKEND_ACTIF inconnu — le backend refuse de démarrer sur cette valeur (config.py)"
+    ;;
+esac
 
 titre "5. Boucles de fond"
 

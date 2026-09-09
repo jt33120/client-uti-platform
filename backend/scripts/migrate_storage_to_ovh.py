@@ -90,10 +90,25 @@ def _s3():
     )
 
 
+class BucketAbsent(RuntimeError):
+    """Le bucket n'existe pas côté Supabase — cas NORMAL, pas une panne.
+
+    « compliance » et « email-assets » ne sont créés qu'à la demande
+    (routers/partners.py, routers/email_templates.py) : tant qu'aucun document
+    n'a été déposé, ils n'existent pas. Sans cette distinction, la copie levait
+    sur le premier bucket absent et `main()` n'atteignait JAMAIS `rewrite_db()`
+    — c'est-à-dire la seule partie qui compte. Le script frère
+    (export_supabase_archive.sh) traite déjà ce cas explicitement.
+    """
+
+
 def _walk_supabase(bucket: str, prefix: str = "") -> list:
     """Recursively list every object path inside a Supabase bucket."""
     paths = []
-    entries = db.storage.from_(bucket).list(prefix) or []
+    try:
+        entries = db.storage.from_(bucket).list(prefix) or []
+    except Exception as exc:  # noqa: BLE001 - bucket absent, droits, réseau
+        raise BucketAbsent(str(exc)) from exc
     for entry in entries:
         name = entry["name"]
         child = f"{prefix}/{name}" if prefix else name
@@ -109,7 +124,11 @@ def migrate_files(dry_run: bool, vers: str) -> int:
     s3 = None if (dry_run or vers != "s3") else _s3()
     total = 0
     for bucket in BUCKETS:
-        paths = _walk_supabase(bucket)
+        try:
+            paths = _walk_supabase(bucket)
+        except BucketAbsent as exc:
+            print(f"\n[{bucket}] absent ou illisible ({exc}) — ignoré")
+            continue
         print(f"\n[{bucket}] {len(paths)} objet(s) à migrer")
         for path in paths:
             key = f"{bucket}/{path}"
@@ -269,14 +288,26 @@ def main() -> int:
     print(f"  Destination : [{args.vers}] {destination}")
     print(f"  Mode        : {'DRY-RUN' if args.dry_run else 'RÉEL'}")
 
-    copied = migrate_files(args.dry_run, args.vers)
-    print(f"\n{copied} fichier(s) copié(s).")
+    # La copie et la réécriture sont INDÉPENDANTES : une copie partielle ne doit
+    # pas empêcher la réécriture, qui est ce dont dépend l'application. L'échec
+    # est signalé par le code de sortie, jamais avalé.
+    souci = 0
+    try:
+        copied = migrate_files(args.dry_run, args.vers)
+        print(f"\n{copied} fichier(s) copié(s).")
+    except Exception as exc:  # noqa: BLE001
+        print(f"\n❌ Copie interrompue : {exc}")
+        souci = 1
 
     if args.rewrite_db:
-        rewrite_db(args.dry_run, args.vers)
+        try:
+            rewrite_db(args.dry_run, args.vers)
+        except Exception as exc:  # noqa: BLE001
+            print(f"❌ Réécriture interrompue : {exc}")
+            souci = 1
 
-    print("\n✅ Terminé.")
-    return 0
+    print("\n✅ Terminé." if not souci else "\n⚠️  Terminé AVEC ERREURS — relire ci-dessus.")
+    return souci
 
 
 if __name__ == "__main__":

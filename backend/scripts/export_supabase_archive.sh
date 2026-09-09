@@ -103,8 +103,14 @@ if [ "$DUMP_MAJOR" -lt 17 ]; then
   exit 2
 fi
 
-STAMP="$(date +%F-%H%M)"
+# SECONDES, pas minutes. La bascule prend DEUX archives — l'état « avant » et
+# l'état « après » réécriture des URLs — et `mkdir -p` ne refuse pas un
+# répertoire existant : deux exports dans la même minute d'horloge fusionnaient
+# en silence, l'« après » écrasant l'« avant ». C'est-à-dire exactement le filet
+# qui permet d'annuler la réécriture.
+STAMP="$(date +%F-%H%M%S)"
 OUT="$DEST/$STAMP"
+[ -e "$OUT" ] && { echo "❌ $OUT existe déjà — refus d'écraser une archive"; exit 3; }
 mkdir -p "$OUT/csv" "$OUT/storage"
 chmod 700 "$DEST" "$OUT"
 

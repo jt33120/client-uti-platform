@@ -417,3 +417,26 @@ def test_un_cv_servi_publiquement_est_rouge():
     sortie = _joue_fuite("42/abc.pdf", "200", "403")
     assert _lignes(sortie, "KO") == 1, sortie
     assert "est traité comme public" in sortie, sortie
+
+
+# ── Une promesse écrite dans la documentation, tenue par le code ───────────
+def test_le_depot_hors_site_ne_supprime_jamais():
+    """`backup_s3_policy.README.md` affirme que retirer la capacité
+    `deleteFiles` de la clé Backblaze ne casse aucune sauvegarde. Cette
+    affirmation n'est vraie que tant que s3_backup.py ne supprime rien — le
+    jour où elle cesserait de l'être, les dépôts échoueraient en production
+    et la documentation expliquerait pourquoi c'est impossible.
+    """
+    code = (RACINE / "deploy" / "s3_backup.py").read_text()
+    for appel in ("delete_object", "delete_objects", "delete_bucket"):
+        assert appel not in code, (
+            f"s3_backup.py appelle {appel} : la clé B2 aurait besoin de "
+            f"`deleteFiles`, ce que backup_s3_policy.README.md interdit. "
+            f"Trancher, et mettre les deux d'accord."
+        )
+
+    readme = (RACINE / "deploy" / "backup_s3_policy.README.md").read_text()
+    assert "listBuckets,listFiles,readFiles,writeFiles" in readme, (
+        "la liste des capacités B2 a bougé sans que ce test le sache"
+    )
+    assert "deleteFiles" in readme, "le README ne nomme plus la capacité refusée"

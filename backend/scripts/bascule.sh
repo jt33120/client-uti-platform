@@ -80,7 +80,12 @@ while [ $# -gt 0 ]; do
     --dry-run)  DRY=1 ;;
     # Pas d'apostrophe dans ce message : bash ouvre une chaîne sur un « ' »
     # même à l'intérieur de "${...:?}", et le fichier entier cesse d'analyser.
-    --depuis)   DEPUIS="${2:?--depuis exige un numero d etape}"; shift ;;
+    --depuis)   DEPUIS="${2:?--depuis exige un numero d etape}"
+                case "$DEPUIS" in
+                  ''|*[!0-9]*) echo "--depuis attend un entier, reçu : $DEPUIS"; exit 2 ;;
+                esac
+                [ "$DEPUIS" -le 11 ] || { echo "--depuis : il n y a que 11 etapes"; exit 2; }
+                shift ;;
     --rollback) ROLLBACK=1 ;;
     *) echo "Option inconnue : $1"; exit 2 ;;
   esac
@@ -236,12 +241,22 @@ DUMP_MAJ="$(pg_dump --version | grep -oE '[0-9]+' | head -1)"
 [ "$(stat -c %a "$URI_FILE" 2>/dev/null)" = "600" ] \
   && ok "URI en 0600" || ko "URI pas en 0600 — chmod 600 $URI_FILE (elle contient un mot de passe)"
 [ -r "$BACKEND/.env" ] && ok ".env du backend lisible" || { ko ".env introuvable"; MANQUE=1; }
-if grep -qi 'supabase\.co' "$BACKEND/.env" 2>/dev/null; then
+# Ce garde-fou ne vaut que TANT QUE l'étape 9 n'a pas eu lieu. Après elle, .env
+# désigne la façade locale — c'est le but. Le maintenir inconditionnel rendait
+# IMPOSSIBLE la reprise que `mort 10` prescrit lui-même (« bash bascule.sh
+# --depuis 10 ») : l'étape 0 refusait de démarrer, et l'opérateur se retrouvait
+# bloqué, fenêtre de maintenance ouverte, avec pour seule issue un rollback.
+if [ "$DEPUIS" -ge 9 ]; then
+  ok "reprise à l'étape $DEPUIS : le contrôle « .env désigne encore Supabase » ne s'applique plus"
+elif grep -qi '^[[:space:]]*[^#]*supabase\.co' "$BACKEND/.env" 2>/dev/null; then
   ok ".env désigne encore Supabase (point de départ attendu)"
 else
-  ko ".env ne désigne plus Supabase — bascule déjà faite ? Vérifie avant d'insister"; MANQUE=1
+  ko ".env ne désigne plus Supabase — bascule déjà faite ? Si tu reprends, dis-le : --depuis 9"; MANQUE=1
 fi
-LIBRE_KO="$(df -k / | awk 'NR==2{print $4}')"
+# -P (POSIX) : sans lui, df coupe sa sortie en deux lignes dès que le nom du
+# périphérique est long (LVM, /dev/mapper/…), NR==2 ne contient que ce nom, et
+# $4 est vide — le contrôle refuserait alors la bascule sur un disque vide.
+LIBRE_KO="$(df -kP / | awk 'NR==2{print $4}')"
 [ "${LIBRE_KO:-0}" -gt 2097152 ] && ok "espace disque : $((LIBRE_KO/1024)) Mo libres" \
                                  || { ko "moins de 2 Go libres — l'archive et le dump ne tiendront pas"; MANQUE=1; }
 systemctl is-active --quiet postgresql && ok "PostgreSQL actif" || { ko "PostgreSQL inactif"; MANQUE=1; }
@@ -283,7 +298,7 @@ if etape 2 "Archive hors ligne de Supabase (état AVANT)"; then
   # l'étape 1 vérifie la fraîcheur de son résultat, l'étape 6 la nouveauté du
   # sien, celle-ci ne vérifiait rien.
   AVANT_EXPORT="$(ls -1dt "$ARCHIVES"/*/ 2>/dev/null | head -1)"
-  faire "bash '$BACKEND/scripts/export_supabase_archive.sh' '$ARCHIVES' --with-secrets" \
+  faire "cd '$BACKEND' && bash scripts/export_supabase_archive.sh '$ARCHIVES' --with-secrets" \
     || mort 2 "l'export a échoué"
   if [ "$DRY" = 0 ]; then
     AV="$(ls -1dt "$ARCHIVES"/*/ 2>/dev/null | head -1)"
@@ -296,7 +311,7 @@ if etape 2 "Archive hors ligne de Supabase (état AVANT)"; then
     [ "$N" -ge 24 ] && ok "$N tables exportées en CSV" \
                     || mort 2 "seulement $N CSV — la liste TABLES du script est incomplète"
     echo "$AV" > "$HOME/.bascule_archive_avant"
-    ko "RAPPEL : $ARCHIVES n'est dans AUCUNE sauvegarde automatique."
+    printf '  \033[33m!\033[0m %s\n' "RAPPEL : $ARCHIVES n'est dans AUCUNE sauvegarde automatique."
     info "backup_db.sh ne couvre que la base et $FICHIERS. Cette archive est le"
     info "seul état « avant » de Supabase : copie-la hors du VPS avant de continuer."
   fi
@@ -357,7 +372,13 @@ fi
 # les heures, et une seule session suffit à faire échouer le renommage de
 # l'étape 8.
 if etape 5 "Fermeture de la fenêtre de maintenance"; then
-  faire "sudo systemctl stop uti-backup.timer" || ko "uti-backup.timer non arrêté (peut-être absent)"
+  # LES DEUX timers, pas un seul. restore_drill.sh:228 et :289 font `psql -d
+  # "$BASE"` avec BASE=${PGDATABASE:-uti} : la répétition de restauration ouvre
+  # donc des sessions sur « uti » exactement comme la sauvegarde, et une seule
+  # session suffit à faire échouer le renommage de l'étape 8.
+  for t in uti-backup.timer uti-restore-drill.timer; do
+    faire "sudo systemctl stop $t" || ko "$t non arrêté (peut-être absent)"
+  done
   faire "sudo systemctl stop uti-backend"      || mort 5 "impossible d'arrêter le backend"
   if [ "$DRY" = 0 ]; then
     sleep 2
@@ -371,7 +392,7 @@ fi
 
 # ═══ 6. Archive « APRÈS » — la source de chargement ═════════════════════════
 if etape 6 "Second export de Supabase (source de chargement)"; then
-  faire "bash '$BACKEND/scripts/export_supabase_archive.sh' '$ARCHIVES' --with-secrets" \
+  faire "cd '$BACKEND' && bash scripts/export_supabase_archive.sh '$ARCHIVES' --with-secrets" \
     || mort 6 "l'export a échoué"
   if [ "$DRY" = 0 ]; then
     AP="$(ls -1dt "$ARCHIVES"/*/ | head -1)"
@@ -402,15 +423,35 @@ if etape 7 "Chargement dans la base de vérification"; then
     faire "psql_su -d uti_verif -c \"create extension if not exists $ext\"" \
       || mort 7 "extension $ext non installable"
   done
+  # RESTAURATION SOUS uti_admin, PAS SOUS postgres — pour deux raisons.
+  #
+  # 1. L'ARCHIVE EST ILLISIBLE PAR postgres. export_supabase_archive.sh fait
+  #    `chmod 700` sur le répertoire puis `chmod -R go-rwx` sur son contenu, et
+  #    tout appartient à julian.talou. `sudo -u postgres pg_restore <archive>`
+  #    ouvre le fichier SOUS L'IDENTITÉ postgres : permission refusée, garantie,
+  #    à l'étape 7 — c'est-à-dire la fenêtre de maintenance déjà ouverte et la
+  #    base neuve à moitié faite. C'est la panne la plus certaine de tout ce
+  #    script, et elle ne se voyait qu'à l'exécution.
+  # 2. Les tables naissent alors PROPRIÉTÉ de uti_admin, au lieu d'être créées
+  #    par postgres puis rapatriées après coup. C'est exactement le défaut qui a
+  #    fait échouer toutes les sauvegardes jusqu'au 26 août (BASCULE.md §0.6).
+  #
+  # L'authentification « peer » mappe le compte UNIX julian.talou vers le rôle
+  # uti_admin (install_db.sh) : aucun mot de passe, et le fichier est lu par son
+  # propre propriétaire. roles_postgrest.sql reste joué ensuite — il pose les
+  # GRANT de service_role, que la propriété seule ne donne pas.
+  #
   # --exit-on-error : sans lui, pg_restore continue après une erreur et rend 0.
   # Journal complet dans un fichier : `| tail -20` masquait la cause.
   JOURNAL="/tmp/bascule-restore-$$.log"
-  faire "sudo -u postgres pg_restore --no-owner --no-acl --exit-on-error --schema=public -d uti_verif '$AP/dump.pgcustom' > '$JOURNAL' 2>&1" \
+  faire "pg_restore -U '$PROPRIO' --no-owner --no-acl --exit-on-error --schema=public -d uti_verif '$AP/dump.pgcustom' > '$JOURNAL' 2>&1" \
     || { [ "$DRY" = 0 ] && tail -30 "$JOURNAL"; mort 7 "pg_restore a échoué — journal complet : $JOURNAL"; }
-  # LE POINT QUI A CASSÉ LA SAUVEGARDE EN AOÛT : les tables viennent d'être
-  # créées par « postgres », donc uti_admin n'en possède aucune et service_role
-  # n'a aucun droit dessus. roles_postgrest.sql §3bis+§4 répare les deux.
-  faire "psql_su -d uti_verif -v owner='$PROPRIO' -f '$BACKEND/deploy/roles_postgrest.sql'" \
+  # `< fichier` ET NON `-f fichier`, pour la MÊME raison que ci-dessus : le
+  # fichier est sous /home/julian.talou, dont le mode 0750 interdit à postgres de
+  # traverser. install_db.sh:316-318 énonce la règle noir sur blanc — « sudo -u
+  # postgres psql -f échouerait sur un fichier situé sous /home ». Avec `<`, la
+  # redirection est ouverte par le shell appelant, qui EST julian.talou.
+  faire "psql_su -d uti_verif -v owner='$PROPRIO' < '$BACKEND/deploy/roles_postgrest.sql'" \
     || mort 7 "roles_postgrest.sql a échoué — service_role n'aurait aucun droit"
   if [ "$DRY" = 0 ]; then
     N=$(sudo -u postgres psql -tAd uti_verif -c \
@@ -489,17 +530,35 @@ if etape 9 "Bascule des trois lignes de .env"; then
   fi
   faire "sed -i 's#^SUPABASE_URL=.*#SUPABASE_URL=http://127.0.0.1:8080#' '$BACKEND/.env'" \
     || mort 9 "réécriture de SUPABASE_URL impossible"
-  faire "grep -q '^STORAGE_BACKEND=' '$BACKEND/.env' && sed -i 's#^STORAGE_BACKEND=.*#STORAGE_BACKEND=local#' '$BACKEND/.env' || echo 'STORAGE_BACKEND=local' >> '$BACKEND/.env'"
-  faire "grep -q '^PUBLIC_BASE_URL=' '$BACKEND/.env' && sed -i 's#^PUBLIC_BASE_URL=.*#PUBLIC_BASE_URL=$BASE_PUBLIQUE#' '$BACKEND/.env' || echo 'PUBLIC_BASE_URL=$BASE_PUBLIQUE' >> '$BACKEND/.env'"
+  # `grep && sed || echo` est un piège : le `||` se déclenche AUSSI quand le sed
+  # échoue, ce qui ajouterait une SECONDE ligne au lieu de remplacer la première
+  # — et pydantic-settings prendrait alors l'une des deux sans qu'on sache
+  # laquelle. On teste donc explicitement, et on vérifie.
+  for couple in "STORAGE_BACKEND=local" "PUBLIC_BASE_URL=$BASE_PUBLIQUE"; do
+    cle="${couple%%=*}"
+    if grep -q "^$cle=" "$BACKEND/.env" 2>/dev/null; then
+      faire "sed -i 's#^$cle=.*#$couple#' '$BACKEND/.env'" || mort 9 "réécriture de $cle impossible"
+    else
+      faire "echo '$couple' >> '$BACKEND/.env'" || mort 9 "ajout de $cle impossible"
+    fi
+    [ "$DRY" = 1 ] || [ "$(grep -c "^$cle=" "$BACKEND/.env")" = "1" ] \
+      || mort 9 "$cle apparaît plusieurs fois dans .env — ambigu, à trancher à la main"
+  done
   if [ "$DRY" = 0 ]; then
     grep -qE '^SUPABASE_URL=http://127\.0\.0\.1:8080$' "$BACKEND/.env" && ok "SUPABASE_URL → façade locale" || mort 9 "SUPABASE_URL non basculée"
     grep -qE '^STORAGE_BACKEND=local$'   "$BACKEND/.env" && ok "STORAGE_BACKEND=local" || mort 9 "STORAGE_BACKEND non posé"
     grep -qE '^PUBLIC_BASE_URL=https://' "$BACKEND/.env" && ok "PUBLIC_BASE_URL posée"  || mort 9 "PUBLIC_BASE_URL non posée"
-    if grep -qi 'supabase\.co' "$BACKEND/.env"; then
-      ko "il reste une référence supabase.co dans .env :"; grep -in 'supabase\.co' "$BACKEND/.env"
+    # Les COMMENTAIRES sont ignorés : .env.example:6 porte
+    # « #   AVANT (Supabase)  SUPABASE_URL=https://<projet>.supabase.co », et un
+    # .env dérivé de lui la contient. Aucun des sed ci-dessus ne peut nettoyer
+    # une ligne commentée (ils sont ancrés sur ^VARIABLE=), donc ce contrôle
+    # tuait l'étape 9 APRÈS avoir modifié .env — sans rien à corriger.
+    if grep -qiE '^[[:space:]]*[^#[:space:]].*supabase\.co' "$BACKEND/.env"; then
+      ko "il reste une référence ACTIVE à supabase.co dans .env :"
+      grep -inE '^[[:space:]]*[^#[:space:]].*supabase\.co' "$BACKEND/.env"
       mort 9 "nettoie-la avant de continuer (la sauvegarde $ENV_SAUVE est intacte)"
     fi
-    ok "plus aucune référence supabase.co dans .env"
+    ok "plus aucune ligne active supabase.co dans .env"
   fi
   fait etape9
 fi
@@ -515,7 +574,10 @@ fi
 if etape 10 "Redémarrage du backend et réouverture de la fenêtre"; then
   AVANT_DEP=$(curl -s --max-time 3 "$API/health" 2>/dev/null | grep -o '"deployed_at":"[^"]*"' || echo "arrete")
   faire "cd '$BACKEND' && '$BACKEND/venv/bin/pip' install -q -r requirements.txt" || ko "pip a signalé un problème"
-  faire "sudo systemctl start uti-backend" || mort 10 "le backend ne démarre pas — journalctl -u uti-backend -n 100"
+  # `restart`, PAS `start` : sur une reprise (--depuis 10), le backend tourne
+  # déjà, `start` serait un no-op, `deployed_at` ne changerait pas, et le
+  # contrôle ci-dessous conclurait à tort « le processus n'a PAS redémarré ».
+  faire "sudo systemctl restart uti-backend" || mort 10 "le backend ne démarre pas — journalctl -u uti-backend -n 100"
   if [ "$DRY" = 0 ]; then
     for _ in $(seq 1 15); do sleep 2; curl -sf --max-time 3 "$API/health" >/dev/null && break; done
     curl -sf --max-time 3 "$API/health" >/dev/null || mort 10 "/health muet — bash $0 --rollback"
@@ -532,15 +594,21 @@ if etape 10 "Redémarrage du backend et réouverture de la fenêtre"; then
       && ok "/auth/login répond $code — la table des identifiants est lisible" \
       || mort 10 "/auth/login répond $code (401 attendu) — user_credentials illisible"
   fi
-  faire "sudo systemctl start uti-backup.timer" || ko "uti-backup.timer non relancé"
+  for t in uti-backup.timer uti-restore-drill.timer; do
+    faire "sudo systemctl start $t" || ko "$t non relancé"
+  done
   ok "⏱  Fenêtre de maintenance refermée : la plateforme est de nouveau servie."
   fait etape10
 fi
 
 # ═══ 11. Contrôle final ═════════════════════════════════════════════════════
 if etape 11 "Contrôle de bascule"; then
-  faire "bash '$BACKEND/scripts/post_bascule_check.sh'" || mort 11 "contrôle de bascule ROUGE — lire ci-dessus, puis décider entre corriger et --rollback"
-  faire "bash '$BACKEND/deploy/supervision.sh'" || ko "supervision : au moins une anomalie (voir ci-dessus)"
+  # PGUSER nommé : l'authentification est « peer » avec correspondance, et sans
+  # lui libpq demande le rôle « julian.talou », qui n'existe pas. Les sections
+  # du contrôle qui interrogent la base seraient muettes — vertes sans avoir
+  # rien vérifié. C'est le défaut exact qui a rendu les sauvegardes inertes.
+  faire "PGUSER='$PROPRIO' bash '$BACKEND/scripts/post_bascule_check.sh'" || mort 11 "contrôle de bascule ROUGE — lire ci-dessus, puis décider entre corriger et --rollback"
+  faire "PGUSER='$PROPRIO' bash '$BACKEND/deploy/supervision.sh'" || ko "supervision : au moins une anomalie (voir ci-dessus)"
   fait etape11
 fi
 

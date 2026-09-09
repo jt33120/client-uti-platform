@@ -172,15 +172,40 @@ PY
 
 titre "3. Configuration présente en base"
 
-psql -d uti -v ON_ERROR_STOP=1 -tA -f "$BACKEND/migrations/verify_seed.sql" | while read -r ligne; do
-  case "$ligne" in
-    *MANQUANT*|*INERTE*) ko "$ligne" ;;
-    *)                   ok "$ligne" ;;
-  esac
-done
-# Le pipe crée un sous-shell : on recompte séparément pour que ROUGE soit juste.
-manquants=$(psql -d uti -tA -f "$BACKEND/migrations/verify_seed.sql" | grep -cE 'MANQUANT|INERTE' || true)
-[ "$manquants" -gt 0 ] && ROUGE=$((ROUGE+manquants))
+# UNE SEULE INTERROGATION, CAPTURÉE — et le silence compté comme un échec.
+#
+# Le montage précédent appelait psql DEUX fois : la première derrière un pipe,
+# donc dans un sous-shell, où les ROUGE de ko() mouraient avec lui ; la seconde
+# pour recompter. Ce recomptage avait un angle mort : psql qui NE PEUT PAS SE
+# CONNECTER sort non nul en n'écrivant RIEN sur la sortie standard. `grep -c`
+# comptait alors 0, `|| true` avalait son code, et le script annonçait « aucun
+# réglage manquant » — un vert tiré d'un silence. La panne la plus grave que ce
+# bloc puisse rencontrer était donc la seule qu'il ne pouvait pas signaler.
+#
+# La capture supprime le sous-shell (donc le besoin du second appel) et rend
+# l'absence de réponse visible en tant que telle.
+if seed_sortie=$(psql -d uti -v ON_ERROR_STOP=1 -tA \
+                      -f "$BACKEND/migrations/verify_seed.sql" 2>&1) \
+   && [ -n "$seed_sortie" ]; then
+  while IFS= read -r ligne; do
+    case "$ligne" in
+      *MANQUANT*|*INERTE*) ko "$ligne" ;;   # ko() incrémente ROUGE lui-même
+      *)                   ok "$ligne" ;;
+    esac
+  done <<< "$seed_sortie"
+else
+  # ROUGE et non « ? », alors que c'est bien un contrôle EMPÊCHÉ. La distinction
+  # posée plus haut tient toujours, mais elle départage selon ce que coûte le
+  # silence : le hors-site non lu reste prouvé par ailleurs (systemd a déposé
+  # l'archive), tandis qu'ici plus rien n'atteste des réglages. Or ROUGE=0 vaut
+  # « Supabase peut être supprimé ». Un « ? » laisserait donc ce feu vert
+  # s'allumer sur une base muette, ce qui est précisément le vert-tiré-d'un-
+  # silence que le bloc ci-dessus élimine.
+  ko "la base n'a pas répondu : les réglages ne sont PAS vérifiés"
+  printf '%s\n' "$seed_sortie" | sed 's/^/       /'
+  nv "   psql s'authentifie en « peer » : c'est le compte UNIX qui choisit le"
+  nv "   rôle (pg_ident.conf). Lancer sous julian.talou, PGUSER=uti_admin."
+fi
 
 titre "4. Stockage — ce qui doit être privé l'est"
 
@@ -326,7 +351,15 @@ fi
 
 if [ "$_secrets_lus" = 0 ] && [ -f /etc/uti-backup.env ]; then
   nv "hors-site NON VÉRIFIÉ : /etc/uti-backup.env illisible sous $(id -un) (0600 root)."
-  nv "   Relancer en root pour ces trois contrôles :  sudo -E $0"
+  # SURTOUT PAS `sudo -E $0`, ce que ce message conseillait. PostgreSQL
+  # s'authentifie ici en « peer » : c'est le compte UNIX appelant qui décide du
+  # rôle, et pg_ident.conf (install_db.sh:263-268) ne mappe que julian.talou et
+  # postgrest. Sous root, les deux psql de la section 3 échouent — donc pour
+  # rendre trois contrôles au hors-site, on en aurait cassé sept ailleurs.
+  # La bonne manœuvre est de rafraîchir le laissez-passer sudo : le repli
+  # `sudo -n cat` ci-dessus s'en sert, et le script reste sous julian.talou.
+  nv "   Rafraîchir le laissez-passer sudo, puis relancer SOUS TON COMPTE :"
+  nv "     sudo -v && PGUSER=uti_admin bash $0"
   nv "   La sauvegarde elle-même, lancée par systemd, lit bien ce fichier —"
   nv "   voir la ligne « dernière sauvegarde RÉUSSIE » ci-dessus, qui fait foi."
 elif [ -f /etc/uti-backup.env ]; then

@@ -196,3 +196,128 @@ verdict "$1" "$2"'''
     assert _bash(garde, "293000", "291000") == "ACCEPTE"   # stable
     assert _bash(garde, "340000", "293000") == "ACCEPTE"   # croissance
     assert _bash(garde, "176000", "293000") == "ACCEPTE"   # purge RGPD légitime
+
+
+# ── Le vert tiré d'un silence ──────────────────────────────────────────────
+# Le 9 septembre, la section 3 appelait psql DEUX fois : une fois derrière un
+# pipe (sous-shell, où les ROUGE de ko() étaient perdus), puis une seconde fois
+# pour recompter avec `grep -cE 'MANQUANT|INERTE' || true`. Or psql qui ne peut
+# pas se CONNECTER sort non nul en n'écrivant rien : grep comptait 0, `|| true`
+# avalait le code, et le script concluait « aucun réglage manquant ». La panne
+# la plus grave que ce bloc puisse rencontrer était la seule qu'il taisait.
+def _bloc_seed() -> str:
+    texte = CONTROLE.read_text()
+    m = re.search(r'^if seed_sortie=.*?^fi$', texte, re.S | re.M)
+    assert m, "le bloc de vérification du seed n'a plus la forme attendue"
+    return (
+        'ROUGE=0\n'
+        'ok() { echo "OK $1"; }\n'
+        'ko() { echo "KO $1"; ROUGE=$((ROUGE+1)); }\n'
+        'nv() { echo "NV $1"; }\n'
+        'BACKEND=/inexistant\n'
+        # psql de substitution : sortie et code de retour pilotés par le test.
+        'psql() { [ -n "$STUB_SORTIE" ] && printf %s\\\\n "$STUB_SORTIE"; return "$STUB_CODE"; }\n'
+        + m.group(0)
+        + '\necho "ROUGE=$ROUGE"\n'
+    )
+
+
+def _joue_seed(sortie: str, code: int) -> tuple[str, int]:
+    out = subprocess.run(
+        ["bash", "-c", _bloc_seed()],
+        capture_output=True, text=True,
+        env={"PATH": "/usr/bin:/bin", "STUB_SORTIE": sortie, "STUB_CODE": str(code)},
+    )
+    texte = out.stdout
+    m = re.search(r'ROUGE=(\d+)', texte)
+    assert m, f"le bloc n'a pas terminé : {out.stdout!r} {out.stderr!r}"
+    return texte, int(m.group(1))
+
+
+def _lignes(texte: str, prefixe: str) -> int:
+    return sum(1 for l in texte.splitlines() if l.startswith(prefixe + " "))
+
+
+SEED_VERT = (
+    "app_settings/notifications      OK\n"
+    "app_settings/data_retention     OK (purge désactivée — décision assumée)\n"
+    "app_settings/ai_budget          OK (20.0 $/sem, 60.0 $/mois)\n"
+    "scoring_config                  OK (1 ligne)"
+)
+
+
+def test_seed_complet_ne_produit_aucun_rouge():
+    texte, rouge = _joue_seed(SEED_VERT, 0)
+    assert rouge == 0, texte
+    # Les lignes ÉMISES par le stub, pas les « OK » du contenu : la sortie de
+    # verify_seed.sql porte elle-même « OK (purge désactivée…) ».
+    assert _lignes(texte, "OK") == 4, texte
+
+
+def test_seed_incomplet_compte_chaque_manquant():
+    """Le comptage doit survivre à la disparition du sous-shell.
+
+    L'ancien montage lisait les lignes derrière un pipe : `ko` s'exécutait dans
+    un sous-shell et son incrément de ROUGE mourait avec lui. D'où le second
+    appel à psql, qui portait le vrai défaut.
+    """
+    sortie = SEED_VERT.replace("app_settings/ai_budget          OK (20.0 $/sem, 60.0 $/mois)",
+                               "app_settings/ai_budget          MANQUANT")
+    sortie = sortie.replace("app_settings/notifications      OK",
+                            "app_settings/notifications      INERTE (plafonds à 0)")
+    texte, rouge = _joue_seed(sortie, 0)
+    assert rouge == 2, texte
+
+
+@pytest.mark.parametrize("sortie, code", [
+    ("", 2),                                        # connexion refusée
+    ("psql: error: Peer authentication failed", 2),  # le cas root, précisément
+    ("", 0),                                        # muet mais « réussi »
+])
+def test_une_base_qui_ne_repond_pas_est_un_rouge_pas_un_vert(sortie, code):
+    """C'EST LE TEST QUI COMPTE. ROUGE=0 vaut « Supabase peut être supprimé »."""
+    texte, rouge = _joue_seed(sortie, code)
+    assert rouge >= 1, (
+        f"psql sortie={sortie!r} code={code} n'a produit aucun rouge : le script "
+        f"conclurait « réglages vérifiés » sans avoir lu la base.\n{texte}"
+    )
+    assert _lignes(texte, "OK") == 0, f"des réglages sont déclarés conformes : {texte!r}"
+
+
+def test_le_recomptage_par_grep_a_disparu():
+    texte = CONTROLE.read_text()
+    assert "grep -cE 'MANQUANT|INERTE'" not in texte, (
+        "le recomptage est de retour : `|| true` avale le code de psql et un "
+        "échec de connexion se compte 0"
+    )
+    assert texte.count('-f "$BACKEND/migrations/verify_seed.sql"') == 1, (
+        "verify_seed.sql est de nouveau interrogé deux fois ; les deux appels "
+        "peuvent diverger et le second masque les pannes de connexion"
+    )
+
+
+# ── La consigne de secours ne doit pas casser ce qu'elle répare ────────────
+def test_on_ne_conseille_plus_de_relancer_le_controle_en_root():
+    """`sudo -E $0` rendait trois contrôles au hors-site et en cassait sept.
+
+    pg_hba est en « peer map=uti » : c'est le compte UNIX appelant qui choisit
+    le rôle PostgreSQL, et pg_ident.conf ne mappe que julian.talou et postgrest.
+    Sous root, les deux psql de la section 3 échouent.
+    """
+    # Hors commentaires : la ligne qui met en garde CONTRE `sudo -E $0` le cite,
+    # et une recherche sur le fichier entier se piégerait sur son propre avis.
+    code = "\n".join(l for l in CONTROLE.read_text().splitlines()
+                     if not l.lstrip().startswith("#"))
+    assert "sudo -E $0" not in code, (
+        "le script conseille de nouveau de se relancer en root"
+    )
+    texte = CONTROLE.read_text()
+    assert "sudo -v" in texte, "la manœuvre de remplacement a disparu"
+
+    ident = (RACINE / "deploy" / "install_db.sh").read_text()
+    m = re.search(r'cat > "\$\{PG_CONF_DIR\}/pg_ident\.conf".*?\nEOF', ident, re.S)
+    assert m, "pg_ident.conf n'est plus écrit par install_db.sh"
+    assert not re.search(r'^uti\s+"?root"?', m.group(0), re.M), (
+        "root est désormais mappé dans pg_ident.conf : la consigne « relancer "
+        "en root » redeviendrait valide, revoir ce test et le message du script"
+    )

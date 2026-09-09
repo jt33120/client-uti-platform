@@ -180,7 +180,19 @@ def _nouvelle_valeur(ancienne: str, bucket: str, vers: str) -> Optional[str]:
     déjà — storage._object_path() rend le chemin tel quel quand il n'y trouve
     pas de marqueur (routers/submissions.py:210, routers/partners.py:428).
     """
-    chemin = _chemin_objet(ancienne or "", bucket)
+    ancienne = ancienne or ""
+    if vers == "local" and bucket in PUBLIC_BUCKETS:
+        # DÉJÀ RÉÉCRITE : ne pas y toucher. Sans ce test, un second passage
+        # ré-encode le chemin déjà encodé — « mon avatar.png » devient
+        # « mon%20avatar.png » puis « mon%2520avatar.png », et l'image casse.
+        # Les buckets privés n'ont pas ce problème (chemin nu, aucun marqueur à
+        # retrouver, donc _chemin_objet renvoie None au second passage) ; les
+        # publics l'ont, parce que leur URL cible CONTIENT « /<bucket>/ » et se
+        # laisse donc re-découper indéfiniment.
+        deja = f"{(settings.public_base_url or '').rstrip('/')}/files/public/{bucket}/"
+        if ancienne.startswith(deja):
+            return None
+    chemin = _chemin_objet(ancienne, bucket)
     if not chemin:
         return None
     if vers == "local":

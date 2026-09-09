@@ -103,6 +103,13 @@ faire() {
   if [ "$DRY" = 1 ]; then printf '    \033[33m[simulation]\033[0m %s\n' "$*"; return 0; fi
   eval "$@"
 }
+
+# Certaines commandes sont EN LECTURE SEULE et doivent tourner même en
+# simulation : c'est tout l'intérêt d'une simulation. Un --dry-run qui se
+# contente d'imprimer les commandes ne prouve rien qu'une lecture du script ne
+# prouverait — et surtout, il n'attrape ni un bucket illisible, ni une URI
+# Supabase refusée, ni un comptage de tables qui ne tombe pas juste.
+lire() { eval "$@"; }
 fait()  { [ "$DRY" = 1 ] || echo "$1" >> "$ETAT"; }
 deja()  { [ -f "$ETAT" ] && grep -qx "$1" "$ETAT"; }
 
@@ -271,11 +278,18 @@ fi
 # ═══ 2. Archive « AVANT » ═══════════════════════════════════════════════════
 if etape 2 "Archive hors ligne de Supabase (état AVANT)"; then
   faire "install -d -m 700 '$ARCHIVES'" || mort 2 "répertoire d'archives non créable"
+  # Photo de l'existant AVANT l'export. Sans elle, `ls -1dt | head -1` validait
+  # en vert une archive de la semaine dernière quand l'export venait d'échouer —
+  # l'étape 1 vérifie la fraîcheur de son résultat, l'étape 6 la nouveauté du
+  # sien, celle-ci ne vérifiait rien.
+  AVANT_EXPORT="$(ls -1dt "$ARCHIVES"/*/ 2>/dev/null | head -1)"
   faire "bash '$BACKEND/scripts/export_supabase_archive.sh' '$ARCHIVES' --with-secrets" \
     || mort 2 "l'export a échoué"
   if [ "$DRY" = 0 ]; then
     AV="$(ls -1dt "$ARCHIVES"/*/ 2>/dev/null | head -1)"
     [ -n "$AV" ] || mort 2 "aucune archive produite"
+    [ "$AV" != "$AVANT_EXPORT" ] \
+      || mort 2 "aucune archive NOUVELLE — l'export a échoué en laissant l'ancienne en place"
     ( cd "$AV" && sha256sum -c SHA256SUMS >/dev/null 2>&1 ) \
       && ok "empreintes vérifiées ($AV)" || mort 2 "SHA256SUMS ne se vérifie pas"
     N=$(ls -1 "$AV/csv" | wc -l)
@@ -292,7 +306,7 @@ fi
 # ═══ 3. Les fichiers sur le disque ══════════════════════════════════════════
 if etape 3 "Copie des objets vers $FICHIERS"; then
   info "simulation d'abord — elle liste ce qui serait copié :"
-  faire "cd '$BACKEND' && '$VENV' scripts/migrate_storage_to_ovh.py --dry-run" \
+  lire "cd '$BACKEND' && '$VENV' scripts/migrate_storage_to_ovh.py --dry-run" \
     || mort 3 "la simulation de copie a échoué"
   faire "cd '$BACKEND' && '$VENV' scripts/migrate_storage_to_ovh.py --vers local" \
     || mort 3 "la copie des fichiers a échoué"
@@ -315,7 +329,7 @@ fi
 # (services/storage.py:_object_path) — rien ne casse dans l'intervalle. Seuls
 # les AVATARS pointeront vers le VPS avant la bascule du .env.
 if etape 4 "Réécriture des URLs de fichiers dans Supabase"; then
-  faire "cd '$BACKEND' && PUBLIC_BASE_URL='$BASE_PUBLIQUE' '$VENV' scripts/migrate_storage_to_ovh.py --vers local --rewrite-db --dry-run" \
+  lire "cd '$BACKEND' && PUBLIC_BASE_URL='$BASE_PUBLIQUE' '$VENV' scripts/migrate_storage_to_ovh.py --vers local --rewrite-db --dry-run" \
     || mort 4 "la simulation de réécriture a échoué"
   faire "cd '$BACKEND' && PUBLIC_BASE_URL='$BASE_PUBLIQUE' '$VENV' scripts/migrate_storage_to_ovh.py --vers local --rewrite-db" \
     || mort 4 "la réécriture a échoué"

@@ -344,3 +344,44 @@ def test_la_configuration_refuse_un_backend_de_stockage_inconnu():
         "Le backend démarre en mode local sans PUBLIC_BASE_URL : les liens de CV "
         "seraient relatifs, donc résolus sur le domaine Vercel du frontend."
     )
+
+
+# ── Rejeu de la migration de stockage ───────────────────────────────────────
+# Trouvé par relecture adversariale, reproduit, puis corrigé.
+#
+# `_chemin_objet` promet dans sa docstring que le script est « REJOUABLE sans
+# dégât ». C'était vrai des buckets PRIVÉS — un chemin nu ne contient aucun
+# marqueur, donc le second passage renvoie None — et FAUX des publics : leur URL
+# cible contient « /<bucket>/ », donc elle se laisse re-découper indéfiniment, et
+# `quote()` ré-encode le « % » du passage précédent.
+#
+# Sur un nom sans caractère spécial, la valeur retombe à l'identique et rien ne
+# se voit. Sur « José.png » ou « mon avatar.png » — c'est-à-dire sur une
+# plateforme française — la deuxième exécution casse l'image, en silence.
+def test_le_rejeu_ne_double_encode_pas_les_urls_publiques(monkeypatch):
+    from config import settings
+    monkeypatch.setattr(settings, "public_base_url", "https://vps.test")
+    monkeypatch.setattr(settings, "storage_backend", "local")
+    from scripts.migrate_storage_to_ovh import _nouvelle_valeur
+
+    for nom in ("a.png", "mon avatar.png", "José.png"):
+        depart = f"https://x.supabase.co/storage/v1/object/public/avatars/2026/07/{nom}"
+        passe1 = _nouvelle_valeur(depart, "avatars", "local")
+        assert passe1 and passe1.startswith("https://vps.test/files/public/avatars/")
+        # Le second passage doit dire « rien à faire », pas produire une valeur
+        # différente : c'est ce que `rewrite_db` interprète comme « ne pas écrire ».
+        assert _nouvelle_valeur(passe1, "avatars", "local") is None, (
+            f"rejeu non idempotent sur {nom!r} : la valeur serait réécrite"
+        )
+
+
+def test_le_rejeu_laisse_les_buckets_prives_intacts(monkeypatch):
+    """Contre-épreuve : le chemin nu d'un bucket privé ne bouge pas non plus."""
+    from config import settings
+    monkeypatch.setattr(settings, "public_base_url", "https://vps.test")
+    from scripts.migrate_storage_to_ovh import _nouvelle_valeur
+
+    depart = "https://x.supabase.co/storage/v1/object/public/cvs/2026/07/cv.pdf"
+    passe1 = _nouvelle_valeur(depart, "cvs", "local")
+    assert passe1 == "2026/07/cv.pdf"
+    assert _nouvelle_valeur(passe1, "cvs", "local") is None

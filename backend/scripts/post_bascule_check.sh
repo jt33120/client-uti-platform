@@ -219,12 +219,31 @@ titre "4. Stockage — ce qui doit être privé l'est"
 BACKEND_ACTIF=$(grep -E '^STORAGE_BACKEND=' "$BACKEND/.env" | cut -d= -f2- | tr -d '"')
 BACKEND_ACTIF="${BACKEND_ACTIF:-supabase}"     # même défaut que backend/config.py
 
-CLE_CV=$(BACKEND_DIR="$BACKEND" "$BACKEND/venv/bin/python" - <<'PY' 2>/dev/null
+# LA CLÉ D'UN CV RÉEL — PRISE EN BASE, ET PLUS PAR UN LISTAGE QUI NE VOIT RIEN.
+#
+# Ce bloc rendait systématiquement une chaîne vide, et les deux contrôles de
+# fuite ci-dessous n'ont donc JAMAIS tourné — en affichant vert. Mesuré le 9
+# septembre sur une plateforme qui servait 31 CV : « aucun CV en stockage ».
+#
+# La cause est structurelle, pas circonstancielle. En mode local,
+# storage.list() ne rend que les fichiers posés DIRECTEMENT dans le répertoire
+# du bucket (services/storage.py:584, `if e.is_file()`), or un CV s'écrit en
+# cvs/<ao_id>/<uuid>.pdf (routers/submissions.py:185). Le listage ne voyait donc
+# que des répertoires, et rendait []. Aucun envoi de CV, jamais, n'aurait pu
+# faire passer ce contrôle de « à refaire après le premier envoi » à un test.
+#
+# La base est de toute façon la meilleure source : c'est la valeur RÉELLEMENT
+# stockée qu'on veut éprouver, celle que le navigateur demanderait, y compris
+# ses formes héritées (URL Supabase complète) que _object_path sait relire.
+CLE_CV=$(BACKEND_DIR="$BACKEND" "$BACKEND/venv/bin/python" - 2>/dev/null <<'PY'
 import os, sys
 sys.path.insert(0, os.environ["BACKEND_DIR"])
 from services import storage
-objets = storage.list("cvs", "")
-print(objets[0]["name"] if objets else "")
+from services.postgrest_client import db
+r = (db.table("submissions").select("cv_url")
+       .not_.is_("cv_url", "null").limit(1).execute())
+if r.data:
+    print(storage._object_path("cvs", r.data[0]["cv_url"]) or "")
 PY
 )
 
@@ -236,17 +255,25 @@ case "$BACKEND_ACTIF" in
     BASE=$(grep -E '^PUBLIC_BASE_URL=' "$BACKEND/.env" | cut -d= -f2- | tr -d '"')
     if [ -z "$BASE" ]; then
       ko "PUBLIC_BASE_URL absent alors que STORAGE_BACKEND=local — le backend ne devrait pas démarrer"
-    elif [ -n "$CLE_CV" ]; then
-      code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "${BASE%/}/files/public/cvs/$CLE_CV")
-      { [ "$code" = "404" ] || [ "$code" = "403" ]; } \
-        && ok "un CV n'est PAS servi par la route publique (HTTP $code)" \
-        || ko "un CV répond $code sur /files/public/ — « cvs » est traité comme public, corriger MAINTENANT"
+    else
+      if [ -n "$CLE_CV" ]; then
+        code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "${BASE%/}/files/public/cvs/$CLE_CV")
+        { [ "$code" = "404" ] || [ "$code" = "403" ]; } \
+          && ok "un CV n'est PAS servi par la route publique (HTTP $code)" \
+          || ko "un CV répond $code sur /files/public/ — « cvs » est traité comme public, corriger MAINTENANT"
+      else
+        # « ? » et non « ✓ ». C'est ici que le contrôle mentait : sans clé, il
+        # n'a rien éprouvé, et le dire est le minimum. Reste vert au verdict
+        # tant qu'aucun CV n'existe — un envoi le rendra concluant, ce que
+        # l'ancien listage ne pouvait pas faire.
+        nv "aucun CV trouvé en base : la route publique n'est PAS éprouvée"
+      fi
+      # Indépendant du CV, et il était pourtant enfermé dans la même branche :
+      # un jeton invalide se refuse avec ou sans fichier en stockage.
       code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "${BASE%/}/files/d/jeton-invalide")
       { [ "$code" = "403" ] || [ "$code" = "400" ]; } \
         && ok "un jeton invalide est refusé (HTTP $code)" \
         || ko "un jeton invalide répond $code — la signature des URLs ne protège rien"
-    else
-      ok "aucun CV en stockage — contrôle à refaire après le premier envoi"
     fi
     MODE=$(stat -c %a "${FILES_DIR:-/var/lib/uti/files}" 2>/dev/null)
     [ "$MODE" = "700" ] && ok "répertoire des fichiers en 0700" \
@@ -265,7 +292,7 @@ case "$BACKEND_ACTIF" in
         && ok "un CV n'est PAS lisible anonymement (HTTP $code)" \
         || ko "un CV répond $code en anonyme — le conteneur OVH est public, corriger MAINTENANT"
     else
-      ok "aucun CV en stockage — contrôle à refaire après le premier envoi"
+      nv "aucun CV trouvé en base : la lecture anonyme n'est PAS éprouvée"
     fi
     ;;
   supabase)

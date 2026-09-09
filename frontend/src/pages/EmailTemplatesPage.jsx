@@ -130,12 +130,17 @@ function TemplateCard({ tpl, onSaved }) {
     setBcBusy(true); setBcMsg(null)
     try {
       const r = await api.post('/email-templates/broadcast', { key: tpl.key, client_id: bcClient, subject, body })
-      const { sent = 0, recipients = 0, failed = 0 } = r.data
+      const { sent = 0, recipients = 0, failed = 0, skipped = 0 } = r.data
+      // `skipped` est nommé séparément : sans lui, une diffusion où la moitié
+      // des partenaires s'est désabonnée s'affiche « 4/8 envoyés » et se lit
+      // comme une panne à moitié silencieuse.
       setBcMsg({
         ok: failed === 0,
         text: recipients === 0
           ? 'Aucun partenaire habilité sur ce client.'
-          : `${sent}/${recipients} e-mail(s) envoyé(s)${failed ? ` · ${failed} échec(s)` : ''}.`,
+          : `${sent}/${recipients} e-mail(s) envoyé(s)`
+            + (skipped ? ` · ${skipped} désabonné(s)` : '')
+            + (failed ? ` · ${failed} échec(s)` : '') + '.',
       })
     } catch (e) {
       setBcMsg({ ok: false, text: e.response?.data?.detail || 'Échec de la diffusion' })

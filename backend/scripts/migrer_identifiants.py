@@ -137,7 +137,8 @@ def _envoyer(profil: dict, jours: int) -> tuple[bool, str]:
         # plateforme et y demander « mot de passe oublié » aboutit au même lien.
         "plateforme": settings.frontend_url.rstrip("/"),
     }
-    sujet, html, texte = email_templates.build_email("password_migration", contexte)
+    sujet, html, texte = email_templates.build_email("password_migration", contexte,
+                                                     recipient=email)
     ligne = email_outbox.enqueue(
         to_email=email,
         to_name=profil.get("name"),

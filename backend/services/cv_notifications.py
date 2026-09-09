@@ -6,7 +6,7 @@ client. Best-effort : un échec d'email ne casse jamais la mise à jour d'état.
 """
 from typing import Optional
 from services.supabase_client import supabase
-from services import email_templates, storage
+from services import email_optout, email_templates, storage
 from services.email import send_email
 from config import settings
 
@@ -72,8 +72,19 @@ def notify_partner(ao_id: str, consultant_id: str, key: str,
     ctx = _ao_context(ao_id)
     consultant = (sub.get("consultants") or {}).get("name") or "le consultant"
     context = {**ctx, "consultant": consultant, "partner": partner.get("name") or ""}
-    subject, html, text = email_templates.build_email(key, context)
-    ok, err = send_email(to, subject, html, text=text)
+    # Désabonné du suivi de ses CV : on n'envoie pas, et ce n'est pas un échec.
+    # Ce point d'envoi est direct (pas via la file), donc le filtre posé dans
+    # email_outbox.enqueue ne le couvre pas — il est répété ici.
+    # Le saut est journalisé : `partner_email_log` sert à répondre à « pourquoi
+    # ce partenaire n'a-t-il rien reçu ? », et un silence non tracé est
+    # exactement la question qu'on ne saura pas trancher trois semaines plus tard.
+    if email_optout.is_blocked(to, key):
+        _log_email(ao_id, to, partner.get("id"), key, "skipped",
+                   "destinataire désabonné de ce type de notification", sent_by)
+        return True, None
+    subject, html, text = email_templates.build_email(key, context, recipient=to)
+    ok, err = send_email(to, subject, html, text=text,
+                         unsubscribe_url=email_optout.unsubscribe_url(to, key))
     _log_email(ao_id, to, partner.get("id"), key,
                "sent" if ok else "failed", err, sent_by)
     return ok, err
@@ -119,7 +130,8 @@ def send_cv_to_client(ao_id: str, consultant_id: str, to_email: str,
 
     ctx = _ao_context(ao_id)
     context = {**ctx, "link": cv_link, "message": (message or "").strip()}
-    subject, html, text = email_templates.build_email("cv_client", context)
+    subject, html, text = email_templates.build_email("cv_client", context,
+                                                      recipient=to_email)
     ok, err = send_email(to_email, subject, html, text=text)
     _log_email(ao_id, to_email, None, "cv_client",
                "sent" if ok else "failed", err, sent_by)

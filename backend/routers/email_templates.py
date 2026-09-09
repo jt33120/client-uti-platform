@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File
 from pydantic import BaseModel, Field, EmailStr
 
-from services import email_templates, audit, storage
+from services import email_templates, audit, storage, email_optout
 from services.email import send_email
 from services.supabase_client import supabase
 from routers.auth import require_staff, require_admin
@@ -40,6 +40,11 @@ _PREVIEW_SAMPLE = {
     "role": "la plateforme partenaires Groupement-IT",
 }
 
+#: Destinataire fictif de l'aperçu. Sans destinataire, build_email ne peut pas
+#: signer le lien de désabonnement et le pied de page s'affiche sans lui —
+#: l'admin ne verrait donc jamais, dans l'aperçu, ce que le partenaire reçoit.
+_PREVIEW_RECIPIENT = "partenaire@exemple.fr"
+
 
 @router.get("")
 async def list_templates(user: dict = Depends(require_staff)):
@@ -63,7 +68,8 @@ async def preview_template(req: PreviewRequest, user: dict = Depends(require_sta
     if req.key not in email_templates.DEFAULTS:
         raise HTTPException(status_code=404, detail="Template inconnu")
     subject, html, _ = email_templates.build_email(
-        req.key, _PREVIEW_SAMPLE, subject=req.subject, body=req.body
+        req.key, _PREVIEW_SAMPLE, subject=req.subject, body=req.body,
+        recipient=_PREVIEW_RECIPIENT,
     )
     return {"subject": subject, "html": html}
 
@@ -83,11 +89,17 @@ async def send_test(req: TestSendRequest, user: dict = Depends(require_admin)):
     """
     if req.key not in email_templates.DEFAULTS:
         raise HTTPException(status_code=404, detail="Template inconnu")
+    # La vraie adresse du testeur, donc un vrai lien de désabonnement : un test
+    # dont le lien est inerte ne prouve pas que le lien marche. Conséquence
+    # assumée — cliquer ce lien depuis l'email de test désabonne réellement
+    # l'adresse de test, ce qui est précisément ce qu'on voulait vérifier.
     subject, html, text = email_templates.build_email(
-        req.key, _PREVIEW_SAMPLE, subject=req.subject, body=req.body
+        req.key, _PREVIEW_SAMPLE, subject=req.subject, body=req.body,
+        recipient=req.to,
     )
     subject = f"[TEST] {subject}"
-    ok, err = send_email(req.to, subject, html, text=text)
+    ok, err = send_email(req.to, subject, html, text=text,
+                         unsubscribe_url=email_optout.unsubscribe_url(req.to, req.key))
     if not ok:
         raise HTTPException(status_code=502, detail=f"Échec de l'envoi : {err}")
     audit.log_event(
@@ -135,16 +147,22 @@ async def broadcast_to_partners(req: BroadcastRequest, user: dict = Depends(requ
     ).eq("role", "ao").execute().data or []
 
     link = settings.frontend_url
-    sent, failed = 0, []
+    sent, failed, skipped = 0, [], 0
     for p in profs:
         email = (p.get("email") or "").strip()
         if not email:
             continue
+        # Une diffusion en masse est exactement le type d'envoi dont on se
+        # désabonne : le filtre passe avant le rendu.
+        if email_optout.is_blocked(email, req.key):
+            skipped += 1
+            continue
         subject, html, text = email_templates.build_email(
             req.key, {"name": p.get("name") or "", "link": link},
-            subject=req.subject, body=req.body,
+            subject=req.subject, body=req.body, recipient=email,
         )
-        ok, err = send_email(email, subject, html, text=text)
+        ok, err = send_email(email, subject, html, text=text,
+                             unsubscribe_url=email_optout.unsubscribe_url(email, req.key))
         if ok:
             sent += 1
         else:
@@ -152,10 +170,11 @@ async def broadcast_to_partners(req: BroadcastRequest, user: dict = Depends(requ
 
     audit.log_event(
         "email_broadcast", audit.new_run_id(), actor_id=user["sub"],
-        payload={"key": req.key, "client_id": req.client_id, "sent": sent, "failed": len(failed)},
+        payload={"key": req.key, "client_id": req.client_id, "sent": sent,
+                 "failed": len(failed), "skipped": skipped},
     )
     return {"recipients": len(profs), "sent": sent, "failed": len(failed),
-            "failed_emails": failed[:20]}
+            "skipped": skipped, "failed_emails": failed[:20]}
 
 
 class TemplateUpdate(BaseModel):

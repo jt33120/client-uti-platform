@@ -7,7 +7,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import Response, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from config import settings, is_prod
-from routers import auth, consultants, aos, matching, clients, partners, submissions, invitations, pacs, support, assistant, admin, gdpr, decisions, scoring_config, cartography, notifications, email_templates, cv, client_review, files
+from routers import auth, consultants, aos, matching, clients, partners, submissions, invitations, pacs, support, assistant, admin, gdpr, decisions, scoring_config, cartography, notifications, email_templates, cv, client_review, files, emails
 from mip_rum_middleware import MIPRumMiddleware
 
 IS_PROD = is_prod()
@@ -147,6 +147,7 @@ app.include_router(gdpr.router)
 app.include_router(cartography.router)
 app.include_router(notifications.router)
 app.include_router(email_templates.router)
+app.include_router(emails.router)
 # Service des fichiers du disque local (STORAGE_BACKEND=local). Les routes
 # répondent 404 sur un déploiement Supabase/S3 : voir routers/files.py.
 app.include_router(files.router)

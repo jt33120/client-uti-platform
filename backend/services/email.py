@@ -31,6 +31,7 @@ def render_email_html(
     body_html: str,
     cta: Optional[dict] = None,
     footer_note: Optional[str] = None,
+    unsubscribe_url: Optional[str] = None,
 ) -> str:
     """
     Render a branded HTML email.
@@ -39,6 +40,10 @@ def render_email_html(
     - ``body_html``   : inner HTML of the main block (paragraphs, tables…).
     - ``cta``         : optional ``{"label", "url"}`` → black button + copyable link.
     - ``footer_note`` : optional small grey note in the bottom (bordered) row.
+    - ``unsubscribe_url`` : si fourni, ajoute « Ne plus recevoir ce type de
+      notification » au pied. Absent pour les emails transactionnels (mot de
+      passe, invitation) : s'y désabonner reviendrait à se couper l'accès à son
+      compte. Cf. services/email_optout.py.
     """
     # Couleurs de marque (bleu plateforme).
     brand = "#4f46e5"
@@ -52,6 +57,8 @@ def render_email_html(
     title = _html.escape(str(title or ""))
     if footer_note:
         footer_note = _html.escape(str(footer_note))
+    if unsubscribe_url:
+        unsubscribe_url = _html.escape(str(unsubscribe_url), quote=True)
     if cta:
         cta = {"label": _html.escape(str(cta.get("label") or "")),
                "url": _html.escape(str(cta.get("url") or ""), quote=True)}
@@ -72,10 +79,21 @@ def render_email_html(
               </td>
             </tr>"""
 
+    # Le lien suit la phrase dans le MÊME paragraphe : « … « X ». Ne plus
+    # recevoir ce type de notification ». Sur sa propre ligne il se lit comme un
+    # bouton et se clique par réflexe ; dans la phrase, il se lit comme le
+    # recours qu'il est.
+    unsub_html = ""
+    if unsubscribe_url:
+        unsub_html = (
+            f' <a href="{unsubscribe_url}" style="color:{brand};text-decoration:underline;">'
+            "Ne plus recevoir ce type de notification</a>"
+        )
+
     footer_html = f"""
             <tr>
               <td style="padding:18px 32px;border-top:1px solid #ececf2;font-size:12px;color:#9098a3;background:#fafafb;">
-                {footer_note or f"Cet email vous est envoyé par la plateforme {BRAND}."}
+                {footer_note or f"Cet email vous est envoyé par la plateforme {BRAND}."}{unsub_html}
               </td>
             </tr>"""
 
@@ -140,6 +158,7 @@ def build_message(
     text: Optional[str] = None,
     reply_to: Optional[str] = None,
     to_name: Optional[str] = None,
+    unsubscribe_url: Optional[str] = None,
 ) -> EmailMessage:
     """Construit le message MIME. Source unique, partagée par l'envoi direct et la file."""
     from_email = settings.smtp_from or settings.smtp_user
@@ -153,6 +172,17 @@ def build_message(
     msg["To"] = formataddr((to_name, to_email)) if to_name else to_email
     if reply_to:
         msg["Reply-To"] = reply_to
+
+    # RFC 2369 + RFC 8058 : le bouton « Se désabonner » natif de Gmail et
+    # d'Outlook, affiché À CÔTÉ DE L'EXPÉDITEUR. C'est le geste que fait
+    # réellement quelqu'un qui ne veut plus de l'email — l'alternative, quand ce
+    # bouton manque, est le bouton « Spam » juste à côté, qui coûte au domaine
+    # d'envoi entier et pas seulement à cet email.
+    # `List-Unsubscribe-Post` déclare que le désabonnement se fait en UN POST,
+    # sans page intermédiaire : sans cet en-tête, Gmail n'affiche pas le bouton.
+    if unsubscribe_url:
+        msg["List-Unsubscribe"] = f"<{unsubscribe_url}>"
+        msg["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
 
     # Plain-text fallback first, then HTML as the preferred alternative.
     msg.set_content(text or "Cet email nécessite un client compatible HTML.")
@@ -226,6 +256,7 @@ def send_email(
     text: Optional[str] = None,
     reply_to: Optional[str] = None,
     to_name: Optional[str] = None,
+    unsubscribe_url: Optional[str] = None,
 ) -> tuple[bool, Optional[str]]:
     """
     Envoi direct et synchrone d'un email.
@@ -241,6 +272,7 @@ def send_email(
     err = config_error()
     if err:
         return False, err
-    msg = build_message(to_email, subject, html, text=text, reply_to=reply_to, to_name=to_name)
+    msg = build_message(to_email, subject, html, text=text, reply_to=reply_to,
+                        to_name=to_name, unsubscribe_url=unsubscribe_url)
     with SmtpSession() as session:
         return session.send(msg)

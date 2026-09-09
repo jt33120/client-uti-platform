@@ -164,10 +164,11 @@ def is_blocked(email: Optional[str], key: Optional[str]) -> bool:
     part toujours.
 
     **En cas d'erreur de lecture, répond False (on envoie).** La table peut ne
-    pas exister — la migration est non bloquante, comme celle des templates. La
-    dégradation correcte est « aucun désabonnement enregistré », pas « plus
-    aucune notification ne part », qui transformerait une migration oubliée en
-    panne silencieuse de tout le canal email.
+    pas exister (migration backend/migrations/0021_email_optouts.sql non jouée),
+    ou PostgREST peut répondre 403 si elle a été créée sans GRANT vers
+    service_role. La dégradation correcte est « aucun désabonnement
+    enregistré », pas « plus aucune notification ne part », qui transformerait
+    une migration oubliée en panne silencieuse de tout le canal email.
     """
     category = category_for(key)
     addr = normalize(email)

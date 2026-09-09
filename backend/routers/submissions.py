@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, BackgroundTasks
 from typing import Optional
-from services.supabase_client import supabase
+from services.postgrest_client import db
 from services import storage
 from services.cv_parser import (
     extract_text_from_pdf, extract_text_from_docx, extract_text_from_xlsx, guess_extension,
@@ -52,7 +52,7 @@ def _check_ao_access(ao_id: str, user: dict) -> dict:
     Returns the AO row.
     """
     try:
-        ao = supabase.table("appels_offres").select("*").eq("id", ao_id).single().execute().data
+        ao = db.table("appels_offres").select("*").eq("id", ao_id).single().execute().data
     except Exception:
         raise HTTPException(status_code=404, detail="AO introuvable")
 
@@ -64,7 +64,7 @@ def _check_ao_access(ao_id: str, user: dict) -> dict:
     if ao.get("is_draft"):
         raise HTTPException(status_code=404, detail="AO introuvable")
 
-    access = supabase.table("partner_clients").select("tier").eq(
+    access = db.table("partner_clients").select("tier").eq(
         "partner_id", user["sub"]
     ).eq("client_id", ao["client_id"]).in_("tier", ["list_1", "list_2"]).execute()
 
@@ -139,7 +139,7 @@ async def create_submission(
     # Resolve consultant (create-on-the-fly or reuse)
     if consultant_id:
         try:
-            consultant = supabase.table("consultants").select("*").eq("id", consultant_id).single().execute().data
+            consultant = db.table("consultants").select("*").eq("id", consultant_id).single().execute().data
         except Exception:
             raise HTTPException(status_code=404, detail="Consultant introuvable")
         if user["role"] == "ao" and consultant["created_by"] != user["sub"]:
@@ -152,7 +152,7 @@ async def create_submission(
             raise HTTPException(status_code=400, detail="Nom et compétences requis pour créer un consultant")
         if employment_type and employment_type not in ("independant", "salarie"):
             raise HTTPException(status_code=400, detail="employment_type doit être 'independant' ou 'salarie'")
-        consultant = supabase.table("consultants").insert({
+        consultant = db.table("consultants").insert({
             "name": name,
             "tjm": tjm,
             "skills": skills,
@@ -164,7 +164,7 @@ async def create_submission(
         consultant_id = consultant["id"]
 
     # Refuse duplicate submission
-    existing = supabase.table("submissions").select("id").eq(
+    existing = db.table("submissions").select("id").eq(
         "ao_id", ao_id
     ).eq("consultant_id", consultant_id).execute()
     if existing.data:
@@ -189,7 +189,7 @@ async def create_submission(
             raise HTTPException(status_code=500, detail=f"Erreur upload CV: {str(e)}")
     else:
         # Pas de fichier : on réutilise le dernier CV du vivier pour ce consultant.
-        prior = supabase.table("submissions").select(
+        prior = db.table("submissions").select(
             "cv_url, cv_text, cv_filename"
         ).eq("consultant_id", consultant_id).order("submitted_at", desc=True).limit(5).execute().data or []
         src = next((p for p in prior if p.get("cv_url") and p.get("cv_text")), None)
@@ -215,7 +215,7 @@ async def create_submission(
 
     # Insert submission
     try:
-        sub = supabase.table("submissions").insert({
+        sub = db.table("submissions").insert({
             "id": submission_uuid,
             "ao_id": ao_id,
             "consultant_id": consultant_id,
@@ -271,7 +271,7 @@ async def list_submissions_for_ao(ao_id: str, user: dict = Depends(get_current_u
         else:
             select = "*, consultants(id, name, tjm, skills, experience_years, employment_type, availability)"
 
-        query = supabase.table("submissions").select(select).eq(
+        query = db.table("submissions").select(select).eq(
             "ao_id", ao_id
         ).order("submitted_at", desc=True)
 
@@ -293,7 +293,7 @@ async def list_submissions_for_ao(ao_id: str, user: dict = Depends(get_current_u
 async def list_my_submissions(user: dict = Depends(get_current_user)):
     """Return all submissions made by the current user, with AO title."""
     try:
-        return supabase.table("submissions").select(
+        return db.table("submissions").select(
             "id, ao_id, submitted_at, appels_offres(title)"
         ).eq("submitted_by", user["sub"]).order("submitted_at", desc=True).execute().data
     except Exception:
@@ -331,7 +331,7 @@ async def my_response_outcomes(user: dict = Depends(get_current_user)):
     concurrentes, et le rang inter-candidats n'est pas exposé."""
     uid = user["sub"]
     try:
-        subs = supabase.table("submissions").select(
+        subs = db.table("submissions").select(
             "ao_id, consultant_id, submitted_at, consultants(name)"
         ).eq("submitted_by", uid).order("submitted_at", desc=True).execute().data or []
     except Exception:
@@ -346,12 +346,12 @@ async def my_response_outcomes(user: dict = Depends(get_current_user)):
     ao_by: dict = {}
     if ao_ids:
         try:
-            rows = supabase.table("appels_offres").select(
+            rows = db.table("appels_offres").select(
                 "id, title, reference, status, archived, ao_outcome, winning_partner_id, client_id, clients(name)"
             ).in_("id", ao_ids).execute().data or []
         except Exception:
             try:
-                rows = supabase.table("appels_offres").select(
+                rows = db.table("appels_offres").select(
                     "id, title, reference, status, client_id"
                 ).in_("id", ao_ids).execute().data or []
             except Exception:
@@ -367,13 +367,13 @@ async def my_response_outcomes(user: dict = Depends(get_current_user)):
             "deal_status, sent_to_client_at, commercial_exchange, refusal_reason"
         )
         try:
-            for r in supabase.table("ao_consultant_state").select(_state_cols).in_(
+            for r in db.table("ao_consultant_state").select(_state_cols).in_(
                 "ao_id", ao_ids).in_("consultant_id", cids).execute().data or []:
                 state_by[(r["ao_id"], r["consultant_id"])] = r
         except Exception:
             # Repli si `refusal_reason` pas encore migrée : on relit sans elle.
             try:
-                for r in supabase.table("ao_consultant_state").select(
+                for r in db.table("ao_consultant_state").select(
                     _state_cols.replace(", refusal_reason", "")
                 ).in_("ao_id", ao_ids).in_("consultant_id", cids).execute().data or []:
                     state_by[(r["ao_id"], r["consultant_id"])] = r
@@ -384,7 +384,7 @@ async def my_response_outcomes(user: dict = Depends(get_current_user)):
     score_by: dict = {}
     if ao_ids and cids:
         try:
-            for m in supabase.table("matchings").select(
+            for m in db.table("matchings").select(
                 "ao_id, consultant_id, score_total"
             ).in_("ao_id", ao_ids).in_("consultant_id", [str(c) for c in cids]).execute().data or []:
                 score_by[(m["ao_id"], str(m["consultant_id"]))] = m.get("score_total")
@@ -465,7 +465,7 @@ async def my_partner_dashboard(user: dict = Depends(get_current_user)):
 
     # ── Mes soumissions → paires (ao, consultant) ──────────────────────────────
     try:
-        subs = supabase.table("submissions").select(
+        subs = db.table("submissions").select(
             "ao_id, consultant_id, submitted_at"
         ).eq("submitted_by", uid).execute().data or []
     except Exception:
@@ -481,7 +481,7 @@ async def my_partner_dashboard(user: dict = Depends(get_current_user)):
         state_by = {}
         if ao_ids and cids:
             try:
-                for r in supabase.table("ao_consultant_state").select(
+                for r in db.table("ao_consultant_state").select(
                     "ao_id, consultant_id, contact_status, contacted_at, validation, "
                     "deal_status, sent_to_client_at"
                 ).in_("ao_id", ao_ids).in_("consultant_id", cids).execute().data or []:
@@ -495,7 +495,7 @@ async def my_partner_dashboard(user: dict = Depends(get_current_user)):
         ao_meta = {}
         if ao_ids:
             try:
-                for a in supabase.table("appels_offres").select(
+                for a in db.table("appels_offres").select(
                     "id, ao_outcome, winning_partner_id"
                 ).in_("id", ao_ids).execute().data or []:
                     ao_meta[a["id"]] = a
@@ -525,12 +525,12 @@ async def my_partner_dashboard(user: dict = Depends(get_current_user)):
     # ── Prochaines échéances éligibles NON répondues (calendrier) ──────────────
     upcoming = []
     try:
-        access = supabase.table("partner_clients").select("client_id").eq(
+        access = db.table("partner_clients").select("client_id").eq(
             "partner_id", uid).in_("tier", ["list_1", "list_2"]).execute().data or []
         client_ids = [r["client_id"] for r in access if r.get("client_id")]
         answered = {s["ao_id"] for s in subs if s.get("ao_id")}
         if client_ids:
-            base = supabase.table("appels_offres").select(
+            base = db.table("appels_offres").select(
                 "id, title, deadline, client_id, clients(name)"
             ).eq("status", "open").in_("client_id", client_ids).gte(
                 "deadline", today.isoformat())
@@ -566,7 +566,7 @@ async def my_partner_dashboard(user: dict = Depends(get_current_user)):
 @router.delete("/{submission_id}")
 async def delete_submission(submission_id: str, user: dict = Depends(get_current_user)):
     try:
-        sub = supabase.table("submissions").select("*").eq("id", submission_id).single().execute().data
+        sub = db.table("submissions").select("*").eq("id", submission_id).single().execute().data
     except Exception:
         raise HTTPException(status_code=404, detail="Soumission introuvable")
 
@@ -580,5 +580,5 @@ async def delete_submission(submission_id: str, user: dict = Depends(get_current
     except Exception:
         pass
 
-    supabase.table("submissions").delete().eq("id", submission_id).execute()
+    db.table("submissions").delete().eq("id", submission_id).execute()
     return {"message": "Soumission supprimée"}

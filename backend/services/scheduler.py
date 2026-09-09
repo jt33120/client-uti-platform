@@ -13,7 +13,7 @@ import asyncio
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
-from services.supabase_client import supabase
+from services.postgrest_client import db
 from services import notifications
 from services.app_settings import get_notification_settings
 from services.error_log import record as _record_err
@@ -40,7 +40,7 @@ def _parse(ts: Optional[str]) -> Optional[datetime]:
 async def _process_due_list2(now: datetime) -> None:
     """Envoie la liste 2 des AO dont l'échéance est passée et pas encore envoyée."""
     try:
-        rows = supabase.table("appels_offres").select(
+        rows = db.table("appels_offres").select(
             "*, clients(name)"
         ).eq("status", "open").is_("list2_notified_at", "null").lte(
             "list2_scheduled_at", now.isoformat()
@@ -52,7 +52,7 @@ async def _process_due_list2(now: datetime) -> None:
     for ao in rows:
         # Claim : pose l'horodatage AVANT l'envoi pour éviter tout double-envoi.
         try:
-            claimed = supabase.table("appels_offres").update(
+            claimed = db.table("appels_offres").update(
                 {"list2_notified_at": now.isoformat()}
             ).eq("id", ao["id"]).is_("list2_notified_at", "null").execute().data
         except Exception as e:  # noqa: BLE001
@@ -71,7 +71,7 @@ async def _process_due_list2(now: datetime) -> None:
             # AO ne partirait JAMAIS. (Ré-essai sans double-envoi : soit tout a
             # échoué, soit il n'y avait personne à notifier.)
             try:
-                supabase.table("appels_offres").update(
+                db.table("appels_offres").update(
                     {"list2_notified_at": None}
                 ).eq("id", ao["id"]).execute()
             except Exception as e:  # noqa: BLE001
@@ -93,7 +93,7 @@ async def _process_auto_archive(now: datetime) -> None:
     encore appliquée) — l'échec n'interrompt pas le reste du tick."""
     today = now.date().isoformat()  # deadline est un DATE : « avant aujourd'hui » = échu
     try:
-        updated = supabase.table("appels_offres").update(
+        updated = db.table("appels_offres").update(
             {"archived": True, "archived_at": now.isoformat(), "status": "closed"}
         ).lt("deadline", today).eq("archived", False).is_("archived_at", "null").execute().data
         if updated:
@@ -111,7 +111,7 @@ async def _process_relances(now: datetime, cfg: dict) -> None:
     interval = timedelta(days=cfg["relance_interval_days"])
     max_relances = cfg["relance_max"]
     try:
-        rows = supabase.table("appels_offres").select(
+        rows = db.table("appels_offres").select(
             "*, clients(name)"
         ).eq("status", "open").not_.is_("notified_at", "null").execute().data or []
     except Exception as e:  # noqa: BLE001
@@ -129,7 +129,7 @@ async def _process_relances(now: datetime, cfg: dict) -> None:
         # partenaires à CHAQUE tick (spam) ; ici le pire cas est une relance
         # sautée, rattrapée à l'intervalle suivant.
         try:
-            supabase.table("appels_offres").update({
+            db.table("appels_offres").update({
                 "last_relance_at": now.isoformat(),
                 "relance_count": (ao.get("relance_count") or 0) + 1,
             }).eq("id", ao["id"]).execute()

@@ -32,7 +32,7 @@ from openai import AsyncOpenAI
 from config import settings
 from mip_rum_ai import record_ai_call, session_id_from_tracestate, flag_refusal
 from services import ai_ledger
-from services.supabase_client import supabase
+from services.postgrest_client import db
 from services.ratelimit import rate_limit
 from routers.auth import get_current_user
 
@@ -111,7 +111,7 @@ def _norm(s: str) -> str:
 def _q(table: str, cols: str, modify: Optional[Callable] = None, limit: int = 200) -> tuple[list, int]:
     """SELECT with an exact server-side count, so totals stay right even when
     the row sample is truncated by `limit`."""
-    q = supabase.table(table).select(cols, count="exact")
+    q = db.table(table).select(cols, count="exact")
     if modify:
         q = modify(q)
     r = q.limit(limit).execute()

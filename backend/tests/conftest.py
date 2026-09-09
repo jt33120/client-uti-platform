@@ -11,7 +11,7 @@ os.environ.setdefault("APP_ENV", "dev")
 os.environ.setdefault("SUPABASE_URL", "https://example.supabase.co")
 # Clé factice, mais de FORME valide. supabase-py vérifie que la clé ressemble à
 # un JWT (trois segments) avant de construire le client : avec « test-key », tout
-# module qui importe services.supabase_client échouait à la COLLECTE — mais
+# module qui importe services.postgrest_client échouait à la COLLECTE — mais
 # seulement là où le paquet `supabase` est réellement installé, donc pas sous le
 # bouchon ci-dessous. Quatre fichiers de tests ne s'exécutaient ainsi jamais en
 # local tout en passant en CI. La forme suffit : aucune requête n'est émise.

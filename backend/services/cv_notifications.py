@@ -5,7 +5,7 @@ client / échange commercial / affaire gagnée-perdue) et l'envoi réel du CV au
 client. Best-effort : un échec d'email ne casse jamais la mise à jour d'état.
 """
 from typing import Optional
-from services.supabase_client import supabase
+from services.postgrest_client import db
 from services import email_optout, email_templates, storage
 from services.email import send_email
 from config import settings
@@ -13,7 +13,7 @@ from config import settings
 
 def _ao_context(ao_id: str) -> dict:
     try:
-        ao = supabase.table("appels_offres").select(
+        ao = db.table("appels_offres").select(
             "id, title, reference, client_id, clients(name)"
         ).eq("id", ao_id).single().execute().data or {}
     except Exception:
@@ -30,7 +30,7 @@ def _ao_context(ao_id: str) -> dict:
 
 def _latest_submission(ao_id: str, consultant_id: str) -> Optional[dict]:
     try:
-        rows = supabase.table("submissions").select(
+        rows = db.table("submissions").select(
             "id, cv_url, submitted_by, consultants(name), "
             "submitter:profiles!submitted_by(id, name, email)"
         ).eq("ao_id", ao_id).eq("consultant_id", consultant_id).order(
@@ -45,7 +45,7 @@ def _log_email(ao_id, recipient_email, recipient_id, kind, status, error, sent_b
     """Trace un envoi dans partner_email_log (best-effort — même journal que les
     notifications d'AO, pour que les emails « Validation CV » soient visibles)."""
     try:
-        supabase.table("partner_email_log").insert({
+        db.table("partner_email_log").insert({
             "ao_id": ao_id,
             "recipient_id": recipient_id,
             "recipient_email": recipient_email,

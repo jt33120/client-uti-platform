@@ -17,7 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 BACKEND = ROOT / "backend"
 
-# supabase.table("nom") / .table('nom')
+# db.table("nom") / .table('nom')
 _TABLE_CALL = re.compile(r"""\.table\(\s*["']([a-z_][a-z0-9_]*)["']\s*\)""")
 # CREATE TABLE [IF NOT EXISTS] [public.]nom
 _CREATE_TABLE = re.compile(
@@ -27,7 +27,7 @@ _CREATE_TABLE = re.compile(
 
 
 def _tables_via_constante(source: str) -> set[str]:
-    """`TABLE = "email_optouts"` en tête de module, puis `supabase.table(TABLE)`.
+    """`TABLE = "email_optouts"` en tête de module, puis `db.table(TABLE)`.
 
     Le motif littéral ci-dessus rate ces appels — et ce sont exactement ceux des
     modules qui n'exploitent QU'UNE table et lui donnent une constante :

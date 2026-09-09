@@ -198,7 +198,7 @@ if [ -x "$PY/venv/bin/python" ]; then
   "$PY/venv/bin/python" - <<'PY'
 import os, sys, pathlib
 sys.path.insert(0, os.environ.get("BACKEND_DIR", os.path.expanduser("~/app/backend")))
-from services.supabase_client import supabase  # lit .env du backend
+from services.postgrest_client import db  # lit .env du backend
 
 root = pathlib.Path(os.environ["ARCHIVE_DIR"])
 
@@ -206,7 +206,7 @@ def walk(bucket, prefix=""):
     """Parcours récursif : Supabase Storage ne liste qu'un niveau à la fois.
     Un « dossier » se reconnaît à l'absence d'id ET de metadata."""
     out = []
-    for e in supabase.storage.from_(bucket).list(prefix) or []:
+    for e in db.storage.from_(bucket).list(prefix) or []:
         child = f"{prefix}/{e['name']}" if prefix else e["name"]
         if e.get("id") is None and e.get("metadata") is None:
             out += walk(bucket, child)
@@ -226,7 +226,7 @@ for bucket in os.environ["BUCKETS_CSV"].split(","):
     for p in paths:
         dest = root / bucket / p
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(supabase.storage.from_(bucket).download(p))
+        dest.write_bytes(db.storage.from_(bucket).download(p))
 PY
 else
   echo "  ⚠️  venv introuvable dans $PY — objets NON archivés."

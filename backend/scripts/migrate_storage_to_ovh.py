@@ -53,7 +53,7 @@ except ImportError:
     pass
 
 from config import settings  # noqa: E402
-from services.supabase_client import supabase  # noqa: E402
+from services.postgrest_client import db  # noqa: E402
 
 from services import storage  # noqa: E402
 from services.storage import PUBLIC_BUCKETS  # noqa: E402
@@ -93,7 +93,7 @@ def _s3():
 def _walk_supabase(bucket: str, prefix: str = "") -> list:
     """Recursively list every object path inside a Supabase bucket."""
     paths = []
-    entries = supabase.storage.from_(bucket).list(prefix) or []
+    entries = db.storage.from_(bucket).list(prefix) or []
     for entry in entries:
         name = entry["name"]
         child = f"{prefix}/{name}" if prefix else name
@@ -117,7 +117,7 @@ def migrate_files(dry_run: bool, vers: str) -> int:
             if dry_run:
                 print(f"  DRY-RUN copierait → {key}  [{'privé' if prive else 'public'}]")
                 continue
-            data = supabase.storage.from_(bucket).download(path)
+            data = db.storage.from_(bucket).download(path)
             if vers == "local":
                 # local_write() plutôt qu'un open() maison : c'est elle qui
                 # valide le chemin (traversée) et impose 0600/0700 quel que soit
@@ -175,7 +175,7 @@ def _nouvelle_valeur(ancienne: str, bucket: str, vers: str) -> Optional[str]:
 
 def _reecrire_colonne(table: str, colonne: str, bucket: str, vers: str, dry_run: bool) -> int:
     """Réécrit `table.colonne` pour toutes les lignes qui portent encore une URL."""
-    lignes = supabase.table(table).select(f"id, {colonne}").execute().data or []
+    lignes = db.table(table).select(f"id, {colonne}").execute().data or []
     modifiees = 0
     for row in lignes:
         ancienne = row.get(colonne) or ""
@@ -183,7 +183,7 @@ def _reecrire_colonne(table: str, colonne: str, bucket: str, vers: str, dry_run:
         if nouvelle and nouvelle != ancienne:
             print(f"  {table} {row['id']}: → {nouvelle}")
             if not dry_run:
-                supabase.table(table).update({colonne: nouvelle}).eq("id", row["id"]).execute()
+                db.table(table).update({colonne: nouvelle}).eq("id", row["id"]).execute()
             modifiees += 1
     return modifiees
 
@@ -201,7 +201,7 @@ def _reecrire_modeles_email(vers: str, dry_run: bool) -> int:
     lien avec ce chantier.
     """
     motif = re.compile(r"https?://[^\s\"'<>)]+?/email-assets/([^\s\"'<>)?]+)")
-    lignes = supabase.table("email_templates").select("key, body").execute().data or []
+    lignes = db.table("email_templates").select("key, body").execute().data or []
     modifiees = 0
     for row in lignes:
         corps = row.get("body") or ""
@@ -213,7 +213,7 @@ def _reecrire_modeles_email(vers: str, dry_run: bool) -> int:
         if nouveau != corps:
             print(f"  email_templates {row['key']}: {len(motif.findall(corps))} image(s) réécrite(s)")
             if not dry_run:
-                supabase.table("email_templates").update({"body": nouveau}).eq(
+                db.table("email_templates").update({"body": nouveau}).eq(
                     "key", row["key"]
                 ).execute()
             modifiees += 1

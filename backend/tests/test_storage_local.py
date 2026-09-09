@@ -38,18 +38,17 @@ from jose import ExpiredSignatureError, JWTError, jwt
 BACKEND = pathlib.Path(__file__).resolve().parents[1]
 RACINE = BACKEND.parent
 
-# services/storage.py importe services/supabase_client.py, qui construit un
+# services/storage.py importe services/postgrest_client.py, qui construit un
 # client au CHARGEMENT — et refuse une clé de test. Ce n'est pas une raison de
 # mettre ces vérifications en `skip` : le stockage local ne parle jamais à
 # Supabase. On pose donc un bouchon UNIQUEMENT si le vrai module refuse de se
 # charger, exactement comme tests/conftest.py:16-24 le fait pour le paquet.
 try:  # pragma: no cover - dépend de l'environnement
-    import services.supabase_client  # noqa: F401
+    import services.postgrest_client  # noqa: F401
 except Exception:  # pragma: no cover
-    _bouchon = types.ModuleType("services.supabase_client")
-    _bouchon.supabase = None
-    _bouchon.get_supabase = lambda: None
-    sys.modules["services.supabase_client"] = _bouchon
+    _bouchon = types.ModuleType("services.postgrest_client")
+    _bouchon.db = None
+    sys.modules["services.postgrest_client"] = _bouchon
 
 from config import settings  # noqa: E402
 from services import storage  # noqa: E402

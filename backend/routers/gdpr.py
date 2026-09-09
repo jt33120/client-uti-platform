@@ -15,7 +15,7 @@ Admin only. The PR opening this is the review gate — Julian merges manually.
 """
 from fastapi import APIRouter, HTTPException, Depends
 
-from services.supabase_client import supabase
+from services.postgrest_client import db
 from services import credentials, storage
 from services.cv_parser import guess_extension
 from routers.auth import require_admin
@@ -26,7 +26,7 @@ router = APIRouter(prefix="/users", tags=["rgpd"])
 def _safe_delete(table: str, column: str, value) -> int:
     """Delete rows matching column == value. Returns count deleted (best-effort)."""
     try:
-        res = supabase.table(table).delete().eq(column, value).execute()
+        res = db.table(table).delete().eq(column, value).execute()
         return len(res.data or [])
     except Exception:
         return 0
@@ -55,7 +55,7 @@ async def gdpr_erase_user(user_id: str, user: dict = Depends(require_admin)):
     #    (invitations sent to / used by them, support messages from them).
     user_email = None
     try:
-        prof = supabase.table("profiles").select("id, email").eq(
+        prof = db.table("profiles").select("id, email").eq(
             "id", user_id
         ).single().execute().data
         user_email = (prof or {}).get("email")
@@ -67,7 +67,7 @@ async def gdpr_erase_user(user_id: str, user: dict = Depends(require_admin)):
     #    touches their personal data (their consultants OR submitted by them).
     consultant_ids: list[str] = []
     try:
-        rows = supabase.table("consultants").select("id").eq(
+        rows = db.table("consultants").select("id").eq(
             "created_by", user_id
         ).execute().data or []
         consultant_ids = [r["id"] for r in rows]
@@ -77,11 +77,11 @@ async def gdpr_erase_user(user_id: str, user: dict = Depends(require_admin)):
     sub_rows: dict[str, dict] = {}
     try:
         if consultant_ids:
-            for s in (supabase.table("submissions").select("id, ao_id").in_(
+            for s in (db.table("submissions").select("id, ao_id").in_(
                 "consultant_id", consultant_ids
             ).execute().data or []):
                 sub_rows[s["id"]] = s
-        for s in (supabase.table("submissions").select("id, ao_id, cv_filename").eq(
+        for s in (db.table("submissions").select("id, ao_id, cv_filename").eq(
             "submitted_by", user_id
         ).execute().data or []):
             sub_rows[s["id"]] = s

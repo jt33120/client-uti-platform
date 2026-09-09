@@ -4,7 +4,7 @@ Lecture seule — la table partner_email_log est alimentée par services.notific
 """
 from datetime import datetime, date, timezone, timedelta
 from fastapi import APIRouter, Depends
-from services.supabase_client import supabase
+from services.postgrest_client import db
 from routers.auth import require_staff, get_current_user
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
@@ -43,7 +43,7 @@ def _urgent_ao_items(today, horizon):
     """AO ouverts à échéance ≤ 3 j (staff). Best-effort."""
     out = []
     try:
-        base = supabase.table("appels_offres").select(
+        base = db.table("appels_offres").select(
             "id, title, deadline, clients(name)"
         ).eq("status", "open").gte("deadline", today.isoformat()).lte("deadline", horizon.isoformat())
         try:
@@ -73,14 +73,14 @@ def _email_items():
     """Miroir des derniers e-mails partenaires (staff). Best-effort."""
     out = []
     try:
-        logs = supabase.table("partner_email_log").select(
+        logs = db.table("partner_email_log").select(
             "id, ao_id, kind, status, recipient_email, created_at"
         ).order("created_at", desc=True).limit(8).execute().data or []
         ao_ids = list({r["ao_id"] for r in logs if r.get("ao_id")})
         titles = {}
         if ao_ids:
             try:
-                for a in supabase.table("appels_offres").select("id, title").in_("id", ao_ids).execute().data or []:
+                for a in db.table("appels_offres").select("id, title").in_("id", ao_ids).execute().data or []:
                     titles[a["id"]] = a.get("title")
             except Exception:
                 pass
@@ -104,7 +104,7 @@ def _email_items():
 def _partner_eligible_client_ids(uid):
     """client_ids visibles par ce partenaire (accès list_1 / list_2, non suspendu)."""
     try:
-        rows = supabase.table("partner_clients").select("client_id").eq(
+        rows = db.table("partner_clients").select("client_id").eq(
             "partner_id", uid).in_("tier", ["list_1", "list_2"]).execute().data or []
         return [r["client_id"] for r in rows if r.get("client_id")]
     except Exception:
@@ -114,7 +114,7 @@ def _partner_eligible_client_ids(uid):
 def _partner_responded_ao_ids(uid):
     """ao_id auxquels ce partenaire a déjà soumis au moins un CV."""
     try:
-        rows = supabase.table("submissions").select("ao_id").eq(
+        rows = db.table("submissions").select("ao_id").eq(
             "submitted_by", uid).execute().data or []
         return {r["ao_id"] for r in rows if r.get("ao_id")}
     except Exception:
@@ -130,7 +130,7 @@ def _partner_urgent_ao_items(uid, today, horizon):
         if not client_ids:
             return out
         answered = _partner_responded_ao_ids(uid)
-        base = supabase.table("appels_offres").select(
+        base = db.table("appels_offres").select(
             "id, title, deadline, client_id, clients(name)"
         ).eq("status", "open").in_("client_id", client_ids).gte(
             "deadline", today.isoformat()).lte("deadline", horizon.isoformat())
@@ -165,7 +165,7 @@ def _partner_status_items(uid, since):
     (ao, consultant). Best-effort (colonnes récentes → rien plutôt qu'une erreur)."""
     out = []
     try:
-        subs = supabase.table("submissions").select(
+        subs = db.table("submissions").select(
             "ao_id, consultant_id, consultants(name)"
         ).eq("submitted_by", uid).execute().data or []
         if not subs:
@@ -180,13 +180,13 @@ def _partner_status_items(uid, since):
         pairs = {(s.get("ao_id"), s.get("consultant_id")) for s in subs}
         if not ao_ids or not cids:
             return out
-        rows = supabase.table("ao_consultant_state").select(
+        rows = db.table("ao_consultant_state").select(
             "ao_id, consultant_id, validation, sent_to_client_at, deal_status, updated_at"
         ).in_("ao_id", ao_ids).in_("consultant_id", cids).execute().data or []
         rows = [r for r in rows if (r.get("ao_id"), r.get("consultant_id")) in pairs]
         titles = {}
         try:
-            for a in supabase.table("appels_offres").select("id, title").in_("id", ao_ids).execute().data or []:
+            for a in db.table("appels_offres").select("id, title").in_("id", ao_ids).execute().data or []:
                 titles[a["id"]] = a.get("title")
         except Exception:
             pass
@@ -224,7 +224,7 @@ def _missing_info_items(role, uid):
     ses consultants ; staff : tout le vivier. Best-effort (colonne non migrée → rien)."""
     out = []
     try:
-        q = supabase.table("consultants").select("id, name, availability_status")
+        q = db.table("consultants").select("id, name, availability_status")
         if role == "ao":
             q = q.eq("created_by", uid)
         cons = q.execute().data or []
@@ -247,7 +247,7 @@ def _undiffused_ao_items(today):
     ≥ _UNDIFF_DAYS. « À diffuser. » Staff. Best-effort (colonnes récentes → repli)."""
     out = []
     try:
-        base = supabase.table("appels_offres").select(
+        base = db.table("appels_offres").select(
             "id, title, created_at, clients(name)"
         ).eq("status", "open").is_("notified_at", "null")
         try:
@@ -276,7 +276,7 @@ def _untreated_cv_items(today):
     « <n> CV en attente de tri »). Staff. Best-effort."""
     out = []
     try:
-        subs = supabase.table("submissions").select(
+        subs = db.table("submissions").select(
             "id, ao_id, consultant_id, submitted_at, consultants(name), "
             "appels_offres(title, status, archived)"
         ).order("submitted_at", desc=True).limit(200).execute().data or []
@@ -304,7 +304,7 @@ def _untreated_cv_items(today):
     real_pairs = {(s["ao_id"], s["consultant_id"]) for s in kept}
     treated = set()
     try:
-        states = supabase.table("ao_consultant_state").select(
+        states = db.table("ao_consultant_state").select(
             "ao_id, consultant_id, validation"
         ).in_("ao_id", ao_ids).in_("consultant_id", cids).execute().data or []
         for st in states:
@@ -343,7 +343,7 @@ def _stale_presentation_items(today):
     Staff. Best-effort."""
     out = []
     try:
-        rows = supabase.table("ao_consultant_state").select(
+        rows = db.table("ao_consultant_state").select(
             "ao_id, consultant_id, sent_to_client_at, deal_status, validation, updated_at"
         ).not_.is_("sent_to_client_at", "null").is_("deal_status", "null").execute().data or []
     except Exception:
@@ -367,11 +367,11 @@ def _stale_presentation_items(today):
     titles, closed = {}, set()
     try:
         try:
-            aos = supabase.table("appels_offres").select(
+            aos = db.table("appels_offres").select(
                 "id, title, ao_outcome"
             ).in_("id", ao_ids).execute().data or []
         except Exception:
-            aos = supabase.table("appels_offres").select(
+            aos = db.table("appels_offres").select(
                 "id, title"
             ).in_("id", ao_ids).execute().data or []
         for a in aos:
@@ -382,7 +382,7 @@ def _stale_presentation_items(today):
         pass
     names = {}
     try:
-        for c in supabase.table("consultants").select("id, name").in_("id", cids).execute().data or []:
+        for c in db.table("consultants").select("id, name").in_("id", cids).execute().data or []:
             names[c["id"]] = c.get("name")
     except Exception:
         pass
@@ -421,7 +421,7 @@ def _notif_prefs(uid):
     ou lecture en échec → tout activé (comportement historique conservé)."""
     prefs = {"notif_deadline_alerts": True, "notif_missing_info": True}
     try:
-        row = supabase.table("profiles").select(
+        row = db.table("profiles").select(
             "notif_deadline_alerts, notif_missing_info"
         ).eq("id", uid).single().execute().data or {}
         for k in prefs:
@@ -479,7 +479,7 @@ async def email_log(user: dict = Depends(require_staff), limit: int = 200):
     # sur la forme historique pour ne pas casser l'écran.
     rows: list[dict] = []
     try:
-        for r in supabase.table("email_outbox").select("*").order(
+        for r in db.table("email_outbox").select("*").order(
             "created_at", desc=True
         ).limit(cap).execute().data or []:
             rows.append({
@@ -503,7 +503,7 @@ async def email_log(user: dict = Depends(require_staff), limit: int = 200):
         pass  # table non migrée : on se rabat sur l'historique seul
 
     try:
-        rows += supabase.table("partner_email_log").select("*").order(
+        rows += db.table("partner_email_log").select("*").order(
             "created_at", desc=True
         ).limit(cap).execute().data or []
     except Exception:
@@ -523,7 +523,7 @@ async def email_log(user: dict = Depends(require_staff), limit: int = 200):
     ao_titles: dict = {}
     if ao_ids:
         try:
-            for a in supabase.table("appels_offres").select("id, title").in_("id", ao_ids).execute().data or []:
+            for a in db.table("appels_offres").select("id, title").in_("id", ao_ids).execute().data or []:
                 ao_titles[a["id"]] = a.get("title")
         except Exception:
             pass
@@ -531,7 +531,7 @@ async def email_log(user: dict = Depends(require_staff), limit: int = 200):
     names: dict = {}
     if person_ids:
         try:
-            for p in supabase.table("profiles").select("id, name").in_("id", person_ids).execute().data or []:
+            for p in db.table("profiles").select("id, name").in_("id", person_ids).execute().data or []:
                 names[p["id"]] = p.get("name")
         except Exception:
             pass

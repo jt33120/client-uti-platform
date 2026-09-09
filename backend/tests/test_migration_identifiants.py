@@ -89,9 +89,9 @@ class _FauxClient:
 @pytest.fixture
 def script(monkeypatch):
     monkeypatch.syspath_prepend(str(BACKEND))
-    bouchon = types.ModuleType("services.supabase_client")
-    bouchon.supabase = None
-    monkeypatch.setitem(sys.modules, "services.supabase_client", bouchon)
+    bouchon = types.ModuleType("services.postgrest_client")
+    bouchon.db = None
+    monkeypatch.setitem(sys.modules, "services.postgrest_client", bouchon)
     monkeypatch.delitem(sys.modules, "services.credentials", raising=False)
 
     spec = importlib.util.spec_from_file_location("migrer_identifiants_sous_test", SCRIPT)
@@ -108,8 +108,8 @@ def envois():
 def _brancher(monkeypatch, script, client, envois):
     from services import credentials
 
-    monkeypatch.setattr(script, "supabase", client)
-    monkeypatch.setattr(credentials, "supabase", client)
+    monkeypatch.setattr(script, "db", client)
+    monkeypatch.setattr(credentials, "db", client)
     monkeypatch.setattr(
         script.email_outbox, "enqueue",
         lambda **kw: (envois.append(kw) or {"id": "file-1"}),

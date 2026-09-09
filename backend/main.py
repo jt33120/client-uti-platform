@@ -219,10 +219,10 @@ def health_db():
     la sonde doit rester interrogeable même quand tout va mal.
     """
     from fastapi.responses import JSONResponse
-    from services.supabase_client import supabase
+    from services.postgrest_client import db
 
     try:
-        supabase.table("profiles").select("id").limit(1).execute()
+        db.table("profiles").select("id").limit(1).execute()
     except Exception as e:  # noqa: BLE001
         return JSONResponse(
             status_code=503,
@@ -238,10 +238,10 @@ async def _check_db_ready() -> None:
     (elle sert /health pour le proxy), et systemd/nginx n'interprètent pas ça
     comme un crash. On journalise juste l'état pour le diagnostic."""
     import asyncio
-    from services.supabase_client import supabase
+    from services.postgrest_client import db
     for attempt in range(1, 6):
         try:
-            supabase.table("profiles").select("id").limit(1).execute()
+            db.table("profiles").select("id").limit(1).execute()
             print("[STARTUP] connexion Supabase OK")
             return
         except Exception as e:  # noqa: BLE001

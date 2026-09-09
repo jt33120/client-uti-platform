@@ -13,7 +13,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
 from typing import Optional
 
-from services.supabase_client import supabase
+from services.postgrest_client import db
 from services.scoring import (
     DEFAULTS, DEFAULT_STARS, GRID_VERSION, STAR_CRITERIA, stars_to_weights,
 )
@@ -72,7 +72,7 @@ def _validate_thresholds(fort: Optional[int], moyen: Optional[int]):
 def _stored_row() -> dict:
     """Ligne de config stockée, ou {} (best-effort si la table n'existe pas)."""
     try:
-        rows = supabase.table("scoring_config").select("*").limit(1).execute().data or []
+        rows = db.table("scoring_config").select("*").limit(1).execute().data or []
         return rows[0] if rows else {}
     except Exception as e:  # noqa: BLE001
         print(f"[SCORING] lecture config: {e}")
@@ -137,11 +137,11 @@ async def update_scoring_config(body: ScoringConfig, user: dict = Depends(requir
     })
 
     def _write(data: dict):
-        existing = supabase.table("scoring_config").select("id").limit(1).execute().data or []
+        existing = db.table("scoring_config").select("id").limit(1).execute().data or []
         if existing:
-            supabase.table("scoring_config").update(data).eq("id", existing[0]["id"]).execute()
+            db.table("scoring_config").update(data).eq("id", existing[0]["id"]).execute()
         else:
-            supabase.table("scoring_config").insert(data).execute()
+            db.table("scoring_config").insert(data).execute()
 
     try:
         _write(payload)

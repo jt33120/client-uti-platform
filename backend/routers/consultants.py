@@ -2,7 +2,7 @@ from datetime import date, datetime, timezone
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
 from typing import Optional, Literal
-from services.supabase_client import supabase
+from services.postgrest_client import db
 from services.email import send_email, render_email_html
 from services.ratelimit import rate_limit
 from services.geocoding import geocode
@@ -61,18 +61,18 @@ _OPTIONAL_COLS = ("city", "latitude", "longitude", "availability_status", "avail
 def _insert_with_geo_fallback(table: str, record: dict):
     """Insert tolérant : retente sans les colonnes optionnelles si non migrées."""
     try:
-        return supabase.table(table).insert(record).execute()
+        return db.table(table).insert(record).execute()
     except Exception:
         slim = {k: v for k, v in record.items() if k not in _OPTIONAL_COLS}
-        return supabase.table(table).insert(slim).execute()
+        return db.table(table).insert(slim).execute()
 
 
 def _update_with_geo_fallback(table: str, data: dict, id_: str):
     try:
-        return supabase.table(table).update(data).eq("id", id_).execute()
+        return db.table(table).update(data).eq("id", id_).execute()
     except Exception:
         slim = {k: v for k, v in data.items() if k not in _OPTIONAL_COLS}
-        return supabase.table(table).update(slim).eq("id", id_).execute()
+        return db.table(table).update(slim).eq("id", id_).execute()
 
 
 @router.post("")
@@ -120,7 +120,7 @@ async def list_consultants(user: dict = Depends(get_current_user)):
             select = "*, owner:profiles!created_by(id, name, email, role)"
         else:
             select = "*"
-        query = supabase.table("consultants").select(select).order("created_at", desc=True)
+        query = db.table("consultants").select(select).order("created_at", desc=True)
         if user["role"] == "ao":
             query = query.eq("created_by", user["sub"])
         return query.execute().data
@@ -135,7 +135,7 @@ async def extract_consultant_skills(consultant_id: str, user: dict = Depends(get
     dans son champ `skills` (sans écraser la saisie manuelle). Staff ou porteur."""
     from services.consultant_skills import extract_and_store_skills
     try:
-        consultant = supabase.table("consultants").select("id, created_by").eq(
+        consultant = db.table("consultants").select("id, created_by").eq(
             "id", consultant_id
         ).single().execute().data
     except Exception:
@@ -154,7 +154,7 @@ async def extract_consultant_skills(consultant_id: str, user: dict = Depends(get
 @router.get("/{consultant_id}")
 async def get_consultant(consultant_id: str, user: dict = Depends(get_current_user)):
     try:
-        response = supabase.table("consultants").select("*").eq("id", consultant_id).single().execute()
+        response = db.table("consultants").select("*").eq("id", consultant_id).single().execute()
         consultant = response.data
         if user["role"] == "ao" and consultant["created_by"] != user["sub"]:
             raise HTTPException(status_code=403, detail="Accès interdit")
@@ -176,16 +176,16 @@ async def gdpr_export_consultant(consultant_id: str, user: dict = Depends(get_cu
     from fastapi.responses import JSONResponse
 
     try:
-        c = supabase.table("consultants").select("*").eq("id", consultant_id).single().execute().data
+        c = db.table("consultants").select("*").eq("id", consultant_id).single().execute().data
     except Exception:
         raise HTTPException(status_code=404, detail="Consultant introuvable")
     if user["role"] == "ao" and c.get("created_by") != user["sub"]:
         raise HTTPException(status_code=403, detail="Accès interdit")
 
-    subs = supabase.table("submissions").select(
+    subs = db.table("submissions").select(
         "id, ao_id, submitted_by, submitted_at, cv_filename"
     ).eq("consultant_id", consultant_id).execute().data or []
-    matchings = supabase.table("matchings").select(
+    matchings = db.table("matchings").select(
         "ao_id, rank, score_total, score_hybride"
     ).eq("consultant_id", consultant_id).execute().data or []
 
@@ -212,7 +212,7 @@ async def consultant_history(consultant_id: str, user: dict = Depends(get_curren
     """
     # 1) Consultant + contrôle d'accès
     try:
-        consultant = supabase.table("consultants").select("*").eq("id", consultant_id).single().execute().data
+        consultant = db.table("consultants").select("*").eq("id", consultant_id).single().execute().data
     except Exception:
         raise HTTPException(status_code=404, detail="Consultant introuvable")
     if user["role"] == "ao" and consultant.get("created_by") != user["sub"]:
@@ -222,7 +222,7 @@ async def consultant_history(consultant_id: str, user: dict = Depends(get_curren
     owner = None
     if consultant.get("created_by"):
         try:
-            owner = supabase.table("profiles").select("id, name, email, role").eq(
+            owner = db.table("profiles").select("id, name, email, role").eq(
                 "id", consultant["created_by"]
             ).single().execute().data
         except Exception:
@@ -230,7 +230,7 @@ async def consultant_history(consultant_id: str, user: dict = Depends(get_curren
 
     # 3) Soumissions (CV) du consultant
     try:
-        subs = supabase.table("submissions").select(
+        subs = db.table("submissions").select(
             "id, ao_id, submitted_at, cv_url, cv_filename"
         ).eq("consultant_id", consultant_id).order("submitted_at", desc=True).execute().data or []
     except Exception:
@@ -239,7 +239,7 @@ async def consultant_history(consultant_id: str, user: dict = Depends(get_curren
     # 4) État humain (classement / retenu / contact) par AO
     state_by = {}
     try:
-        for s in supabase.table("ao_consultant_state").select(
+        for s in db.table("ao_consultant_state").select(
             "ao_id, human_rank, contact_status, contacted_at"
         ).eq("consultant_id", consultant_id).execute().data or []:
             state_by[s["ao_id"]] = s
@@ -249,7 +249,7 @@ async def consultant_history(consultant_id: str, user: dict = Depends(get_curren
     # 5) Scores de matching par AO (consultant_id est stocké en TEXT)
     match_by = {}
     try:
-        for m in supabase.table("matchings").select(
+        for m in db.table("matchings").select(
             "ao_id, score_total, score_hybride, rank, recommandation, created_at"
         ).eq("consultant_id", str(consultant_id)).order("created_at", desc=True).execute().data or []:
             match_by.setdefault(m["ao_id"], m)  # garde le plus récent
@@ -261,12 +261,12 @@ async def consultant_history(consultant_id: str, user: dict = Depends(get_curren
     ao_by = {}
     if ao_ids:
         try:
-            rows = supabase.table("appels_offres").select(
+            rows = db.table("appels_offres").select(
                 "id, title, status, reference, client_id, clients(name)"
             ).in_("id", list(ao_ids)).execute().data or []
         except Exception:
             try:
-                rows = supabase.table("appels_offres").select(
+                rows = db.table("appels_offres").select(
                     "id, title, status, client_id"
                 ).in_("id", list(ao_ids)).execute().data or []
             except Exception:
@@ -326,7 +326,7 @@ async def consultant_history(consultant_id: str, user: dict = Depends(get_curren
 @router.patch("/{consultant_id}")
 async def update_consultant(consultant_id: str, body: ConsultantUpdate, user: dict = Depends(get_current_user)):
     try:
-        consultant = supabase.table("consultants").select("*").eq("id", consultant_id).single().execute().data
+        consultant = db.table("consultants").select("*").eq("id", consultant_id).single().execute().data
         # Owner or admin only — commerce has read-only access to the vivier
         if user["role"] != "admin" and consultant["created_by"] != user["sub"]:
             raise HTTPException(status_code=403, detail="Accès interdit")
@@ -362,7 +362,7 @@ async def contact_partner(consultant_id: str, body: ContactPartnerRequest, user:
         raise HTTPException(status_code=422, detail="Sujet et message requis.")
 
     try:
-        consultant = supabase.table("consultants").select("id, name, created_by").eq(
+        consultant = db.table("consultants").select("id, name, created_by").eq(
             "id", consultant_id
         ).single().execute().data
     except Exception:
@@ -372,7 +372,7 @@ async def contact_partner(consultant_id: str, body: ContactPartnerRequest, user:
         raise HTTPException(status_code=422, detail="Ce consultant n'a pas de partenaire porteur.")
 
     try:
-        owner = supabase.table("profiles").select("name, email").eq(
+        owner = db.table("profiles").select("name, email").eq(
             "id", consultant["created_by"]
         ).single().execute().data
     except Exception:
@@ -380,7 +380,7 @@ async def contact_partner(consultant_id: str, body: ContactPartnerRequest, user:
 
     sender_email = user["email"]
     try:
-        sender = supabase.table("profiles").select("name").eq("id", user["sub"]).single().execute().data
+        sender = db.table("profiles").select("name").eq("id", user["sub"]).single().execute().data
         sender_name = sender.get("name") or sender_email
     except Exception:
         sender_name = sender_email
@@ -410,10 +410,10 @@ async def contact_partner(consultant_id: str, body: ContactPartnerRequest, user:
 @router.delete("/{consultant_id}")
 async def delete_consultant(consultant_id: str, user: dict = Depends(get_current_user)):
     try:
-        consultant = supabase.table("consultants").select("*").eq("id", consultant_id).single().execute().data
+        consultant = db.table("consultants").select("*").eq("id", consultant_id).single().execute().data
         if user["role"] != "admin" and consultant["created_by"] != user["sub"]:
             raise HTTPException(status_code=403, detail="Accès interdit")
-        supabase.table("consultants").delete().eq("id", consultant_id).execute()
+        db.table("consultants").delete().eq("id", consultant_id).execute()
         return {"message": "Consultant supprimé"}
     except HTTPException:
         raise

@@ -30,7 +30,7 @@ from typing import Optional
 import jwt
 
 from config import settings
-from services.supabase_client import supabase
+from services.postgrest_client import db
 from services.error_log import record as _record_err
 
 TABLE = "email_optouts"
@@ -175,7 +175,7 @@ def is_blocked(email: Optional[str], key: Optional[str]) -> bool:
     if not category or not addr:
         return False
     try:
-        rows = supabase.table(TABLE).select("email").eq("email", addr).eq(
+        rows = db.table(TABLE).select("email").eq("email", addr).eq(
             "category", category
         ).limit(1).execute().data
         return bool(rows)
@@ -195,7 +195,7 @@ def record(email: str, category: str, source: str = "lien") -> bool:
     if not addr or category not in LABELS:
         return False
     try:
-        supabase.table(TABLE).insert(
+        db.table(TABLE).insert(
             {"email": addr, "category": category, "source": source}
         ).execute()
         return True

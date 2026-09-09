@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Response
 from pydantic import BaseModel
-from services.supabase_client import supabase
+from services.postgrest_client import db
 from services.matching_runner import run_submission_matching
 from services import storage, audit
 from routers.auth import get_current_user, require_staff
@@ -44,7 +44,7 @@ def _looks_like_missing_col(err: Exception, col: str) -> bool:
 def _fetch_states(ao_id: str) -> dict:
     """État humain (classement + contact) par consultant. Best-effort (table absente → {})."""
     try:
-        rows = supabase.table("ao_consultant_state").select("*").eq("ao_id", ao_id).execute().data or []
+        rows = db.table("ao_consultant_state").select("*").eq("ao_id", ao_id).execute().data or []
         return {r["consultant_id"]: r for r in rows}
     except Exception:
         return {}
@@ -79,10 +79,10 @@ async def get_matching_stats(user: dict = Depends(require_staff)):
     try:
         # Try with cost_usd column; fall back if column doesn't exist yet
         try:
-            matchings = supabase.table("matchings").select("id, cost_usd").execute().data or []
+            matchings = db.table("matchings").select("id, cost_usd").execute().data or []
             total_cost = sum(float(m.get("cost_usd") or 0) for m in matchings)
         except Exception:
-            matchings = supabase.table("matchings").select("id").execute().data or []
+            matchings = db.table("matchings").select("id").execute().data or []
             total_cost = 0.0
 
         from services.ai_matching import EXTRACTION_MODEL
@@ -111,11 +111,11 @@ async def get_matching_stats(user: dict = Depends(require_staff)):
             # afficher 0 que ressusciter les archivés.
             vivants = {
                 r["id"] for r in (
-                    supabase.table("appels_offres").select("id")
+                    db.table("appels_offres").select("id")
                     .eq("is_draft", False).eq("archived", False).execute().data or []
                 )
             }
-            scored = supabase.table("matchings").select("ao_id, score_total").execute().data or []
+            scored = db.table("matchings").select("ao_id, score_total").execute().data or []
             matched_ao_ids = sorted({
                 r["ao_id"] for r in scored
                 if r.get("ao_id") in vivants and (r.get("score_total") or 0) >= POTENTIAL_THRESHOLD
@@ -158,9 +158,9 @@ def _contact_targets(results: list[dict]) -> dict:
     sub_ids = [r["submission_id"] for r in results if r.get("submission_id")]
     if sub_ids:
         try:
-            subs = supabase.table("submissions").select("id, consultant_id, submitted_by").in_("id", sub_ids).execute().data or []
+            subs = db.table("submissions").select("id, consultant_id, submitted_by").in_("id", sub_ids).execute().data or []
             pids = [s["submitted_by"] for s in subs if s.get("submitted_by")]
-            profs = {p["id"]: p for p in (supabase.table("profiles").select("id, name, email, role").in_("id", pids).execute().data or [])} if pids else {}
+            profs = {p["id"]: p for p in (db.table("profiles").select("id, name, email, role").in_("id", pids).execute().data or [])} if pids else {}
             for s in subs:
                 p = profs.get(s.get("submitted_by"))
                 if p and p.get("email"):
@@ -172,7 +172,7 @@ def _contact_targets(results: list[dict]) -> dict:
     cons_ids = [r.get("consultant_id") for r in results if r.get("consultant_id") and r.get("consultant_id") not in out]
     if cons_ids:
         try:
-            rows = supabase.table("consultants").select(
+            rows = db.table("consultants").select(
                 "id, name, email, owner:profiles!created_by(name, email, role)"
             ).in_("id", cons_ids).execute().data or []
             for c in rows:
@@ -199,7 +199,7 @@ async def get_cv_source(body: CvSourceRequest, user: dict = Depends(require_staf
     C'est la source fidèle des extraits cités dans les justifications → la vue
     « Transparence » peut surligner de façon fiable. Staff only (admin/commerce)."""
     try:
-        sub = supabase.table("submissions").select("cv_text").eq(
+        sub = db.table("submissions").select("cv_text").eq(
             "id", body.submission_id).single().execute().data
     except Exception:
         sub = None
@@ -208,7 +208,7 @@ async def get_cv_source(body: CvSourceRequest, user: dict = Depends(require_staf
     name = None
     if body.consultant_id:
         try:
-            c = supabase.table("consultants").select("name").eq(
+            c = db.table("consultants").select("name").eq(
                 "id", body.consultant_id).single().execute().data
             name = (c or {}).get("name")
         except Exception:
@@ -224,7 +224,7 @@ async def get_cv_file(body: CvSourceRequest, user: dict = Depends(require_staff)
     même chemin auth/CORS que le reste de l'API, sans dépendre du CORS du bucket
     de stockage (OVH S3 / Supabase). Staff only (admin/commerce)."""
     try:
-        sub = supabase.table("submissions").select("cv_url, cv_filename").eq(
+        sub = db.table("submissions").select("cv_url, cv_filename").eq(
             "id", body.submission_id).single().execute().data
     except Exception:
         sub = None
@@ -262,14 +262,14 @@ async def get_cv_structured(body: CvSourceRequest, user: dict = Depends(require_
 @router.get("/results/{ao_id}")
 async def get_matching_results(ao_id: str, user: dict = Depends(get_current_user)):
     try:
-        query = supabase.table("matchings").select(
+        query = db.table("matchings").select(
             "*, consultants(name, tjm, skills, employment_type), submissions(cv_url, cv_filename)"
         ).eq("ao_id", ao_id).order("rank")
 
         is_partner = user["role"] == "ao"
         if is_partner:
             # Partners only see results for their own submissions
-            own_subs = supabase.table("submissions").select("id").eq(
+            own_subs = db.table("submissions").select("id").eq(
                 "ao_id", ao_id
             ).eq("submitted_by", user["sub"]).execute().data or []
             own_ids = [s["id"] for s in own_subs]
@@ -362,7 +362,7 @@ async def get_pool_synthesis(ao_id: str, refresh: bool = False, user: dict = Dep
     from services.matching_synthesis import synthesize_pool
 
     rows = (
-        supabase.table("matchings")
+        db.table("matchings")
         .select("consultant_id, rank, score_total, score_hybride, breakdown, hybrid_breakdown, llm_global, weights")
         .eq("ao_id", ao_id)
         .order("rank")
@@ -378,7 +378,7 @@ async def get_pool_synthesis(ao_id: str, refresh: bool = False, user: dict = Dep
     if cached and cached.get("sig") == sig and not refresh:
         return {"ao_id": ao_id, "available": True, "cached": True, **cached["data"]}
 
-    ao = (supabase.table("appels_offres").select("*").eq("id", ao_id).limit(1).execute().data or [None])[0]
+    ao = (db.table("appels_offres").select("*").eq("id", ao_id).limit(1).execute().data or [None])[0]
     if not ao:
         raise HTTPException(status_code=404, detail="AO introuvable")
 
@@ -403,7 +403,7 @@ async def set_human_rank(ao_id: str, body: RankRequest, user: dict = Depends(req
     now = _now_iso()
     try:
         for idx, cid in enumerate(body.order, start=1):
-            supabase.table("ao_consultant_state").upsert({
+            db.table("ao_consultant_state").upsert({
                 "ao_id": ao_id,
                 "consultant_id": cid,
                 "human_rank": idx,
@@ -441,7 +441,7 @@ async def set_contact_status(ao_id: str, body: ContactRequest, user: dict = Depe
     if body.status in ("contacted", "proposed"):
         payload["contacted_at"] = now
     try:
-        row = supabase.table("ao_consultant_state").upsert(
+        row = db.table("ao_consultant_state").upsert(
             payload, on_conflict="ao_id,consultant_id"
         ).execute().data[0]
     except Exception as e:
@@ -561,7 +561,7 @@ async def set_cv_validation(ao_id: str, body: ValidationRequest, background_task
     row = None
     while row is None:
         try:
-            row = supabase.table("ao_consultant_state").upsert(
+            row = db.table("ao_consultant_state").upsert(
                 payload, on_conflict="ao_id,consultant_id"
             ).execute().data[0]
         except Exception as e:
@@ -612,14 +612,14 @@ async def refusal_suggestion(ao_id: str, consultant_id: str, user: dict = Depend
     from services.refusal_reason import suggest_refusal_reason
     try:
         match = (
-            supabase.table("matchings")
+            db.table("matchings")
             .select("consultant_id, score_total, score_hybride, breakdown, hybrid_breakdown, llm_global, weights")
             .eq("ao_id", ao_id).eq("consultant_id", str(consultant_id))
             .limit(1).execute().data or [None]
         )[0]
     except Exception:
         match = None
-    ao = (supabase.table("appels_offres").select(
+    ao = (db.table("appels_offres").select(
         "title, skills_required, seniority, budget_max, context"
     ).eq("id", ao_id).limit(1).execute().data or [None])[0]
     if ao is None:
@@ -651,7 +651,7 @@ async def send_cv_to_client(ao_id: str, body: SendCvClientRequest, user: dict = 
 
     now = _now_iso()
     try:
-        row = supabase.table("ao_consultant_state").upsert({
+        row = db.table("ao_consultant_state").upsert({
             "ao_id": ao_id,
             "consultant_id": body.consultant_id,
             "sent_to_client_at": now,
@@ -676,7 +676,7 @@ async def create_client_review_link(ao_id: str, user: dict = Depends(require_sta
     Un lien encore valide (non révoqué, non expiré) est réutilisé plutôt que recréé.
     Staff only. Le périmètre du lien = l'AO + son client (dérivé serveur)."""
     # client_id de l'AO (scope du lien). AO introuvable → 404.
-    ao = (supabase.table("appels_offres").select("id, client_id").eq("id", ao_id).limit(1).execute().data or [None])[0]
+    ao = (db.table("appels_offres").select("id, client_id").eq("id", ao_id).limit(1).execute().data or [None])[0]
     if not ao:
         raise HTTPException(status_code=404, detail="AO introuvable")
     client_id = ao.get("client_id")
@@ -687,7 +687,7 @@ async def create_client_review_link(ao_id: str, user: dict = Depends(require_sta
     # Best-effort : table absente / erreur de lecture → on tentera d'en créer un.
     review = None
     try:
-        existing = supabase.table("client_reviews").select("*").eq("ao_id", ao_id).is_(
+        existing = db.table("client_reviews").select("*").eq("ao_id", ao_id).is_(
             "revoked_at", "null"
         ).order("created_at", desc=True).execute().data or []
         review = next((r for r in existing if not _is_expired_iso(r.get("expires_at"))), None)
@@ -703,7 +703,7 @@ async def create_client_review_link(ao_id: str, user: dict = Depends(require_sta
             "expires_at": (now + timedelta(days=30)).isoformat(),
         }
         try:
-            review = supabase.table("client_reviews").insert(record).execute().data[0]
+            review = db.table("client_reviews").insert(record).execute().data[0]
         except Exception as e:
             # Migration 0007 non appliquée (table absente) : dégrader proprement
             # (503, pas de 500) plutôt que de fabriquer un lien mort non persisté.
@@ -714,7 +714,7 @@ async def create_client_review_link(ao_id: str, user: dict = Depends(require_sta
     # Nb de profils présentés au client (sent_to_client_at renseigné). Best-effort.
     sent_count = 0
     try:
-        rows = supabase.table("ao_consultant_state").select(
+        rows = db.table("ao_consultant_state").select(
             "consultant_id, sent_to_client_at"
         ).eq("ao_id", ao_id).execute().data or []
         sent_count = sum(1 for r in rows if r.get("sent_to_client_at"))
@@ -742,7 +742,7 @@ async def revoke_client_review_link(ao_id: str, user: dict = Depends(require_sta
     Best-effort : table non migrée → 503 (jamais 500)."""
     now_iso = _now_iso()
     try:
-        rows = supabase.table("client_reviews").update({"revoked_at": now_iso}).eq(
+        rows = db.table("client_reviews").update({"revoked_at": now_iso}).eq(
             "ao_id", ao_id
         ).is_("revoked_at", "null").execute().data or []
     except Exception as e:
@@ -779,7 +779,7 @@ async def get_ao_states(ao_id: str, user: dict = Depends(require_staff)):
     while True:
         cols = _STATE_BASE_COLS + (", " + ", ".join(optional) if optional else "")
         try:
-            rows = supabase.table("ao_consultant_state").select(cols).eq("ao_id", ao_id).execute().data or []
+            rows = db.table("ao_consultant_state").select(cols).eq("ao_id", ao_id).execute().data or []
             break
         except Exception as e:
             # On retire les colonnes récentes que l'erreur signale comme absentes
@@ -821,7 +821,7 @@ async def set_cv_validation_bulk(ao_id: str, body: BulkValidationRequest, backgr
     updated = 0
     for cid in ids:
         try:
-            supabase.table("ao_consultant_state").upsert({
+            db.table("ao_consultant_state").upsert({
                 "ao_id": ao_id, "consultant_id": cid, "validation": val,
                 "decided_by": user["sub"], "updated_at": now,
             }, on_conflict="ao_id,consultant_id").execute()

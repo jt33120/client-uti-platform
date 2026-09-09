@@ -47,7 +47,7 @@ from urllib.parse import quote
 from jose import jwt, JWTError
 
 from config import settings
-from services.supabase_client import supabase
+from services.postgrest_client import db
 
 #: Buckets dont les objets sont lus DIRECTEMENT par le navigateur, donc rendus
 #: publics sur S3 : l'avatar s'affiche dans une balise <img>, et les images des
@@ -425,7 +425,7 @@ def ensure_bucket(bucket: str, public: bool = False) -> None:
     if _use_s3():
         return
     try:
-        existing = supabase.storage.list_buckets() or []
+        existing = db.storage.list_buckets() or []
         names = {
             (getattr(b, "name", None) or (b.get("name") if isinstance(b, dict) else None))
             for b in existing
@@ -435,8 +435,8 @@ def ensure_bucket(bucket: str, public: bool = False) -> None:
     except Exception:
         pass
     for attempt in (
-        lambda: supabase.storage.create_bucket(bucket, options={"public": public}),
-        lambda: supabase.storage.create_bucket(bucket),
+        lambda: db.storage.create_bucket(bucket, options={"public": public}),
+        lambda: db.storage.create_bucket(bucket),
     ):
         try:
             attempt()
@@ -463,7 +463,7 @@ def get_public_url(bucket: str, path: str) -> str:
     if _use_s3():
         base = (settings.s3_public_base_url or "").rstrip("/")
         return f"{base}/{bucket}/{path}"
-    return supabase.storage.from_(bucket).get_public_url(path)
+    return db.storage.from_(bucket).get_public_url(path)
 
 
 def upload(bucket: str, path: str, content: bytes, content_type: str) -> str:
@@ -486,7 +486,7 @@ def upload(bucket: str, path: str, content: bytes, content_type: str) -> str:
             **extra,
         )
     else:
-        supabase.storage.from_(bucket).upload(path, content, {"content-type": content_type})
+        db.storage.from_(bucket).upload(path, content, {"content-type": content_type})
     return get_public_url(bucket, path)
 
 
@@ -497,7 +497,7 @@ def download(bucket: str, path: str) -> bytes:
     if _use_s3():
         obj = _s3().get_object(Bucket=settings.s3_bucket, Key=f"{bucket}/{path}")
         return obj["Body"].read()
-    return supabase.storage.from_(bucket).download(path)
+    return db.storage.from_(bucket).download(path)
 
 
 def _object_path(bucket: str, stored: Optional[str]) -> Optional[str]:
@@ -528,7 +528,7 @@ def signed_url(bucket: str, path: str, expires_in: int = 3600) -> Optional[str]:
             Params={"Bucket": settings.s3_bucket, "Key": f"{bucket}/{path}"},
             ExpiresIn=expires_in,
         )
-    res = supabase.storage.from_(bucket).create_signed_url(path, expires_in)
+    res = db.storage.from_(bucket).create_signed_url(path, expires_in)
     url = None
     if isinstance(res, dict):
         url = res.get("signedURL") or res.get("signedUrl") or res.get("signed_url")
@@ -569,7 +569,7 @@ def remove(bucket: str, paths: list[str]) -> None:
             Delete={"Objects": [{"Key": f"{bucket}/{p}"} for p in paths]},
         )
     else:
-        supabase.storage.from_(bucket).remove(paths)
+        db.storage.from_(bucket).remove(paths)
 
 
 def list(bucket: str, prefix: str) -> list[dict]:
@@ -586,4 +586,4 @@ def list(bucket: str, prefix: str) -> list[dict]:
         full_prefix = f"{bucket}/{prefix.rstrip('/')}/"
         resp = _s3().list_objects_v2(Bucket=settings.s3_bucket, Prefix=full_prefix)
         return [{"name": obj["Key"].split("/")[-1]} for obj in resp.get("Contents", [])]
-    return supabase.storage.from_(bucket).list(prefix)
+    return db.storage.from_(bucket).list(prefix)

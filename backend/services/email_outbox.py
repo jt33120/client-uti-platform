@@ -22,7 +22,7 @@ un redémarrage, d'où `_recover_stuck`.
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from services.supabase_client import supabase
+from services.postgrest_client import db
 from services.error_log import record as _record_err
 from services import email as email_service
 from services import email_optout
@@ -91,7 +91,7 @@ def enqueue(
         "idempotency_key": idempotency_key,
     }
     try:
-        created = supabase.table("email_outbox").insert(row).execute().data
+        created = db.table("email_outbox").insert(row).execute().data
         return (created or [None])[0]
     except Exception as e:  # noqa: BLE001
         msg = str(e).lower()
@@ -106,7 +106,7 @@ def _recover_stuck(now: datetime) -> int:
     """Remet en file les lignes laissées en « sending » par un processus mort."""
     cutoff = (now - timedelta(minutes=STUCK_AFTER_MINUTES)).isoformat()
     try:
-        rows = supabase.table("email_outbox").update(
+        rows = db.table("email_outbox").update(
             {"status": "queued", "claimed_at": None}
         ).eq("status", "sending").lt("claimed_at", cutoff).execute().data or []
         if rows:
@@ -123,7 +123,7 @@ def _recover_stuck(now: datetime) -> int:
 def _claim(now: datetime) -> list[dict]:
     """Réserve un lot de lignes prêtes à partir."""
     try:
-        ready = supabase.table("email_outbox").select("*").eq("status", "queued").lte(
+        ready = db.table("email_outbox").select("*").eq("status", "queued").lte(
             "next_attempt_at", now.isoformat()
         ).order("next_attempt_at").limit(BATCH).execute().data or []
     except Exception as e:  # noqa: BLE001
@@ -134,7 +134,7 @@ def _claim(now: datetime) -> list[dict]:
 
     ids = [r["id"] for r in ready]
     try:
-        supabase.table("email_outbox").update(
+        db.table("email_outbox").update(
             {"status": "sending", "claimed_at": now.isoformat()}
         ).in_("id", ids).execute()
     except Exception as e:  # noqa: BLE001
@@ -146,7 +146,7 @@ def _claim(now: datetime) -> list[dict]:
 
 
 def _mark_sent(row_id: str, now: datetime) -> None:
-    supabase.table("email_outbox").update({
+    db.table("email_outbox").update({
         "status": "sent", "sent_at": now.isoformat(), "last_error": None,
     }).eq("id", row_id).execute()
 
@@ -175,7 +175,7 @@ def plan_retry(attempts_before: int, err: str, now: datetime) -> dict:
 
 def _mark_failed(row: dict, err: str, now: datetime) -> None:
     patch = plan_retry(row.get("attempts"), err, now)
-    supabase.table("email_outbox").update(patch).eq("id", row["id"]).execute()
+    db.table("email_outbox").update(patch).eq("id", row["id"]).execute()
 
 
 def process_outbox(now: Optional[datetime] = None) -> dict:
@@ -237,7 +237,7 @@ def stats(now: Optional[datetime] = None) -> dict:
     out: dict = {}
     for status in ("queued", "sending", "sent", "dead"):
         try:
-            out[status] = supabase.table("email_outbox").select(
+            out[status] = db.table("email_outbox").select(
                 "id", count="exact"
             ).eq("status", status).limit(1).execute().count
         except Exception:  # noqa: BLE001

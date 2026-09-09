@@ -83,7 +83,7 @@ BACKEND_DIR="$BACKEND" "$BACKEND/venv/bin/python" - <<'PY'
 # invaliderait le test : c'est la forme qui casse, pas l'intention.
 import os, sys
 sys.path.insert(0, os.environ["BACKEND_DIR"])
-from services.supabase_client import supabase
+from services.postgrest_client import db
 
 V, R = "  \033[32m✓\033[0m", "  \033[31m✗\033[0m"
 rouge = 0
@@ -101,25 +101,25 @@ def essai(libelle, fn):
 # chose. Si la relation était inconnue, PostgREST répondrait PGRST200 et lèverait.
 # Un [] silencieux vaut donc « la clé étrangère est résolue ».
 essai("jointure appels_offres → clients(name)",
-      lambda: supabase.table("appels_offres").select("*, clients(name)").limit(1).execute())
+      lambda: db.table("appels_offres").select("*, clients(name)").limit(1).execute())
 
 # routers/matching.py:243 — la jointure la plus fragile : deux relations, dont
 # celle qui dépend de la FK ajoutée par migrations/0017_matchings_consultant_fk.sql.
 essai("jointure matchings → consultants + submissions",
-      lambda: supabase.table("matchings")
+      lambda: db.table("matchings")
               .select("*, consultants(name, tjm, skills, employment_type), submissions(cv_url, cv_filename)")
               .limit(1).execute())
 
 # routers/aos.py — agrégat embarqué, doit renvoyer [{'count': N}].
 essai("agrégat appels_offres → submissions(count)",
-      lambda: supabase.table("appels_offres").select("id, submissions(count)").limit(1).execute())
+      lambda: db.table("appels_offres").select("id, submissions(count)").limit(1).execute())
 
 # 52 sites appellent .single() et comptent sur l'exception pour produire un 404
 # (routers/auth.py:530 par exemple). Si .single() renvoyait None au lieu de lever,
 # ces 52 sites répondraient 500.
 def single_leve():
     try:
-        supabase.table("profiles").select("*").eq("id", "00000000-0000-0000-0000-000000000000").single().execute()
+        db.table("profiles").select("*").eq("id", "00000000-0000-0000-0000-000000000000").single().execute()
     except Exception:
         return
     raise AssertionError(".single() sur 0 ligne n'a pas levé")
@@ -127,13 +127,13 @@ essai(".single() sur 0 ligne lève bien", single_leve)
 
 # services/data_retention.py:174 — count exact, utilisé par les écrans admin.
 def compte():
-    r = supabase.table("submissions").select("id", count="exact").limit(1).execute()
+    r = db.table("submissions").select("id", count="exact").limit(1).execute()
     assert r.count is not None, "count est None"
 essai('count="exact" renvoie un entier', compte)
 
 # services/data_retention.py:118 — in_() sur liste vide ne doit pas planter.
 essai("in_([]) renvoie [] sans erreur",
-      lambda: supabase.table("submissions").select("id").in_("consultant_id", []).execute())
+      lambda: db.table("submissions").select("id").in_("consultant_id", []).execute())
 
 # services/email_outbox.py:enqueue traite un conflit d'unicité comme un SUCCÈS,
 # en cherchant '23505' et 'duplicate' dans str(e). Ces chaînes viennent des
@@ -141,7 +141,7 @@ essai("in_([]) renvoie [] sans erreur",
 # disparaît et un doublon serait compté comme une panne d'envoi.
 def conflit():
     try:
-        supabase.table("app_settings").insert({"key": "notifications", "value": {}}).execute()
+        db.table("app_settings").insert({"key": "notifications", "value": {}}).execute()
     except Exception as e:
         s = str(e).lower()
         assert "23505" in s, f"code 23505 absent du message : {s[:120]}"

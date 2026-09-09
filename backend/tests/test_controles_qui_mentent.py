@@ -321,3 +321,99 @@ def test_on_ne_conseille_plus_de_relancer_le_controle_en_root():
         "root est désormais mappé dans pg_ident.conf : la consigne « relancer "
         "en root » redeviendrait valide, revoir ce test et le message du script"
     )
+
+
+# ── Deux contrôles de fuite qui n'ont jamais tourné ────────────────────────
+# La section 4 tirait la clé d'un CV de `storage.list("cvs", "")`. En mode
+# local, ce listage ne rend que les fichiers posés DIRECTEMENT dans cvs/, or un
+# CV s'écrit en cvs/<ao_id>/<uuid>.pdf : il ne voyait que des répertoires. Le
+# script annonçait donc « aucun CV en stockage » — en vert — sur une plateforme
+# qui en servait 31, et les deux contrôles de fuite étaient sautés.
+def test_les_cv_vivent_dans_des_sous_repertoires():
+    """Les deux moitiés de la panne, chacune vérifiable dans le dépôt."""
+    routeur = (RACINE / "routers" / "submissions.py").read_text()
+    assert 'storage_path = f"{ao_id}/{submission_uuid}' in routeur, (
+        "les CV ne sont plus rangés par appel d'offres — si le stockage est "
+        "redevenu plat, relire pourquoi ce contrôle interrogeait la base"
+    )
+    storage_py = (RACINE / "services" / "storage.py").read_text()
+    m = re.search(r'^def list\(bucket.*?(?=^def |\Z)', storage_py, re.S | re.M)
+    assert m and "e.is_file()" in m.group(0), (
+        "storage.list ne filtre plus sur e.is_file() : vérifier s'il descend "
+        "désormais dans les sous-répertoires"
+    )
+
+
+def test_la_cle_du_cv_ne_vient_plus_dun_listage_plat():
+    texte = CONTROLE.read_text()
+    assert 'storage.list("cvs"' not in texte, (
+        "la clé du CV repasse par un listage qui ne peut structurellement rien "
+        "trouver ; les contrôles de fuite redeviendraient décoratifs"
+    )
+    assert 'db.table("submissions").select("cv_url")' in texte, (
+        "la clé du CV ne vient plus de la base"
+    )
+    assert "ok \"aucun CV en stockage" not in texte, (
+        "l'absence de CV est de nouveau annoncée en VERT alors qu'elle veut "
+        "dire « rien n'a été éprouvé »"
+    )
+
+
+def _bloc_fuite_locale() -> str:
+    texte = CONTROLE.read_text()
+    m = re.search(r'^    if \[ -z "\$BASE" \]; then\n.*?^    fi$', texte, re.S | re.M)
+    assert m, "le bloc de contrôle des fuites locales n'a plus la forme attendue"
+    return (
+        'ok() { echo "OK $1"; }\n'
+        'ko() { echo "KO $1"; }\n'
+        'nv() { echo "NV $1"; }\n'
+        'BASE="https://exemple.test"\n'
+        'CLE_CV="$CLE_STUB"\n'
+        # curl de substitution : un code par route, pilotés séparément.
+        'curl() { case "$*" in\n'
+        '  */files/public/*) echo "$CODE_PUBLIC" ;;\n'
+        '  */files/d/*)      echo "$CODE_JETON" ;;\n'
+        'esac; }\n'
+        + m.group(0)
+    )
+
+
+def _joue_fuite(cle: str, code_public: str, code_jeton: str) -> str:
+    out = subprocess.run(
+        ["bash", "-c", _bloc_fuite_locale()],
+        capture_output=True, text=True,
+        env={"PATH": "/usr/bin:/bin", "CLE_STUB": cle,
+             "CODE_PUBLIC": code_public, "CODE_JETON": code_jeton},
+    )
+    assert out.returncode == 0, f"{out.stdout!r} {out.stderr!r}"
+    return out.stdout
+
+
+def test_sans_cv_le_controle_du_jeton_tourne_quand_meme():
+    """LE TEST QUI COMPTE. Le refus d'un jeton invalide ne dépend d'aucun CV,
+    et il était pourtant enfermé dans la branche « on a trouvé un CV »."""
+    sortie = _joue_fuite("", "", "403")
+    assert _lignes(sortie, "NV") == 1, sortie
+    assert "jeton invalide est refusé" in sortie, (
+        f"le contrôle du jeton est encore sauté faute de CV :\n{sortie}"
+    )
+    assert _lignes(sortie, "KO") == 0, sortie
+
+
+def test_sans_cv_un_jeton_accepte_reste_rouge():
+    sortie = _joue_fuite("", "", "200")
+    assert _lignes(sortie, "KO") == 1, sortie
+    assert "la signature des URLs ne protège rien" in sortie, sortie
+
+
+def test_avec_un_cv_les_deux_controles_tournent():
+    sortie = _joue_fuite("42/abc.pdf", "404", "403")
+    assert _lignes(sortie, "OK") == 2, sortie
+    assert _lignes(sortie, "NV") == 0, sortie
+    assert _lignes(sortie, "KO") == 0, sortie
+
+
+def test_un_cv_servi_publiquement_est_rouge():
+    sortie = _joue_fuite("42/abc.pdf", "200", "403")
+    assert _lignes(sortie, "KO") == 1, sortie
+    assert "est traité comme public" in sortie, sortie

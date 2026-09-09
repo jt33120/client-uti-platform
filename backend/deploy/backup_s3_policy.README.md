@@ -68,20 +68,36 @@ B2 n'attache pas de document JSON à un utilisateur. Chaque **clé
 d'application** porte sa propre liste de capacités, figée à sa création : ce
 qui n'y figure pas est refusé, sans document à importer.
 
-La clé qui vit dans `/etc/uti-backup.env` doit porter **exactement** :
+La clé qui vit dans `/etc/uti-backup.env` doit porter :
 
     listBuckets,listFiles,readFiles,writeFiles
 
-et **rien d'autre**. En particulier pas `deleteFiles`, qui est la capacité qui
-correspond à `s3:DeleteObject` ci-dessus, ni les capacités d'écriture de
-rétention (`writeBucketRetentions`, `writeFileRetentions`) ni `bypassGovernance`,
-qui sont les contournements décrits plus haut.
+et **rien d'autre** — en particulier pas `deleteFiles`, ni les capacités
+d'écriture de rétention (`writeBucketRetentions`, `writeFileRetentions`), ni
+`bypassGovernance`, qui sont les contournements décrits plus haut.
 
-`deleteFiles` n'est nécessaire à rien : `deploy/s3_backup.py` n'appelle que
+`deleteFiles` n'est nécessaire à rien ici : `deploy/s3_backup.py` n'appelle que
 `put_object`, `head_object`, `get_object` et `list_objects_v2` — jamais
 `delete_object`. Le retrait de cette capacité ne casse donc aucune sauvegarde,
-et aucune rotation : la rotation est **locale**, et l'historique hors-site est
+ni aucune rotation : la rotation est **locale**, et l'historique hors-site est
 justement ce qu'on ne veut pas voir disparaître.
+
+> ### ⚠️ Mais cette liste NE SUFFIT PAS, et c'est le point à ne pas manquer
+>
+> Une première version de cette page affirmait qu'une clé sans `deleteFiles`
+> ne peut pas effacer. **C'est faux chez B2**, et la documentation le dit :
+> *« `writeFiles` is necessary when you delete a file by name, and
+> `deleteFiles` is required when you delete a specific version »*
+> (<https://www.backblaze.com/docs/cloud-storage-s3-compatible-app-keys>).
+>
+> Or `writeFiles` est **obligatoire pour déposer**. Il n'existe donc
+> **aucune liste de capacités** qui laisse la clé écrire sans la laisser
+> supprimer par nom. Retirer `deleteFiles` reste utile — cela bloque la
+> suppression DÉFINITIVE d'une version — mais présenter cette couche comme
+> la protection serait exactement l'erreur que ce fichier dénonce ailleurs :
+> une garantie affirmée, jamais éprouvée.
+>
+> Ce qui protège réellement est le **verrou d'objet**, ci-dessous.
 
     b2 key create --bucket <conteneur> uti-backup-writer \
       listBuckets,listFiles,readFiles,writeFiles
@@ -101,14 +117,44 @@ construction. Elle ne doit jamais quitter le gestionnaire de mots de passe.
 Seule une clé **restreinte à un conteneur**, avec la liste ci-dessus, a le
 droit de vivre dans `/etc/uti-backup.env`.
 
-### Le verrou d'objet
+### Le verrou d'objet — la couche qui porte réellement
 
-B2 propose aussi un verrou d'objet. **Non vérifié sur le conteneur en place**,
-et à ne pas supposer : le conteneur `uti-sauvegardes-1.0` a été créé le
-9 septembre depuis la console web sans que ce point soit tranché. Vérifier son
-état dans la documentation B2 avant d'écrire ici qu'il protège quelque chose —
-la première couche (une clé qui ne sait pas supprimer) est indépendante de
-celle-là et se pose tout de suite.
+Chez OVH, le verrou se pose **à la création du conteneur, et jamais après**.
+Cette règle-là a été transposée à B2 par erreur, ce qui faisait conclure que le
+conteneur `uti-sauvegardes-1.0`, créé sans verrou, était définitivement perdu
+pour cette protection. **B2 ne fonctionne pas comme ça** :
+
+> *You may enable Object Lock on a bucket when creating a new bucket **or on an
+> existing bucket**.*
+> <https://www.backblaze.com/docs/cloud-storage-enable-object-lock-or-a-legal-hold-on-an-existing-bucket>
+
+Activer le verrou ne suffit pas : il faut ensuite poser une **période de
+rétention par défaut**, sans quoi rien n'est immuable. Et cette protection
+**n'est pas rétroactive** — les objets déposés AVANT la pose de la rétention
+restent supprimables. Ce n'est pas un obstacle ici : une sauvegarde tombe toutes
+les heures, donc l'historique protégé se reconstitue en quelques jours.
+
+Choisir la durée de rétention est une décision, pas un réglage : c'est le temps
+pendant lequel PERSONNE ne peut effacer — le propriétaire du compte non plus —
+et donc aussi le temps que le stockage est facturé. À 300 Ko par archive, le
+coût n'est pas le critère ; le critère est le délai au bout duquel on découvre
+un sinistre.
+
+### Ce que le contrôle mesure, et ce qu'il devrait mesurer
+
+`post_bascule_check.sh` appelle `delete_object(Bucket, Key)` **sans numéro de
+version** : une suppression PAR NOM. Deux conséquences, toutes deux à corriger
+avant de croire ce contrôle :
+
+  * retirer `deleteFiles` de la clé ne le fera **pas** passer au vert, puisque
+    `writeFiles` suffit à cette forme-là ;
+  * sur un conteneur versionné — et activer le verrou active le versionnage —
+    une suppression par nom **réussit** en posant un marqueur, tandis que la
+    version protégée reste dessous, intacte et récupérable.
+
+Le contrôle rendrait donc « SUPPRESSION ACCEPTÉE » sur une configuration
+correctement protégée. La question à poser n'est pas « l'appel échoue-t-il ? »
+mais **« la version est-elle encore là après ? »**.
 
 ## La vérifier
 

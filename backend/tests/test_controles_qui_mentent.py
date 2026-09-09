@@ -440,3 +440,41 @@ def test_le_depot_hors_site_ne_supprime_jamais():
         "la liste des capacités B2 a bougé sans que ce test le sache"
     )
     assert "deleteFiles" in readme, "le README ne nomme plus la capacité refusée"
+
+
+def test_le_readme_ne_promet_pas_quune_liste_de_capacites_protege():
+    """La nuance qu'une relecture « simplificatrice » ferait sauter en premier.
+
+    B2 : « writeFiles is necessary when you delete a file by name, deleteFiles
+    is required when you delete a specific version. » Comme writeFiles est
+    indispensable pour DÉPOSER, aucune liste de capacités ne laisse la clé
+    écrire sans la laisser supprimer par nom. Une première version de ce
+    fichier affirmait le contraire ; le jour où quelqu'un raccourcira ce
+    paragraphe, la fausse garantie reviendra.
+    """
+    readme = (RACINE / "deploy" / "backup_s3_policy.README.md").read_text()
+    assert "NE SUFFIT PAS" in readme, (
+        "le README ne dit plus que la liste de capacités est insuffisante"
+    )
+    assert "delete a file by name" in readme, (
+        "la citation Backblaze qui fonde cette limite a disparu : sans elle, "
+        "le paragraphe redevient une opinion qu'on peut supprimer"
+    )
+    assert "existing bucket" in readme, (
+        "le README ne dit plus que le verrou d'objet s'active sur un conteneur "
+        "EXISTANT chez B2 — c'est la règle OVH qui avait été transposée à tort"
+    )
+
+
+def test_le_controle_de_suppression_supprime_encore_par_nom():
+    """Tant que c'est vrai, le README doit continuer à prévenir que ce contrôle
+    ne mesure pas ce qu'il prétend. Le jour où il testera la survie de la
+    version, ce test tombera — et c'est le signal pour retirer l'avertissement.
+    """
+    texte = CONTROLE.read_text()
+    if "delete_object(Bucket=b, Key=k)" in texte and "VersionId" not in texte:
+        readme = (RACINE / "deploy" / "backup_s3_policy.README.md").read_text()
+        assert "sans numéro de\nversion" in readme or "sans numéro de version" in readme, (
+            "le contrôle supprime toujours par nom, mais le README ne prévient "
+            "plus que son verdict est trompeur sur un conteneur verrouillé"
+        )

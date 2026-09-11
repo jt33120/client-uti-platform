@@ -37,8 +37,9 @@
 | Sauvegarde | `uti-backup.timer` | horaire, chiffrée, déposée hors-site |
 | Répétition de restauration | `uti-restore-drill.timer` | lundi 04h15 |
 | Supervision | `uti-supervision.timer` | toutes les 15 minutes |
+| Revue hebdomadaire | `uti-revue-hebdo.timer` | dimanche 07h30 — rapport par e-mail systématique |
 
-Les quatre derniers viennent de `backend/deploy/` et s'installent avec
+Les cinq derniers viennent de `backend/deploy/` et s'installent avec
 `backend/deploy/install_db.sh` — voir `backend/deploy/INSTALLATION.md`.
 
 ---

@@ -395,29 +395,77 @@ elif [ -f /etc/uti-backup.env ]; then
     && ok "dépôt hors-site alimenté — dernier objet : $recent" \
     || ko "le conteneur hors-site est VIDE ou injoignable : les sauvegardes ne survivraient pas au VPS"
 
-  # — Le piège central : la clé posée sur le VPS ne doit PAS pouvoir effacer.
-  #   Une politique qu'on n'a pas essayé de violer n'est qu'une intention.
+  # — Le piège central : une compromission du VPS ne doit pas pouvoir DÉTRUIRE
+  #   l'historique. Une protection qu'on n'a pas essayé de violer n'est qu'une
+  #   intention.
+  #
+  #   CE CONTRÔLE A LONGTEMPS POSÉ LA MAUVAISE QUESTION. Il demandait « l'appel
+  #   de suppression échoue-t-il ? » en appelant delete_object SANS numéro de
+  #   version. Or sur un conteneur versionné, supprimer par nom ne détruit
+  #   rien : ça empile un « marqueur de suppression » au-dessus d'une version
+  #   parfaitement intacte, et cet appel-là RÉUSSIT — y compris sous un verrou
+  #   compliance impeccable. Le contrôle annonçait donc « la clé du VPS PEUT
+  #   supprimer » sur une configuration exemplaire, et ce rouge-là ne pouvait
+  #   pas se refermer : il condamnait la sortie 0, donc le compteur des 14 jours
+  #   d'observation (BASCULE.md §6, critère 3).
+  #
+  #   La bonne question est « la VERSION survit-elle ? ». On la pose sur un
+  #   objet témoin — jamais sur une archive réelle : un marqueur de suppression
+  #   posé sur une vraie sauvegarde la rendrait invisible à `head`/`get` par
+  #   nom, donc irrécupérable par restore_drill.sh, alors même que ses octets
+  #   seraient toujours là. Le témoin vit sous « essais/ » et non « uti/ », pour
+  #   ne pas venir se ranger en tête du listage des sauvegardes.
   BACKEND_DIR="$BACKEND" "$BACKEND/venv/bin/python" - <<'PY'
-import os, sys, boto3
+import os, sys, time, boto3
 from botocore.exceptions import ClientError
 c = boto3.client("s3", endpoint_url=os.environ["BACKUP_S3_ENDPOINT"],
                  region_name=os.environ.get("BACKUP_S3_REGION", "sbg"),
                  aws_access_key_id=os.environ["BACKUP_S3_ACCESS_KEY"],
                  aws_secret_access_key=os.environ["BACKUP_S3_SECRET_KEY"])
-b, k = os.environ["BACKUP_S3_BUCKET"], "uti/_essai_suppression"
+b = os.environ["BACKUP_S3_BUCKET"]
+k = f"essais/verrou-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}"
+
+# 1. Déposer doit marcher : c'est la raison d'être de cette clé.
 try:
-    c.put_object(Bucket=b, Key=k, Body=b"x")
+    depot = c.put_object(Bucket=b, Key=k, Body=b"x")
 except ClientError as e:
     sys.exit(f"dépôt refusé ({e.response['Error']['Code']}) : la sauvegarde ne peut plus écrire")
+version = depot.get("VersionId")
+
+# 2. Le verrou doit être EFFECTIF sur l'objet, pas seulement affiché dans une
+#    interface. C'est la rétention par défaut du conteneur qui le pose.
+tete = c.head_object(Bucket=b, Key=k, **({"VersionId": version} if version else {}))
+mode = tete.get("ObjectLockMode") or ""
+if not mode:
+    sys.exit("AUCUN verrou d'objet sur un dépôt neuf : la rétention par défaut du "
+             "conteneur est absente — les sauvegardes sont effaçables")
+if mode != "COMPLIANCE":
+    sys.exit(f"verrou en mode {mode} : la clé du VPS porte bypassGovernance et "
+             f"peut le lever elle-même. Seul COMPLIANCE tient.")
+
+# 3. La tentative qui compte : détruire LA VERSION. C'est le seul appel qui
+#    efface vraiment des octets, et c'est celui qu'un verrou doit refuser.
+if not version:
+    sys.exit("le conteneur ne renvoie pas de numéro de version : sans versionnement, "
+             "un écrasement par nom suffit à perdre l'historique")
 try:
-    c.delete_object(Bucket=b, Key=k)
+    c.delete_object(Bucket=b, Key=k, VersionId=version)
 except ClientError:
-    sys.exit(0)          # refusé = c'est le but
-sys.exit("SUPPRESSION ACCEPTÉE : la clé du VPS peut effacer l'historique")
+    pass                 # refusé = c'est exactement le but
+else:
+    sys.exit("VERSION DÉTRUITE : la clé du VPS peut effacer l'historique")
+
+# 4. Et on le vérifie plutôt que de le croire : l'absence d'erreur n'est pas
+#    une preuve de survie.
+try:
+    c.head_object(Bucket=b, Key=k, VersionId=version)
+except ClientError:
+    sys.exit("la version a disparu après la tentative de suppression")
+sys.exit(0)
 PY
   [ $? -eq 0 ] \
-    && ok "la clé S3 du VPS ne peut PAS supprimer (politique + verrou d'objet actifs)" \
-    || ko "la clé S3 du VPS PEUT supprimer — une compromission détruirait tout. Voir deploy/backup_s3_policy.README.md"
+    && ok "une compromission du VPS ne pourrait pas détruire l'historique (verrou compliance éprouvé sur un objet témoin)" \
+    || ko "les sauvegardes hors-site sont DESTRUCTIBLES par la clé du VPS. Voir deploy/backup_s3_policy.README.md"
 else
   ko "/etc/uti-backup.env absent : aucun dépôt hors-site configuré — bash deploy/setup_backup_offsite.sh"
 fi

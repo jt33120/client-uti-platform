@@ -198,9 +198,10 @@ Deux fichiers **hors dépôt et hors `.env`**, en `600`, root :
 | Le dimanche à 03:xx UTC | la même | + copie hebdomadaire locale (8 semaines) |
 | Le lundi à 04:15 UTC | `uti-restore-drill.timer` | **restaure** la dernière archive dans une base jetable et **compare** les lignes à la base vivante |
 | Toutes les 15 min | `uti-supervision.timer` | disque, PostgreSQL, PostgREST, `/health`, `/health/db`, âge de la dernière sauvegarde **réussie** |
+| **Le dimanche à 07:30 UTC** | `uti-revue-hebdo.timer` | revue profonde : cohérence base↔disque, **verrou d'immuabilité** relu sur la dernière archive, échéance TLS, correctifs de sécurité, minuteurs armés, erreurs de la semaine, santé PostgreSQL, file d'e-mails, permissions des secrets, suite de tests rejouée. **Envoie un rapport chaque semaine, même tout vert.** |
 
 ```bash
-systemctl list-timers 'uti-*' --no-pager      # les trois, avec leur prochaine échéance
+systemctl list-timers 'uti-*' --no-pager      # les quatre, avec leur prochaine échéance
 journalctl -u uti-backup -n 30 --no-pager
 cat /var/backups/uti/.dernier_succes          # date + clé S3 + taille de la dernière réussie
 cat /var/backups/uti/.dernier_succes_fichiers # idem pour l'archive des FICHIERS
@@ -600,3 +601,78 @@ produit **un** e-mail toutes les 6 h et non 96 par jour : au bout de deux jours,
 96 e-mails/jour sont filtrés en « Autres » et l'alerte suivante — la vraie — ne
 sera pas lue. Le retour à la normale est annoncé explicitement, sinon on ne sait
 jamais si le silence veut dire « réparé » ou « la supervision est morte aussi ».
+
+---
+
+## 12. La revue hebdomadaire
+
+`uti-supervision.timer` répond à « est-ce que ça marche maintenant ». Il reste
+une classe de pannes qu'aucune sonde de 15 minutes ne peut voir : celles qui ne
+cassent rien aujourd'hui et rendent la plateforme inutilisable dans trois mois.
+Un certificat qui n'est plus renouvelé. Une file d'e-mails qui ne se vide plus —
+l'interface dit « envoyé », personne ne reçoit rien, aucune erreur nulle part.
+Un verrou d'immuabilité retiré d'un clic chez Backblaze. Des CV référencés en
+base dont le fichier a disparu.
+
+`uti-revue-hebdo.timer` (dimanche 07:30 UTC) les cherche une fois par semaine.
+
+| Contrôle | Ce qu'il attrape, et que rien d'autre n'attrape |
+|---|---|
+| Cohérence base ↔ disque | Une référence sans fichier = un CV inouvrable pour le client. Un fichier sans référence = une donnée personnelle conservée sans finalité (RGPD art. 5.1.e). Rien ne tient ces deux moitiés ensemble : ni contrainte, ni transaction commune. |
+| **Verrou d'immuabilité relu sur l'archive réelle** | La clé du VPS doit pouvoir déposer, donc elle peut supprimer par nom (`writeFiles` suffit chez B2). Seul le verrou d'objet **compliance** protège — et il tient à un réglage de conteneur qu'un clic retire, sans rien casser et sans rien annoncer. |
+| Certificat TLS | Certbot renouvelle à 30 jours. Quand son minuteur meurt, il ne se passe **rien** pendant un mois, puis tout devient inaccessible d'un coup. Seuil : 21 jours = trois renouvellements déjà ratés. |
+| Correctifs de sécurité en attente | La revue **compte**, elle ne met pas à jour : un `apt upgrade` non surveillé peut redémarrer PostgreSQL au milieu d'un dump. |
+| Minuteurs armés, **nommément** | `systemctl list-timers` ne montre que les minuteurs **actifs** : un minuteur désinstallé y est invisible. Les quatre sont donc vérifiés par leur nom. |
+| Erreurs applicatives des 7 jours | `services/error_log.py` garde 200 entrées **en mémoire**, vidées à chaque déploiement. Depuis qu'il émet aussi une ligne `UTI_EVT` dans journald, un repli silencieux qui tourne 400 fois par semaine devient visible. |
+| Santé PostgreSQL | Tables sans `ANALYZE` depuis 14 j (plans faux → « ça rame sans raison »), transaction ouverte depuis des heures (bloque le nettoyage de **toutes** les tables), connexions. |
+| File `email_outbox` | L'âge du plus vieux message en attente — la seule grandeur qui distingue « vient d'être déposé » de « ne partira jamais ». |
+| Permissions des secrets | Un `chmod` de trop pendant un dépannage ne casse rien et ne s'annonce pas. |
+| `pytest` rejoué sur le venv de production | La CI prouve que le code du dépôt passe ses tests sur une machine neuve. Pas que la machine qui sert les clients passe les siens, avec **son** venv, qui dérive. |
+
+**Le rapport part par e-mail à chaque exécution, même tout vert.** C'est le seul
+endroit du dispositif où on le fait, et c'est délibéré : une alerte ne part que
+sur anomalie, donc son silence est ambigu — « rien à signaler » et « le
+dispositif est mort » se ressemblent. Un rapport qui arrive le dimanche lève
+l'ambiguïté. S'il n'arrive pas, c'est **lui** qui est cassé.
+
+### Installation
+
+```bash
+sudo install -m 750 -o julian.talou -g julian.talou \
+     ~/app/backend/deploy/revue_hebdo.sh /usr/local/bin/uti-revue-hebdo
+sudo cp ~/app/backend/deploy/uti-revue-hebdo.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now uti-revue-hebdo.timer
+
+# Première revue tout de suite, sans attendre dimanche
+sudo systemctl start uti-revue-hebdo
+journalctl -u uti-revue-hebdo -n 150 --no-pager
+```
+
+Sonde du chien de garde **distincte** de celle de la sauvegarde. L'unité lit
+`/etc/uti-backup.env` pour les clés du conteneur hors-site, puis **efface**
+`HEALTHCHECK_URL` avant de charger la sienne : sans cela, une revue verte
+pingerait la sonde de la sauvegarde et le chien de garde la croirait vivante un
+dimanche où elle serait morte depuis six jours.
+
+```bash
+# Facultatif — une sonde healthchecks.io propre à la revue (période 1 semaine)
+sudo tee /etc/uti-revue-hebdo.env >/dev/null <<'EOF'
+HEALTHCHECK_URL=https://hc-ping.com/<uuid-de-la-sonde-revue>
+EOF
+sudo chmod 600 /etc/uti-revue-hebdo.env
+```
+
+### À la demande
+
+```bash
+# Sous ton compte, avec les clés du hors-site (sinon §2 se déclare rouge à raison)
+sudo bash -c 'set -a; . /etc/uti-backup.env; set +a; HEALTHCHECK_URL= \
+  PGUSER=uti_admin REVUE_EMAIL=0 bash ~julian.talou/app/backend/deploy/revue_hebdo.sh'
+
+REVUE_TESTS=0 bash ~/app/backend/deploy/revue_hebdo.sh   # sans rejouer pytest (plus rapide)
+```
+
+Trois états, comme partout ici : `✓` vert (le contrôle a tourné et il est
+satisfait), `✗` rouge (il a tourné et il a trouvé), `?` gris (il **n'a pas pu**
+tourner — ce qui n'est ni un échec ni, surtout, un succès). Le gris ne fait pas
+échouer la revue, sauf là où le silence masquerait un danger.

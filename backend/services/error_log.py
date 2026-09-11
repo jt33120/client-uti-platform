@@ -9,7 +9,25 @@ l'audit pré-prod.
 Ring buffer mono-processus (uvicorn mono-worker) : pas de dépendance, pas de
 migration ; se vide au restart. journald reste la source complète (RUNBOOK §3),
 ceci est la vue « dernières 200 erreurs » accessible depuis l'UI admin.
+
+DEUX DESTINATIONS, ET POURQUOI IL EN FALLAIT UNE SECONDE
+Le ring buffer ci-dessus ne survit à rien : il se vide à chaque redémarrage,
+donc à chaque déploiement, et il est plafonné à 200 entrées. Une dégradation
+qui se produit 400 fois dans la semaine y est indiscernable d'une qui s'est
+produite deux fois, et une panne du mardi a disparu avant qu'on la regarde le
+dimanche. Or ces événements sont exactement ce qu'il faut compter sur la durée :
+un repli LLM silencieux, un envoi SMTP raté, un 500 inattendu.
+
+Chaque événement part donc AUSSI en une ligne « UTI_EVT {json} » sur la sortie
+standard, que systemd range dans journald — persistant, horodaté, et interrogeable
+sur sept jours par deploy/revue_hebdo.sh (§6). Une ligne, du JSON, un préfixe
+fixe : c'est ce qui rend `grep` suffisant et évite d'installer quoi que ce soit.
+
+Rien ici ne doit jamais lever ni bloquer : journaliser une erreur ne peut pas
+devenir une deuxième erreur.
 """
+import json
+import sys
 import threading
 import traceback
 from collections import deque
@@ -49,8 +67,39 @@ def record(
         }
         with _LOCK:
             _EVENTS.append(evt)
+        _vers_journald(evt)
     except Exception:  # noqa: BLE001
         pass
+
+
+# Préfixe stable : il sert de point d'ancrage à `grep` dans revue_hebdo.sh.
+# Le changer casse silencieusement le comptage hebdomadaire — d'où le test
+# tests/test_journal_structure.py qui en fige la forme.
+PREFIXE_JOURNAL = "UTI_EVT"
+
+
+def _vers_journald(evt: dict) -> None:
+    """Une ligne JSON par événement, sur stdout, capturée par journald.
+
+    UNE seule ligne, toujours : json.dumps échappe les retours à la ligne d'un
+    message multi-lignes. Sans cela, une trace d'erreur produirait vingt lignes
+    dont dix-neuf sans préfixe — invisibles au comptage, et illisibles mêlées
+    aux logs d'uvicorn.
+
+    flush=True n'est pas une précaution de confort : systemd relie stdout à un
+    tube, Python passe alors en tampon par blocs (4 ko), et les événements
+    resteraient coincés en mémoire parfois des heures — précisément pendant
+    l'incident qu'on essaie de suivre en direct.
+    """
+    try:
+        print(f"{PREFIXE_JOURNAL} {json.dumps(evt, ensure_ascii=False)}", flush=True)
+    except Exception:  # noqa: BLE001
+        # stdout fermé (tests, worker en cours d'arrêt) : le ring buffer a déjà
+        # l'événement, et journaliser ne doit jamais casser l'appelant.
+        try:
+            sys.stderr.write(f"{PREFIXE_JOURNAL} (non journalisé)\n")
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def record_exception(source: str, message: str, exc: BaseException, *, path: Optional[str] = None) -> None:

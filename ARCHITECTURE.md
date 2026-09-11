@@ -529,6 +529,7 @@ Le dispositif est dans `backend/deploy/` :
 | `uti-backup.timer` | **horaire** | `pg_dump` custom + répertoire des fichiers → chiffrement **age** → dépôt hors-site OVH → rotation 72 h / 14 j / 8 sem |
 | `uti-restore-drill.timer` | **lundi 04:15** | restaure réellement dans une base jetable, compte les lignes, vérifie que **chaque fichier référencé existe** |
 | `uti-supervision.timer` | **15 min** | disque 85 %, PostgreSQL vivant, PostgREST répond **401** (un 200 serait pire qu'une panne), `/health` + `/health/db`, âge de la dernière sauvegarde réussie (3 h), âge de la dernière répétition (10 j), bases `uti_drill_%` orphelines |
+| `uti-revue-hebdo.timer` | **dimanche 07:30** | ce qui se dégrade trop lentement pour qu'une sonde de 15 min le voie : références de la base sans fichier sur le disque (et l'inverse), **verrou d'objet relu sur l'archive réelle**, certificat TLS, correctifs de sécurité en attente, minuteurs nommément vérifiés, erreurs applicatives des 7 jours, tables sans `ANALYZE`, file `email_outbox` bloquée, permissions des secrets, `pytest` rejoué sur le venv de production. Rapport par e-mail **à chaque exécution** |
 
 Choix qui méritent d'être connus :
 

@@ -23,8 +23,10 @@ tests exécutent les gardes RÉELLES, extraites des scripts.
 """
 from __future__ import annotations
 
+import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -466,15 +468,170 @@ def test_le_readme_ne_promet_pas_quune_liste_de_capacites_protege():
     )
 
 
-def test_le_controle_de_suppression_supprime_encore_par_nom():
-    """Tant que c'est vrai, le README doit continuer à prévenir que ce contrôle
-    ne mesure pas ce qu'il prétend. Le jour où il testera la survie de la
-    version, ce test tombera — et c'est le signal pour retirer l'avertissement.
-    """
+# ── Le contrôle de destruction des sauvegardes hors-site ────────────────────
+#
+# Il a longtemps posé la mauvaise question : « l'appel de suppression
+# échoue-t-il ? », en supprimant PAR NOM. Sur un conteneur versionné, cet
+# appel-là réussit toujours — il empile un marqueur au-dessus d'une version
+# intacte. Le contrôle annonçait donc « la clé du VPS PEUT supprimer » sur une
+# configuration exemplaire, et ce rouge condamnait la sortie 0 du script, donc
+# le compteur des quatorze jours d'observation.
+#
+# Les tests ci-dessous EXÉCUTENT le bloc réel contre un faux Backblaze. Un
+# contrôle de sécurité relu peut mentir ; un contrôle qu'on fait tourner contre
+# un conteneur sans verrou, puis contre un verrou « governance », ne le peut pas.
+
+def _bloc_suppression() -> str:
+    """Le programme Python du contrôle, extrait du script."""
     texte = CONTROLE.read_text()
-    if "delete_object(Bucket=b, Key=k)" in texte and "VersionId" not in texte:
-        readme = (RACINE / "deploy" / "backup_s3_policy.README.md").read_text()
-        assert "sans numéro de\nversion" in readme or "sans numéro de version" in readme, (
-            "le contrôle supprime toujours par nom, mais le README ne prévient "
-            "plus que son verdict est trompeur sur un conteneur verrouillé"
-        )
+    for m in re.finditer(r"<<'PY'\n(.*?)\nPY\n", texte, re.S):
+        if "essais/verrou-" in m.group(1):
+            return m.group(1)
+    raise AssertionError(
+        "le contrôle de suppression n'a plus la forme attendue : il ne dépose "
+        "plus d'objet témoin sous « essais/ »"
+    )
+
+
+def _faux_backblaze(racine: Path) -> None:
+    """Un boto3 de pacotille, piloté par l'environnement.
+
+    PYTHONPATH passe AVANT site-packages : ce module masque le vrai boto3 sans
+    rien installer ni toucher au réseau.
+    """
+    (racine / "botocore").mkdir()
+    (racine / "botocore" / "__init__.py").write_text("")
+    (racine / "botocore" / "exceptions.py").write_text(
+        "class ClientError(Exception):\n"
+        "    def __init__(self, response=None, operation=''):\n"
+        "        self.response = response or {'Error': {'Code': 'AccessDenied'}}\n"
+        "        super().__init__(str(self.response))\n"
+    )
+    (racine / "boto3.py").write_text('''
+import os
+from botocore.exceptions import ClientError
+
+class _Conteneur:
+    def __init__(self):
+        self.detruites = set()
+
+    def put_object(self, **kw):
+        if os.environ.get("STUB_PUT") == "refuse":
+            raise ClientError({"Error": {"Code": "AccessDenied"}}, "PutObject")
+        v = os.environ.get("STUB_VERSION", "v1")
+        return {"VersionId": v} if v else {}
+
+    def head_object(self, **kw):
+        if kw.get("VersionId") in self.detruites:
+            raise ClientError({"Error": {"Code": "NoSuchVersion"}}, "HeadObject")
+        mode = os.environ.get("STUB_MODE", "COMPLIANCE")
+        return {"ObjectLockMode": mode} if mode else {}
+
+    def delete_object(self, **kw):
+        if os.environ.get("STUB_DELETE") == "accepte":
+            self.detruites.add(kw.get("VersionId"))
+            return {}
+        raise ClientError({"Error": {"Code": "AccessDenied"}}, "DeleteObject")
+
+_UNIQUE = _Conteneur()
+def client(*a, **k):
+    return _UNIQUE
+''')
+
+
+def _joue_suppression(tmp: Path, **stubs: str) -> tuple[int, str]:
+    _faux_backblaze(tmp)
+    (tmp / "controle.py").write_text(_bloc_suppression())
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "PYTHONPATH": str(tmp),
+        "BACKUP_S3_ENDPOINT": "https://exemple.invalide",
+        "BACKUP_S3_BUCKET": "uti-sauvegardes",
+        "BACKUP_S3_ACCESS_KEY": "cle-de-test",
+        "BACKUP_S3_SECRET_KEY": "secret-de-test",
+    }
+    env.update(stubs)
+    res = subprocess.run([sys.executable, str(tmp / "controle.py")],
+                         capture_output=True, text=True, env=env, timeout=60)
+    return res.returncode, res.stdout + res.stderr
+
+
+def test_un_verrou_compliance_qui_refuse_la_destruction_est_vert(tmp_path):
+    code, sortie = _joue_suppression(tmp_path)
+    assert code == 0, sortie
+
+
+def test_un_conteneur_sans_verrou_est_rouge(tmp_path):
+    """Le cas qu'on redoute vraiment : la rétention par défaut n'a jamais été
+    posée, ou a été retirée. Rien ne casse, les dépôts continuent."""
+    code, sortie = _joue_suppression(tmp_path, STUB_MODE="")
+    assert code != 0
+    assert "AUCUN verrou" in sortie, sortie
+
+
+def test_le_mode_governance_est_rouge(tmp_path):
+    """La clé du VPS porte `bypassGovernance` : un verrou qu'elle peut lever
+    elle-même ne protège de rien, et l'interface Backblaze le propose par
+    défaut."""
+    code, sortie = _joue_suppression(tmp_path, STUB_MODE="GOVERNANCE")
+    assert code != 0
+    assert "bypassGovernance" in sortie, sortie
+
+
+def test_une_version_reellement_detruite_est_rouge(tmp_path):
+    code, sortie = _joue_suppression(tmp_path, STUB_DELETE="accepte")
+    assert code != 0
+    assert "DÉTRUITE" in sortie, sortie
+
+
+def test_un_conteneur_sans_versionnement_est_rouge(tmp_path):
+    """Sans versionnage, un simple écrasement par nom suffit à perdre
+    l'historique — et aucune tentative de suppression ne le révélerait."""
+    code, sortie = _joue_suppression(tmp_path, STUB_VERSION="")
+    assert code != 0
+    assert "version" in sortie.lower(), sortie
+
+
+def test_un_depot_refuse_est_rouge_et_le_dit_autrement(tmp_path):
+    """Une clé qui ne peut plus écrire est une panne de sauvegarde, pas un
+    excès de protection : le message doit envoyer ailleurs."""
+    code, sortie = _joue_suppression(tmp_path, STUB_PUT="refuse")
+    assert code != 0
+    assert "ne peut plus écrire" in sortie, sortie
+
+
+def test_le_controle_ne_supprime_plus_par_nom():
+    """La régression qui remettrait le rouge impossible : un delete_object sans
+    VersionId réussit sur un conteneur verrouillé, et le contrôle conclurait à
+    une faille sur une configuration parfaite."""
+    bloc = _bloc_suppression()
+    for ligne in bloc.splitlines():
+        if "delete_object" in ligne:
+            assert "VersionId" in ligne, (
+                f"suppression par nom : {ligne.strip()} — elle réussit toujours "
+                f"sur un conteneur versionné et ne prouve donc rien"
+            )
+
+
+def test_lessai_ne_vise_jamais_une_archive_reelle():
+    """Un marqueur de suppression posé sur une vraie sauvegarde la rendrait
+    invisible à `head`/`get` par nom, donc irrécupérable par restore_drill.sh —
+    alors que ses octets seraient toujours là. Le contrôle casserait ce qu'il
+    est censé protéger."""
+    bloc = _bloc_suppression()
+    assert 'k = f"essais/verrou-' in bloc, (
+        "l'objet témoin ne vit plus sous « essais/ » : il pourrait viser une "
+        "sauvegarde réelle, ou venir se ranger en tête du listage de « uti/ »"
+    )
+    assert '"uti/' not in bloc
+
+
+def test_la_survie_est_verifiee_apres_la_tentative():
+    """Ne pas recevoir d'erreur n'est pas une preuve que l'objet est là : c'est
+    exactement le raisonnement qui produisait des verts vides dans ce fichier."""
+    bloc = _bloc_suppression()
+    i_delete = bloc.index("delete_object")
+    assert "head_object" in bloc[i_delete:], (
+        "rien ne vérifie que la version a survécu APRÈS la tentative de "
+        "suppression : le vert serait déduit d'une absence d'erreur"
+    )

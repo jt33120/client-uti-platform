@@ -156,12 +156,27 @@ def test_la_sortie_est_vidée_immediatement():
 
 def test_une_sortie_fermee_ne_casse_pas_lappelant():
     """Le journal est appelé depuis des blocs `except` : s'il lève, il remplace
-    l'erreur d'origine par la sienne et on perd les deux."""
+    l'erreur d'origine par la sienne et on perd les deux.
+
+    `os._exit(0)` à la fin, et ce n'est pas une facilité. Avec une sortie
+    terminée normalement, l'interpréteur vide `sys.stdout` au moment de
+    s'arrêter — sur un descripteur 1 fermé, ce vidage lève « Bad file
+    descriptor » et le process rend 120. Le test échouait alors sur le ménage
+    de l'interpréteur, pas sur le code éprouvé : il a d'ailleurs été vert en
+    local (où PYTHONUNBUFFERED supprime ce vidage) et rouge en CI. `os._exit`
+    court-circuite cette fin de vie ; une exception levée par `record()`, elle,
+    remonterait toujours avant, et ferait toujours échouer le test.
+
+    Le stderr est vidé À LA MAIN juste avant : il est tamponné par ligne, et
+    `os._exit` n'exécute aucun ménage — le verdict se perdrait en route.
+    """
     code = ("import sys, os; sys.path.insert(0, %r)\n"
             "from services.error_log import record, recent\n"
             "os.close(1)\n"
             "record('http', 'stdout fermé')\n"
-            "sys.stderr.write('SURVECU:%%d' %% len(recent(5)))\n" % str(BACKEND))
+            "sys.stderr.write('SURVECU:%%d\\n' %% len(recent(5)))\n"
+            "sys.stderr.flush()\n"
+            "os._exit(0)\n" % str(BACKEND))
     res = subprocess.run([sys.executable, "-c", code],
                          capture_output=True, text=True, timeout=60)
     assert res.returncode == 0, res.stderr

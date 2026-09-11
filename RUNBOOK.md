@@ -645,8 +645,20 @@ sudo systemctl daemon-reload && sudo systemctl enable --now uti-revue-hebdo.time
 
 # Première revue tout de suite, sans attendre dimanche
 sudo systemctl start uti-revue-hebdo
-journalctl -u uti-revue-hebdo -n 150 --no-pager
+journalctl -u uti-revue-hebdo -n 250 --no-pager
 ```
+
+> **« Job for uti-revue-hebdo.service failed » n'est PAS une panne.** L'unité
+> sort en 1 dès qu'un point est rouge — c'est ainsi qu'elle apparaît dans
+> `systemctl list-units --failed`, exactement comme `uti-supervision`. Ce
+> message est donc le VERDICT de la revue, pas un défaut d'installation : le
+> détail est dans `journalctl` et dans l'e-mail. Une revue qui ne trouve rien
+> sort en 0 et ne dit rien.
+>
+> Corollaire : ne colle jamais `set -e` avant ces commandes dans un terminal
+> interactif. Le shell sortirait à la première commande non nulle — donc ici,
+> et ta session SSH se fermerait avant que tu aies pu lire quoi que ce soit.
+
 
 Sonde du chien de garde **distincte** de celle de la sauvegarde. L'unité lit
 `/etc/uti-backup.env` pour les clés du conteneur hors-site, puis **efface**

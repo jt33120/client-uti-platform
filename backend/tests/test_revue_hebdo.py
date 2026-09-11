@@ -27,6 +27,7 @@ import os
 import re
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -167,6 +168,116 @@ def test_une_table_refusee_suspend_le_compte_des_orphelins(tmp_path):
     assert compte(s, "NV") == 1, s
     assert "consultants.cv_url" in s
     assert "ROUGE 89" not in s, "des orphelins ont été comptés sur un inventaire partiel"
+
+
+def test_une_colonne_absente_ne_suspend_pas_le_compte_des_orphelins(tmp_path):
+    """Ce que la première exécution réelle a montré.
+
+    `consultants.cv_url` figure dans migrations/schema.sql et n'a jamais existé
+    en production (migrations/0016_schema_drift.sql documente cette divergence
+    dans les deux sens). Le contrôle traitait « la colonne n'existe pas » comme
+    « je n'ai pas pu lire », et suspendait donc le compte des orphelins POUR
+    TOUJOURS : un contrôle éteint en silence par une divergence bénigne.
+
+    Une colonne absente ne référence aucun fichier : l'inventaire reste complet.
+    """
+    s = joue_coherence("ATTENDUS=27\nPRESENTS=27\nMANQUANTS=0\nORPHELINS=0\n"
+                       "ABSENTE=consultants.cv_url\n", tmp=tmp_path)
+    assert compte(s, "NV") == 0, s
+    assert "OK 0 fichier(s) sans référence" in s, (
+        f"le compte des orphelins est encore suspendu :\n{s}"
+    )
+    assert "consultants.cv_url" in s, "la divergence de schéma n'est pas signalée"
+
+
+def test_une_lecture_refusee_suspend_toujours_le_compte(tmp_path):
+    """L'assouplissement ne doit porter QUE sur la colonne absente : une table
+    illisible laisse bien l'inventaire incomplet."""
+    s = joue_coherence("ATTENDUS=10\nPRESENTS=99\nMANQUANTS=0\nORPHELINS=-1\n"
+                       "REFUSEE=profiles.avatar_url: APIError: connexion refusée\n",
+                       tmp=tmp_path)
+    assert compte(s, "NV") == 1, s
+    assert "inventaire incomplet" in s
+
+
+def _bloc_python_coherence() -> str:
+    """Le programme Python de la section 1, extrait du script."""
+    m = re.search(r"<<'PY'\n(.*?)\nPY\n", section(1), re.S)
+    assert m, "le bloc python de la cohérence n'a plus la forme attendue"
+    return m.group(1)
+
+
+def _faux_backend(racine: Path, erreurs: dict) -> None:
+    """Un faux paquet `services`, piloté par `erreurs` : table -> message levé.
+
+    Il reproduit la chaîne d'appels exacte du bloc — select / not_.is_ / limit /
+    execute — pour qu'un changement de cette chaîne fasse échouer le test au
+    lieu de le rendre trompeur.
+    """
+    services = racine / "services"
+    services.mkdir(parents=True, exist_ok=True)
+    (services / "__init__.py").write_text("")
+    (services / "storage.py").write_text(
+        "def _object_path(bucket, stored):\n"
+        "    return (stored or '').lstrip('/')\n"
+    )
+    (services / "postgrest_client.py").write_text(
+        "ERREURS = %r\n"
+        "\n"
+        "class APIError(Exception):\n"
+        "    pass\n"
+        "\n"
+        "class _Requete:\n"
+        "    def __init__(self, table):\n"
+        "        self.table = table\n"
+        "    def select(self, *a, **k):  return self\n"
+        "    def limit(self, *a, **k):   return self\n"
+        "    def is_(self, *a, **k):     return self\n"
+        "    @property\n"
+        "    def not_(self):             return self\n"
+        "    def execute(self):\n"
+        "        if self.table in ERREURS:\n"
+        "            raise APIError(ERREURS[self.table])\n"
+        "        colonne = 'avatar_url' if self.table == 'profiles' else 'cv_url'\n"
+        "        return type('R', (), {'data': [{'id': 'x1', colonne: 'ao/x1.pdf'}]})()\n"
+        "\n"
+        "class _Db:\n"
+        "    def table(self, nom):\n"
+        "        return _Requete(nom)\n"
+        "\n"
+        "db = _Db()\n" % (erreurs,)
+    )
+
+
+def _joue_python_coherence(tmp: Path, erreurs: dict) -> str:
+    _faux_backend(tmp, erreurs)
+    (tmp / "files").mkdir(exist_ok=True)
+    programme = tmp / "coherence.py"
+    programme.write_text(_bloc_python_coherence())
+    res = subprocess.run([sys.executable, str(programme)], capture_output=True,
+                         text=True, timeout=60,
+                         env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                              "BACKEND_DIR": str(tmp),
+                              "FICHIERS_DIR": str(tmp / "files")})
+    return res.stdout + res.stderr
+
+
+def test_le_code_42703_est_classe_comme_colonne_absente(tmp_path):
+    """Au plus près du défaut : c'est le code d'erreur PostgreSQL qui distingue
+    « cette colonne n'existe pas ici » de « je n'ai pas pu lire »."""
+    sortie = _joue_python_coherence(tmp_path, {
+        "consultants": "{'code': '42703', 'message': 'column consultants.cv_url does not exist'}"})
+    assert "ABSENTE=consultants.cv_url" in sortie, sortie
+    assert "REFUSEE=" not in sortie, sortie
+    assert "ORPHELINS=-1" not in sortie, "le compte des orphelins est encore suspendu"
+
+
+def test_une_autre_erreur_reste_une_lecture_refusee(tmp_path):
+    sortie = _joue_python_coherence(tmp_path, {
+        "profiles": "{'code': '08006', 'message': 'connection failure'}"})
+    assert "REFUSEE=profiles.avatar_url" in sortie, sortie
+    assert "ABSENTE=" not in sortie, sortie
+    assert "ORPHELINS=-1" in sortie, "une lecture refusée doit suspendre le compte"
 
 
 def test_des_orphelins_au_dela_du_seuil_sont_rouges(tmp_path):
@@ -494,12 +605,110 @@ def test_un_mode_plus_ouvert_mais_numeriquement_plus_petit_est_rouge(tmp_path):
     assert compte(s, "ROUGE") == 1, s
 
 
+def test_le_message_distingue_labsence_de_limpossibilite_de_regarder():
+    """Garde de structure, qui tourne partout — y compris sous root, où les
+    permissions ne s'appliquent pas et où le test de comportement ci-dessous ne
+    peut rien prouver."""
+    corps = section(9)
+    assert "non traversable" in corps, (
+        "le contrôle ne distingue plus « le fichier n'existe pas » de « je ne "
+        "peux pas aller voir » : un secret mal posé dans un répertoire fermé "
+        "serait déclaré absent, donc jamais vérifié"
+    )
+    assert "absent (rien à vérifier)" in corps
+
+
+@pytest.mark.skipif(os.geteuid() == 0,
+                    reason="root traverse tout : les permissions ne prouveraient rien")
+def test_un_repertoire_non_traversable_nest_pas_un_fichier_absent(tmp_path):
+    """Ce que la première exécution réelle a montré.
+
+    `test -e` est FAUX dès que le répertoire parent n'est pas traversable par
+    l'utilisateur courant. /etc/postgrest est en 0750 root : le contrôle
+    annonçait « /etc/postgrest/postgrest.conf absent » sur une machine où ce
+    fichier existe et sert PostgREST. Un fichier de configuration déclaré
+    inexistant est un fichier que plus personne ne vérifiera.
+    """
+    ferme = tmp_path / "ferme"
+    ferme.mkdir()
+    (ferme / "secret.env").write_text("x")
+    ferme.chmod(0o600)          # lisible, mais PAS traversable
+    s = joue_droits(ferme / "secret.env")
+    assert "non traversable" in s, s
+    assert "absent (rien à vérifier)" not in s, (
+        f"un répertoire fermé est encore confondu avec un fichier absent :\n{s}"
+    )
+
+
 def test_un_fichier_absent_est_gris_pas_rouge(tmp_path):
     """Tous les VPS n'ont pas tous les fichiers d'environnement. Crier sur une
     absence légitime, c'est fabriquer le bruit qui fera ignorer le vrai rouge."""
     s = joue_droits(tmp_path / "jamais-cree.env")
     assert compte(s, "NV") == 1, s
     assert compte(s, "ROUGE") == 0, s
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  §10 — Activité de la semaine
+# ═══════════════════════════════════════════════════════════════════════════
+def _joue_activite(motif_echec: str = "ZZZ_JAMAIS") -> str:
+    """Stub psql : échoue pour toute requête contenant `motif_echec`."""
+    bouchon = """
+psql() {
+  for a in "$@"; do
+    case "$a" in
+      *"$STUB_ECHEC"*) echo "ERROR:  column \\"created_at\\" does not exist" >&2; return 1 ;;
+    esac
+  done
+  echo 7
+}
+"""
+    return joue(bouchon + section(10), {"BASE": "uti", "STUB_ECHEC": motif_echec})
+
+
+def test_les_quatre_mesures_dactivite_sont_rendues():
+    s = _joue_activite()
+    assert compte(s, "NV") == 0 and compte(s, "ROUGE") == 0, s
+    assert s.count("cette semaine : 7") == 4, s
+
+
+def test_une_mesure_fausse_ne_fait_plus_taire_les_trois_autres():
+    """Le défaut de la première exécution réelle. Les quatre mesures tenaient
+    dans UN seul appel psql avec ON_ERROR_STOP=1 : la première requête en
+    erreur — la table s'appelle appels_offres et non aos, la colonne
+    submitted_at et non created_at — emportait les trois suivantes, et la
+    section entière se résumait à une ligne d'erreur."""
+    s = _joue_activite("appels_offres")
+    assert compte(s, "NV") == 1, s
+    assert s.count("cette semaine : 7") == 3, (
+        f"une mesure en erreur a de nouveau emporté les autres :\n{s}"
+    )
+    assert "NON MESURÉ" in s
+
+
+def test_si_rien_nest_mesurable_cest_un_rouge():
+    """Une base injoignable ne doit pas ressembler à une semaine sans activité."""
+    s = _joue_activite("SELECT")
+    assert compte(s, "ROUGE") == 1, s
+    assert compte(s, "NV") == 0, s
+
+
+@pytest.mark.parametrize("table_ou_colonne", [
+    "public.appels_offres",     # et NON public.aos, qui n'existe pas
+    "submitted_at",             # et NON created_at, absent de submissions
+    "public.profiles",
+])
+def test_les_mesures_visent_le_schema_reel(table_ou_colonne):
+    """Vérifié contre migrations/schema.sql, pas contre le souvenir qu'on en a."""
+    assert table_ou_colonne in section(10), (
+        f"{table_ou_colonne} a disparu des mesures d'activité"
+    )
+
+
+def test_aucune_mesure_ne_vise_une_table_inexistante():
+    assert "public.aos " not in section(10) and "public.aos\n" not in section(10), (
+        "la table « aos » n'existe pas : elle s'appelle appels_offres"
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════

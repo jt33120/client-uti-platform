@@ -151,7 +151,7 @@ SOURCES = [("submissions", "cv_url", "cvs"),
            ("consultants", "cv_url", "cvs"),
            ("profiles", "avatar_url", "avatars")]
 
-attendus, manquants, refusees = set(), [], []
+attendus, manquants, refusees, absentes = set(), [], [], []
 for table, colonne, panier in SOURCES:
     # Une table par une, chacune dans son propre essai : si « consultants »
     # n'est pas exposée par PostgREST, on doit encore pouvoir juger les deux
@@ -161,6 +161,18 @@ for table, colonne, panier in SOURCES:
         lignes = (db.table(table).select(f"id,{colonne}")
                     .not_.is_(colonne, "null").limit(10000).execute()).data or []
     except Exception as e:                                 # noqa: BLE001
+        # « La colonne n'existe pas » n'est PAS « je n'ai pas pu lire ».
+        # migrations/0016_schema_drift.sql documente que le schéma du dépôt et
+        # la base de production ont divergé dans les deux sens : consultants.
+        # cv_url figure dans schema.sql et n'a jamais existé en production.
+        # Une colonne absente ne référence AUCUN fichier : l'inventaire reste
+        # donc complet, et le compte des orphelins reste valable. La confondre
+        # avec une lecture impossible suspendait ce compte pour toujours — un
+        # contrôle éteint en silence par une divergence de schéma bénigne.
+        texte = f"{getattr(e, 'code', '') or ''} {e}"
+        if "42703" in texte or "42P01" in texte:      # undefined_column / undefined_table
+            absentes.append(f"{table}.{colonne}")
+            continue
         refusees.append(f"{table}.{colonne}: {type(e).__name__}: {str(e)[:120]}")
         continue
     for ligne in lignes:
@@ -196,11 +208,14 @@ for o in orphelins[:10] if not refusees else []:
     print(f"ORPHELIN={o}")
 for r in refusees:
     print(f"REFUSEE={r}")
+for a in absentes:
+    print(f"ABSENTE={a}")
 PY
 )
 if [ $? -eq 0 ] && printf '%s' "$coherence" | grep -q '^ATTENDUS='; then
   eval "$(printf '%s' "$coherence" | grep -E '^(ATTENDUS|PRESENTS|MANQUANTS|ORPHELINS)=')"
   refusees=$(printf '%s' "$coherence" | sed -n 's/^REFUSEE=//p')
+  absentes=$(printf '%s' "$coherence" | sed -n 's/^ABSENTE=//p')
   if [ "$MANQUANTS" -eq 0 ]; then
     ok "les $ATTENDUS fichiers référencés en base sont tous sur le disque"
   else
@@ -216,6 +231,14 @@ if [ $? -eq 0 ] && printf '%s' "$coherence" | grep -q '^ATTENDUS='; then
     ko "$ORPHELINS fichiers sur le disque ne sont référencés par AUCUNE ligne : données personnelles
 conservées sans finalité (RGPD art. 5.1.e). Vérifier services/data_retention.py."
     bloc "$(printf '%s' "$coherence" | sed -n 's/^ORPHELIN=//p')"
+  fi
+  # Divergence de schéma : informatif, ni vert ni rouge. Ça ne dit rien de la
+  # santé de la plateforme — mais ça dit que le schéma du dépôt et la base
+  # réelle ne décrivent pas la même chose, et c'est le genre de chose qu'on
+  # veut savoir AVANT de reconstruire la base ailleurs.
+  if [ -n "$absentes" ]; then
+    detail "colonnes du schéma absentes de cette base (cf. migrations/0016_schema_drift.sql) :"
+    bloc "$absentes"
   fi
 else
   # Muet = non vérifié. Écrire « aucune incohérence » ici serait exactement le
@@ -601,7 +624,20 @@ titre "9. Permissions des fichiers sensibles"
 verifier_droits() {
   local chemin="$1" acceptables="$2" conseil="$3"
   if [ ! -e "$chemin" ]; then
-    nv "$chemin absent (rien à vérifier)"
+    # « Absent » et « je ne peux pas aller voir » ne sont pas la même chose, et
+    # la différence est exactement ce que ce contrôle existe pour attraper.
+    # `test -e` est FAUX dès que le répertoire parent n'est pas traversable par
+    # l'utilisateur courant — /etc/postgrest est en 0750 root. Le contrôle
+    # annonçait donc « /etc/postgrest/postgrest.conf absent » sur une machine
+    # où ce fichier existe et sert PostgREST : un fichier de configuration
+    # déclaré inexistant, donc jamais vérifié, et personne pour s'en étonner.
+    local parent; parent=$(dirname "$chemin")
+    if [ -d "$parent" ] && [ ! -x "$parent" ]; then
+      nv "$chemin : $parent non traversable sous $(id -un) — présence NON vérifiée"
+      detail "sudo stat -c '%a %U:%G' $chemin"
+    else
+      nv "$chemin absent (rien à vérifier)"
+    fi
     return
   fi
   # stat sur un fichier 0600 root réussit même sous julian.talou : les
@@ -650,20 +686,37 @@ fi
 # une semaine où on attendait de l'activité est une question, pas une alerte :
 # ce bloc informe, il ne compte donc ni vert ni rouge.
 titre "10. Activité de la semaine"
-activite=$(psql -d "$BASE" -v ON_ERROR_STOP=1 -tA -F'|' 2>&1 <<'SQL'
-SELECT 'candidatures', count(*) FROM public.submissions WHERE created_at > now() - interval '7 days';
-SELECT 'appels d''offres', count(*) FROM public.aos WHERE created_at > now() - interval '7 days';
-SELECT 'consultants', count(*) FROM public.consultants WHERE created_at > now() - interval '7 days';
-SELECT 'connexions', count(*) FROM public.profiles WHERE last_login_at > now() - interval '7 days';
-SQL
+# UNE REQUÊTE PAR MESURE, et non quatre dans le même appel. Avec
+# ON_ERROR_STOP=1, la première requête en erreur emporte les trois suivantes :
+# à la première exécution réelle, « aos » (la table s'appelle appels_offres) et
+# « submissions.created_at » (la colonne s'appelle submitted_at) ont ainsi réduit
+# les quatre mesures à une seule ligne d'erreur. Isolées, une mesure fausse ne
+# coûte qu'elle-même — et la ligne dit laquelle, plutôt que de tout taire.
+mesures=(
+  "candidatures déposées|SELECT count(*) FROM public.submissions WHERE submitted_at > now() - interval '7 days';"
+  "appels d'offres créés|SELECT count(*) FROM public.appels_offres WHERE created_at > now() - interval '7 days';"
+  "consultants ajoutés|SELECT count(*) FROM public.consultants WHERE created_at > now() - interval '7 days';"
+  "comptes connectés|SELECT count(*) FROM public.profiles WHERE last_login_at > now() - interval '7 days';"
 )
-if [ $? -eq 0 ] && [ -n "$activite" ]; then
-  printf '%s\n' "$activite" | while IFS='|' read -r quoi combien; do
-    [ -n "$quoi" ] && detail "$quoi cette semaine : $combien"
-  done
-else
-  nv "activité non mesurée (requête refusée — colonne absente ?)"
-  bloc "$(printf '%s\n' "$activite" | head -2)"
+muettes=0
+for mesure in "${mesures[@]}"; do
+  libelle="${mesure%%|*}"
+  requete="${mesure#*|}"
+  if valeur=$(psql -d "$BASE" -v ON_ERROR_STOP=1 -tA -c "$requete" 2>&1); then
+    detail "$libelle cette semaine : $valeur"
+  else
+    muettes=$((muettes+1))
+    detail "$libelle : NON MESURÉ — $(printf '%s' "$valeur" | head -1)"
+  fi
+done
+# Le bloc informe et ne juge pas — sauf s'il n'a rien pu mesurer du tout : une
+# mesure qui échoue en silence ferait passer une base inaccessible pour une
+# semaine sans activité.
+if [ "$muettes" -eq "${#mesures[@]}" ]; then
+  ko "aucune mesure d'activité n'a abouti : la base ne répond pas, ou son schéma
+n'est pas celui qu'attend ce contrôle"
+elif [ "$muettes" -gt 0 ]; then
+  nv "$muettes mesure(s) d'activité sur ${#mesures[@]} n'ont pas pu être faites"
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════

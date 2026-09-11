@@ -1,0 +1,26 @@
+[Unit]
+Description=Déclenche la revue hebdomadaire de la plateforme UTI
+
+[Timer]
+# Dimanche 07:30 UTC. Trois raisons de choisir ce créneau plutôt qu'un autre :
+#   • DIMANCHE, pas vendredi : ce que la revue trouve demande parfois une
+#     décision (un certificat à renouveler, un verrou remis). Un rapport lu le
+#     dimanche laisse la semaine entière pour agir ; un rapport du vendredi soir
+#     attend le lundi, et deux jours d'attente sur un certificat à 20 jours,
+#     c'est deux jours de moins.
+#   • APRÈS la sauvegarde horaire (:00) et ses ~2 min de dépôt hors-site : la
+#     revue relit le verrou d'immuabilité SUR LA DERNIÈRE ARCHIVE, elle a donc
+#     besoin qu'elle soit déjà déposée.
+#   • AVANT la répétition de restauration du lundi 04:15 : si la revue signale
+#     que les sauvegardes ne sont plus verrouillées, on l'apprend avant et non
+#     après le seul contrôle qui les rejoue.
+OnCalendar=Sun *-*-* 07:30:00
+# 15 min d'étalement : rien ici n'est urgent à la minute, et un VPS qui lance
+# tout à la même seconde après un reboot se dessert.
+RandomizedDelaySec=900
+# Un VPS éteint le dimanche ne doit pas faire sauter la revue de la semaine :
+# c'est justement après un incident qu'on veut vérifier ce qui a dérivé.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

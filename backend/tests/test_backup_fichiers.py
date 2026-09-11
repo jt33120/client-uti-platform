@@ -27,6 +27,8 @@ DEPLOY = BACKEND / "deploy"
 BACKUP = DEPLOY / "backup_db.sh"
 DRILL = DEPLOY / "restore_drill.sh"
 UNITE_BACKUP = DEPLOY / "uti-backup.service"
+REVUE = DEPLOY / "revue_hebdo.sh"
+UNITE_REVUE = DEPLOY / "uti-revue-hebdo.service"
 CONFIG = BACKEND / "config.py"
 ENV_EXEMPLE = BACKEND / ".env.example"
 RUNBOOK = RACINE / "RUNBOOK.md"
@@ -246,14 +248,20 @@ def test_tous_les_fichiers_designent_le_meme_depot():
         f"config.py:local_storage_dir vaut {defaut_config!r} et non {DEPOT!r} — "
         f"la sauvegarde viserait un autre répertoire que l'application."
     )
-    for chemin in (BACKUP, DRILL):
+    # revue_hebdo.sh a rejoint la liste : c'est lui qui compare, chaque
+    # dimanche, les fichiers du disque aux références de la base. Sur un autre
+    # répertoire que celui de l'application, il déclarerait TOUS les CV
+    # manquants — un rapport rouge chaque semaine, pour rien, jusqu'à ce qu'on
+    # cesse de le lire.
+    for chemin in (BACKUP, DRILL, REVUE):
         assert f'FILES_DIR:-{DEPOT}' in lire(chemin), (
             f"{chemin.name} ne vise plus {DEPOT}."
         )
-    assert f"Environment=FILES_DIR={DEPOT}" in lire(UNITE_BACKUP), (
-        "uti-backup.service ne transmet plus FILES_DIR : le script retomberait "
-        "sur son défaut, qui peut avoir divergé."
-    )
+    for unite in (UNITE_BACKUP, UNITE_REVUE):
+        assert f"Environment=FILES_DIR={DEPOT}" in lire(unite), (
+            f"{unite.name} ne transmet plus FILES_DIR : le script retomberait "
+            f"sur son défaut, qui peut avoir divergé."
+        )
     assert f"LOCAL_STORAGE_DIR={DEPOT}" in lire(ENV_EXEMPLE), (
         ".env.example annonce un autre répertoire que celui qui est sauvegardé."
     )

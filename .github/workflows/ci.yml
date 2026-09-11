@@ -9,6 +9,14 @@ on:
     branches: [master]
   pull_request:
   workflow_dispatch:
+  # Dimanche 06:00 UTC — le pendant, côté dépôt, de la revue hebdomadaire qui
+  # tourne sur le VPS (RUNBOOK §12). Une CI qui ne se déclenche que sur commit
+  # ne dit rien d'une semaine sans commit : or `pip install -r requirements.txt`
+  # résout des versions à CHAQUE exécution, et une dépendance publiée entre-temps
+  # peut casser l'installation d'un dépôt que personne n'a touché. On l'apprend
+  # alors le jour d'un correctif urgent, au pire moment.
+  schedule:
+    - cron: "0 6 * * 0"
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -43,6 +51,31 @@ jobs:
           # Faux JWT syntaxiquement valide (aucun appel réseau) — suffit à l'import.
           SUPABASE_SERVICE_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIn0.c2lnbmF0dXJlLXBsYWNlaG9sZGVy
         run: pytest -q
+
+  scripts:
+    name: Scripts · syntaxe
+    # Six scripts bash portent la sauvegarde, la restauration, la supervision et
+    # la bascule — c'est-à-dire tout ce qui doit encore marcher le jour où le
+    # reste ne marche plus. Rien ne les vérifiait : une accolade oubliée ne se
+    # serait vue qu'au déclenchement du minuteur, et un script qui ne démarre
+    # pas ne crie pas — il ne fait rien, et son silence ressemble à une semaine
+    # sans incident.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Analyse syntaxique
+        run: |
+          for f in $(git ls-files '*.sh'); do
+            bash -n "$f" || { echo "::error file=$f::syntaxe bash invalide"; exit 1; }
+            echo "ok  $f"
+          done
+      - name: shellcheck (indicatif)
+        # Non bloquant DÉLIBÉRÉMENT : ces scripts n'ont jamais été passés à
+        # shellcheck, et rendre la CI rouge sur un héritage qu'on n'a pas encore
+        # lu apprendrait surtout à ignorer le rouge. Le pas suivant est de
+        # traiter ce qu'il remonte, puis de retirer cette ligne.
+        continue-on-error: true
+        run: shellcheck --severity=error $(git ls-files '*.sh')
 
   frontend:
     name: Frontend · build

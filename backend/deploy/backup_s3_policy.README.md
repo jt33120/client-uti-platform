@@ -140,21 +140,46 @@ et donc aussi le temps que le stockage est facturé. À 300 Ko par archive, le
 coût n'est pas le critère ; le critère est le délai au bout duquel on découvre
 un sinistre.
 
-### Ce que le contrôle mesure, et ce qu'il devrait mesurer
+### Ce que le contrôle mesure — et la question qu'il posait de travers
 
-`post_bascule_check.sh` appelle `delete_object(Bucket, Key)` **sans numéro de
-version** : une suppression PAR NOM. Deux conséquences, toutes deux à corriger
-avant de croire ce contrôle :
+Jusqu'en septembre 2026, `post_bascule_check.sh` appelait
+`delete_object(Bucket, Key)` **sans numéro de version** : une suppression PAR
+NOM. Deux conséquences, qui rendaient son verdict inexploitable :
 
-  * retirer `deleteFiles` de la clé ne le fera **pas** passer au vert, puisque
-    `writeFiles` suffit à cette forme-là ;
+  * retirer `deleteFiles` de la clé ne le faisait **pas** passer au vert,
+    puisque `writeFiles` suffit à cette forme-là ;
   * sur un conteneur versionné — et activer le verrou active le versionnage —
     une suppression par nom **réussit** en posant un marqueur, tandis que la
     version protégée reste dessous, intacte et récupérable.
 
-Le contrôle rendrait donc « SUPPRESSION ACCEPTÉE » sur une configuration
-correctement protégée. La question à poser n'est pas « l'appel échoue-t-il ? »
-mais **« la version est-elle encore là après ? »**.
+Le contrôle annonçait donc « SUPPRESSION ACCEPTÉE » sur une configuration
+exemplaire. Ce rouge-là ne pouvait pas se refermer, et il condamnait avec lui le
+critère 3 de `BASCULE.md §6` — quatorze jours consécutifs en sortie 0.
+
+Il pose maintenant la seule question qui mesure quelque chose : **« la version
+est-elle encore là après ? »**
+
+  1. déposer un objet témoin sous `essais/` (jamais sous `uti/`, pour ne pas
+     venir se ranger en tête du listage des sauvegardes) ;
+  2. relire le verrou **sur l'objet** : un mode `COMPLIANCE` effectif, pas un
+     réglage affiché dans une interface ;
+  3. tenter `delete_object(..., VersionId=...)` — le seul appel qui efface
+     vraiment des octets ;
+  4. vérifier par un `head_object` que la version a survécu, au lieu de déduire
+     la survie d'une absence d'erreur.
+
+L'essai ne vise jamais une archive réelle : un marqueur de suppression posé sur
+une vraie sauvegarde la rendrait invisible à `head`/`get` par nom — donc
+irrécupérable par `restore_drill.sh` — alors que ses octets seraient toujours
+là. Chaque passage laisse un témoin d'un octet, immuable jusqu'à l'échéance de
+la rétention ; c'est le prix, assumé, d'un contrôle qui essaie pour de vrai.
+
+> **Reliquat de l'ancienne version.** Elle déposait son témoin en
+> `uti/_essai_suppression`. Cette clé trie **après** `uti/2026/…` : tant qu'elle
+> existe, `s3_backup.py lister uti/` la rend en dernier, et le contrôle de
+> fraîcheur affiche le témoin au lieu de la dernière sauvegarde. À supprimer
+> une fois sa rétention échue — sur un conteneur verrouillé, elle ne peut pas
+> l'être avant.
 
 ## La vérifier
 

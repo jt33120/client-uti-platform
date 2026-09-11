@@ -417,7 +417,21 @@ else
   # affirme « aucune unité en échec » précisément quand on ne sait rien. Ce
   # script a produit ce vert-là une fois, en essai, avant cette correction.
   if echecs=$(systemctl list-units --failed --no-legend --plain 2>&1); then
-    liste=$(printf '%s' "$echecs" | awk 'NF {print $1}')
+    # On s'exclut soi-même, et c'est indispensable. Ce service sort en 1 dès
+    # qu'un point est rouge — c'est ainsi qu'il apparaît dans
+    # `systemctl list-units --failed`. systemd le laisse donc en « failed »
+    # jusqu'à son exécution suivante, c'est-à-dire PENDANT TOUTE LA SEMAINE.
+    # Sans ce filtre, la revue du dimanche suivant compterait sa propre
+    # défaillance de la semaine passée comme une anomalie : un rouge qui
+    # n'apprend rien (les motifs sont déjà détaillés section par section) et qui
+    # s'auto-entretient — un rouge en produit un autre, indéfiniment. Un rouge
+    # qui ne peut plus se refermer est un rouge qu'on cesse de lire.
+    #
+    # uti-supervision.service n'est PAS exclu, lui, bien qu'il sorte aussi en 1
+    # sur anomalie : il tourne toutes les 15 minutes, donc son état reflète sa
+    # DERNIÈRE exécution. C'est une information d'aujourd'hui, pas l'écho d'une
+    # semaine passée.
+    liste=$(printf '%s' "$echecs" | awk 'NF && $1 != "uti-revue-hebdo.service" {print $1}')
     if [ -z "$liste" ]; then
       ok "aucune unité en échec"
     else

@@ -321,6 +321,51 @@ def test_un_minuteur_desactive_est_rouge():
     assert "uti-supervision.timer" in s
 
 
+def _joue_unites_en_echec(sortie_list_units: str) -> str:
+    """Éprouve le seul contrôle des unités en échec, sans les minuteurs."""
+    bouchon = ("systemctl() { [ \"$1\" = \"list-units\" ] && "
+               "{ printf '%s' \"$STUB_ECHECS\"; return 0; }; return 1; }\n")
+    return joue(bouchon + section(5), {"STUB_ECHECS": sortie_list_units})
+
+
+def test_la_revue_ne_compte_pas_sa_propre_defaillance_de_la_semaine_passee():
+    """Le défaut apparu à la première installation sur le VPS.
+
+    Le service sort en 1 dès qu'un point est rouge — c'est ainsi qu'il apparaît
+    dans `systemctl list-units --failed`. systemd le laisse donc en « failed »
+    jusqu'à son exécution suivante : toute la semaine. Sans filtre, la revue du
+    dimanche suivant compterait sa propre défaillance comme une anomalie — un
+    rouge qui n'apprend rien, puisque ses motifs sont déjà détaillés section par
+    section, et qui s'auto-entretient : un rouge en produit un autre, semaine
+    après semaine, sans jamais pouvoir se refermer.
+    """
+    s = _joue_unites_en_echec(
+        "uti-revue-hebdo.service loaded failed failed Revue hebdomadaire\n")
+    assert "OK aucune unité en échec" in s, s
+
+
+def test_une_autre_unite_en_echec_reste_rouge():
+    """Le filtre ne doit porter que sur soi : c'est une exception nommée, pas
+    un assouplissement du contrôle."""
+    s = _joue_unites_en_echec(
+        "uti-revue-hebdo.service loaded failed failed Revue hebdomadaire\n"
+        "postgresql.service loaded failed failed PostgreSQL\n")
+    assert compte(s, "ROUGE") >= 1, s
+    verdict = next(l for l in s.splitlines() if l.startswith("ROUGE unité"))
+    assert "postgresql.service" in verdict, verdict
+    assert "uti-revue-hebdo.service" not in verdict, verdict
+
+
+def test_la_supervision_en_echec_reste_rouge():
+    """Elle, on la garde : elle tourne toutes les 15 minutes, donc son état
+    reflète sa dernière exécution — une information d'aujourd'hui, pas l'écho
+    d'une semaine passée."""
+    s = _joue_unites_en_echec(
+        "uti-supervision.service loaded failed failed Supervision\n")
+    assert compte(s, "ROUGE") >= 1, s
+    assert "uti-supervision.service" in s
+
+
 def test_un_systemd_injoignable_nest_pas_une_machine_sans_panne():
     """Le défaut que ce script a RÉELLEMENT produit, en essai, avant correction.
 

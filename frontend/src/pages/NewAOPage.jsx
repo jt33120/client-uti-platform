@@ -159,12 +159,17 @@ export default function NewAOPage() {
     // Ces champs alimentent la carte AO (AOSPage) : requis pour PUBLIER (pas
     // pour un brouillon), sinon les cartes affichent une information partielle
     // et des tailles différentes selon les AO.
+    // Budget et Localisation en sont SORTIS (demande client, 17/09/2026) : ces
+    // informations manquent réellement sur certains AO, et les exiger obligeait
+    // à inventer une valeur ou à laisser l'AO en brouillon — donc invisible des
+    // partenaires. La liste doit rester identique à _PUBLISH_REQUIRED_FIELDS
+    // (backend/routers/aos.py) : c'est le backend qui refuse la publication, et
+    // deux listes qui divergent produisent un formulaire qui accepte puis une
+    // API qui refuse, sans que l'utilisateur comprenne pourquoi.
     if (!asDraft) {
       if (!form.reference.trim()) missing.push('Référence')
       if (!form.ao_type) missing.push("Type d'AO")
       if (!form.deadline) missing.push('Date limite de réponse')
-      if (!form.budget_max) missing.push('Budget max')
-      if (!form.location.trim()) missing.push('Localisation')
       if (!form.duration.trim()) missing.push('Durée')
     }
     if (missing.length) {
@@ -452,7 +457,7 @@ export default function NewAOPage() {
 
               <div>
                 <label className="label flex items-center gap-1.5">
-                  <Euro size={12} className="text-emerald-400" /> Budget max (€/jour) *
+                  <Euro size={12} className="text-emerald-400" /> Budget max (€/jour)
                 </label>
                 <input type="number" className="input" placeholder="700"
                   value={form.budget_max} onChange={set('budget_max')} min="0" />
@@ -468,7 +473,7 @@ export default function NewAOPage() {
 
               <div>
                 <label className="label flex items-center gap-1.5">
-                  <MapPin size={12} className="text-brand-400" /> Localisation *
+                  <MapPin size={12} className="text-brand-400" /> Localisation
                 </label>
                 <input type="text" className="input" placeholder="Paris 8e, Lyon, Nantes..."
                   value={form.location} onChange={set('location')} />

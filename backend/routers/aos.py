@@ -112,12 +112,27 @@ AO_TYPES = [
 # des hauteurs différentes selon les AO. Un brouillon reste volontairement
 # incomplet le temps d'être complété ; rien ne doit rester à moitié rempli une
 # fois publié (visible des partenaires).
+#
+# BUDGET ET LOCALISATION N'EN FONT PLUS PARTIE (demande client, 17/09/2026) :
+# ces deux informations manquent réellement sur certains AO, et les exiger
+# obligeait à inventer une valeur ou à laisser l'AO en brouillon — c'est-à-dire
+# invisible des partenaires et non matché. Un AO publié sans budget est moins
+# complet ; un AO jamais publié ne sert à rien.
+#
+# Rien ne casse en aval, et ce n'est pas une supposition :
+#   * la carte et le détail affichent déjà ces champs sous condition
+#     (AOSPage.jsx:335 et :341) — l'absence ne produit aucun trou visuel ;
+#   * le filtre par TJM teste « tjm != null » (AOSPage.jsx:1237) : un AO sans
+#     budget sort des résultats quand on filtre sur une fourchette, ce qui est
+#     le sens attendu de la question posée ;
+#   * le scoring rend un ratio NEUTRE quand le budget manque
+#     (services/scoring.py:325) — aucun consultant n'est pénalisé par un budget
+#     que personne n'a saisi. Et depuis la v2.2 le TJM pèse 0★ par défaut.
+# La localisation, elle, n'entre dans aucun calcul de score.
 _PUBLISH_REQUIRED_FIELDS = {
     "reference": "Référence",
     "ao_type": "Type d'AO",
     "deadline": "Date limite de réponse",
-    "budget_max": "Budget max",
-    "location": "Localisation",
     "duration": "Durée",
 }
 

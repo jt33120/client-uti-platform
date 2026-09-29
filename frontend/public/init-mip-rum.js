@@ -13,7 +13,7 @@
     endpoint: "https://mip-rum-console.vercel.app/api/ingest/v1/traces",
     appId: "gip-plateforme",
     clientId: "groupement-it",
-    apiKey: "mip_live_gip_59ca708ce596d20a52d58ea976dc512c516b442a",
+    apiKey: "mip_4ecfa86115cf090d0b358b340108139f", // générée le 29/09/2026 ; l'ancienne était publique et jamais enregistrée
     env: "production",
     sampleRate: 1.0,   // 100 % des sessions (traces techniques, sans PII)
     trace: true,       // tracing distribué front→back (spans serveur déjà collectés)

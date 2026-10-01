@@ -15,6 +15,15 @@ Usage :
                    cost=getattr(u, "cost", None))
     # à la sortie du bloc : span gen_ai émis (latence = durée). En cas
     # d'exception, error.type est renseigné et le span est émis en statut erreur.
+
+Rattachement à la requête : si l'appel a lieu pendant une requête HTTP, le span
+reprend son trace_id et a pour parent son span http.server (request_trace.py) —
+d'où une trace unique navigateur → backend → appel IA. Hors requête
+(planificateur), une trace neuve est ouverte, comme avant.
+
+Rattachement à un agent xSOM : dans xSOM AI Guard, un agent EST un jeton de
+passerelle. XSOM_AGENT_TOKENS associe chaque fonction IA (par sa route) au
+jeton de son agent ; sans correspondance, XSOM_GATEWAY_TOKEN sert de défaut.
 """
 from __future__ import annotations
 
@@ -26,10 +35,11 @@ import time
 import urllib.request
 from typing import Optional
 
+import request_trace
 from config import settings
-# On réutilise l'encodeur d'attribut, le POST OTLP, la regex tracestate et la
-# version du middleware existant (même format de session que http.server).
-from mip_rum_middleware import _kv, _post, _TRACESTATE_MIP, VERSION
+# On réutilise l'encodeur d'attribut, le POST OTLP et la version du middleware
+# existant (même format de session que http.server).
+from mip_rum_middleware import _kv, _post, VERSION
 
 _ENDPOINT = settings.mip_rum_endpoint
 _APP_ID = settings.mip_rum_app_id
@@ -40,14 +50,49 @@ _ENABLED = bool(_ENDPOINT and _APP_ID)
 # mip.api_key dans la ressource. Inactif tant que l'URL/token/app_id manquent.
 _XSOM_URL = settings.xsom_ai_url
 _XSOM_TOKEN = settings.xsom_gateway_token
-_XSOM_ENABLED = bool(_XSOM_URL and _XSOM_TOKEN and _APP_ID)
+
+
+def _parse_agent_tokens(raw: Optional[str]) -> dict:
+    """« matching=xsg_…, ao=xsg_… » → {"matching": "xsg_…", "ao": "xsg_…"}.
+
+    Une entrée mal formée est ignorée, jamais fatale : une faute de frappe dans
+    .env ne doit pas empêcher le backend de démarrer.
+    """
+    tokens = {}
+    for part in (raw or "").split(","):
+        cle, sep, jeton = part.partition("=")
+        cle, jeton = cle.strip(), jeton.strip()
+        if sep and cle and jeton:
+            tokens[cle] = jeton
+    return tokens
+
+
+_XSOM_AGENT_TOKENS = _parse_agent_tokens(settings.xsom_agent_tokens)
+_XSOM_ENABLED = bool(_XSOM_URL and _APP_ID and (_XSOM_TOKEN or _XSOM_AGENT_TOKENS))
+
+
+def _xsom_token_for(route: Optional[str]) -> Optional[str]:
+    """Le jeton — donc l'AGENT xSOM — sous lequel ranger un appel IA.
+
+    Ordre : la route exacte (« matching/score »), puis son domaine
+    (« matching »), puis le jeton unique XSOM_GATEWAY_TOKEN. Ce dernier sert de
+    fourre-tout : sans lui, une fonction IA oubliée dans XSOM_AGENT_TOKENS ne
+    serait envoyée nulle part, et ses appels disparaîtraient de xSOM sans bruit.
+    """
+    r = (route or "").strip()
+    if r and r in _XSOM_AGENT_TOKENS:
+        return _XSOM_AGENT_TOKENS[r]
+    domaine = r.split("/", 1)[0]
+    if domaine and domaine in _XSOM_AGENT_TOKENS:
+        return _XSOM_AGENT_TOKENS[domaine]
+    return _XSOM_TOKEN or None
 
 
 def session_id_from_tracestate(tracestate: Optional[str]) -> Optional[str]:
     """Extrait le ``mip.session_id`` du header ``tracestate: mip=s:<id>`` (best-effort)."""
     if not tracestate:
         return None
-    m = _TRACESTATE_MIP.search(tracestate)
+    m = request_trace.TRACESTATE_MIP.search(tracestate)
     return m.group(1) if m else None
 
 
@@ -80,19 +125,21 @@ def _otlp_xsom(span: dict) -> dict:
     }
 
 
-def _post_xsom(payload: dict) -> None:
-    """POST OTLP vers xSOM /v1/ai-traces, auth par en-tête (bloquant, hors loop)."""
+def _post_xsom(payload: dict, token: str) -> None:
+    """POST OTLP vers xSOM /v1/ai-traces, auth par en-tête (bloquant, hors loop).
+
+    ``token`` désigne l'agent xSOM qui reçoit l'appel (cf. _xsom_token_for)."""
     req = urllib.request.Request(
         _XSOM_URL.rstrip("/") + "/ai-traces",
         data=json.dumps(payload).encode(),
-        headers={"content-type": "application/json", "X-Gateway-Token": _XSOM_TOKEN},
+        headers={"content-type": "application/json", "X-Gateway-Token": token},
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=3) as resp:  # noqa: S310 - fixed https endpoint
         resp.read()
 
 
-def _emit(span: dict) -> None:
+def _emit(span: dict, xsom_token: Optional[str] = None) -> None:
     """Envoi fire-and-forget (thread daemon) : ne bloque jamais l'appel métier.
 
     Dual-emit best-effort : MIP RUM et/ou xSOM selon ce qui est configuré. Chaque
@@ -104,9 +151,9 @@ def _emit(span: dict) -> None:
                 _post(_ENDPOINT, _otlp(span))
             except Exception:
                 pass
-        if _XSOM_ENABLED:
+        if _XSOM_ENABLED and xsom_token:
             try:
-                _post_xsom(_otlp_xsom(span))
+                _post_xsom(_otlp_xsom(span), xsom_token)
             except Exception:
                 pass
     try:
@@ -173,6 +220,9 @@ def record_ai_call(*, provider: str, model: str, operation: str = "chat",
     finally:
         try:
             end_ns = time.time_ns()
+            ctx = request_trace.current()
+            if not session_id and ctx is not None:
+                session_id = ctx.session_id
             attrs = [
                 _kv("gen_ai.system", str(provider or "").lower() or "unknown"),
                 _kv("gen_ai.request.model", str(model or "")),
@@ -184,8 +234,11 @@ def record_ai_call(*, provider: str, model: str, operation: str = "chat",
                 attrs.append(_kv("mip.session_id", session_id))
             for k, v in call._attrs.items():
                 attrs.append(_kv(k, v))
+            # Pendant une requête : même trace qu'elle, et son span http.server
+            # pour parent. Avant, la trace était tirée au hasard ici même : la
+            # mesure IA n'était rattachée à rien.
             span = {
-                "traceId": secrets.token_hex(16),
+                "traceId": ctx.trace_id if ctx is not None else secrets.token_hex(16),
                 "spanId": secrets.token_hex(8),
                 "name": "gen_ai",
                 "kind": 3,  # CLIENT
@@ -193,13 +246,15 @@ def record_ai_call(*, provider: str, model: str, operation: str = "chat",
                 "endTimeUnixNano": str(end_ns),
                 "attributes": attrs,
             }
+            if ctx is not None:
+                span["parentSpanId"] = ctx.span_id
             if call._err:
                 span["attributes"].append(_kv("error.type", call._err))
                 span["status"] = {"code": 2, "message": call._err}  # STATUS_CODE_ERROR
             elif call._refusal:
                 # Refus modèle : error.type reconnu par MIP (refusal_rate), statut OK.
                 span["attributes"].append(_kv("error.type", call._refusal))
-            _emit(span)
+            _emit(span, _xsom_token_for(route))
         except Exception:
             pass
 

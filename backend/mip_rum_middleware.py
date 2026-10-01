@@ -1,9 +1,11 @@
-"""MIP RUM — middleware ASGI de tracing distribué (un fichier, stdlib uniquement).
+"""MIP RUM — middleware ASGI de tracing distribué (stdlib uniquement).
 
 Lit le header W3C ``traceparent`` injecté par le SDK web MIP RUM, chronomètre la
 requête, et expédie un span OTLP/HTTP JSON ``http.server`` vers l'ingestion MIP.
 La corrélation front→back se fait par trace_id ; la session web (optionnelle)
-voyage dans ``tracestate: mip=s:<session_id>``.
+voyage dans ``tracestate: mip=s:<session_id>``. Ce contexte est posé au DÉBUT de
+chaque requête (request_trace.py) : les appels IA faits pendant la requête le
+reprennent, et deviennent les enfants de son span http.server.
 
 Activation par variables d'environnement — sans elles, passthrough total :
   MIP_RUM_ENDPOINT  ex. https://mip-rum-console.vercel.app/api/ingest/v1/traces
@@ -30,14 +32,13 @@ import asyncio
 import json
 import os
 import re
-import secrets
 import time
 import urllib.request
 
+import request_trace
+
 VERSION = "0.4.0"
 
-_TRACEPARENT = re.compile(r"^00-([0-9a-f]{32})-([0-9a-f]{16})-[0-9a-f]{2}$")
-_TRACESTATE_MIP = re.compile(r"(?:^|[,\s])mip=s:([A-Za-z0-9_-]{1,64})")
 _SEG_NUM = re.compile(r"^\d+$")
 _SEG_UUID = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I
@@ -114,44 +115,71 @@ class MIPRumMiddleware:
 
     # --- ASGI -----------------------------------------------------------------
     async def __call__(self, scope, receive, send):
-        if not self.enabled or scope.get("type") != "http":
+        if scope.get("type") != "http":
             return await self.app(scope, receive, send)
 
-        status = {"code": 0}
-
-        async def send_wrapper(message):
-            if message.get("type") == "http.response.start":
-                status["code"] = int(message.get("status", 0))
-            await send(message)
-
-        start_ns = time.time_ns()
-        t0 = time.perf_counter()
+        # Le contexte de trace est posé AVANT d'appeler l'application — et même
+        # si l'envoi vers MIP est inactif. C'est lui qui rattache les appels IA
+        # faits pendant cette requête au clic du navigateur qui l'a déclenchée
+        # (request_trace.py). Il était auparavant calculé dans _record, APRÈS la
+        # réponse : trop tard pour qu'un appel IA puisse s'y accrocher, et chaque
+        # mesure IA partait avec une trace tirée au hasard.
         try:
-            await self.app(scope, receive, send_wrapper)
-        finally:
+            ctx = request_trace.from_headers(*self._trace_headers(scope))
+            jeton = request_trace.set_current(ctx)
+        except Exception:  # le tracing ne casse JAMAIS la requête hôte
+            ctx = jeton = None
+        try:
+            if not self.enabled:
+                return await self.app(scope, receive, send)
+
+            status = {"code": 0}
+
+            async def send_wrapper(message):
+                if message.get("type") == "http.response.start":
+                    status["code"] = int(message.get("status", 0))
+                await send(message)
+
+            start_ns = time.time_ns()
+            t0 = time.perf_counter()
             try:
-                self._record(scope, status["code"], t0, start_ns)
-            except Exception:  # le tracing ne casse JAMAIS la requête hôte
-                pass
+                await self.app(scope, receive, send_wrapper)
+            finally:
+                try:
+                    self._record(scope, status["code"], t0, start_ns, ctx)
+                except Exception:  # le tracing ne casse JAMAIS la requête hôte
+                    pass
+        finally:
+            if jeton is not None:
+                try:
+                    request_trace.reset_current(jeton)
+                except Exception:  # le tracing ne casse JAMAIS la requête hôte
+                    pass
+
+    @staticmethod
+    def _trace_headers(scope) -> tuple:
+        """(traceparent, tracestate) : les deux seuls en-têtes que ce middleware lise."""
+        valeurs = {}
+        for k, v in scope.get("headers") or []:
+            if k in (b"traceparent", b"tracestate"):
+                valeurs[k] = v.decode("latin1")
+        return valeurs.get(b"traceparent"), valeurs.get(b"tracestate")
 
     # --- collecte ---------------------------------------------------------------
-    def _record(self, scope, status_code: int, t0: float, start_ns: int) -> None:
+    def _record(self, scope, status_code: int, t0: float, start_ns: int, ctx=None) -> None:
         path = scope.get("path", "/")
         if path in self.ignore or scope.get("method") == "OPTIONS":
             return  # préflights CORS : jamais de span
         duration_ms = round((time.perf_counter() - t0) * 1000, 1)
 
-        headers = {}
-        for k, v in scope.get("headers") or []:
-            if k in (b"traceparent", b"tracestate"):
-                headers[k.decode("latin1")] = v.decode("latin1")
-
-        m = _TRACEPARENT.match(headers.get("traceparent", ""))
-        trace_id = m.group(1) if m else secrets.token_hex(16)
-        parent_span_id = m.group(2) if m else None
-        span_id = secrets.token_hex(8)
-        ms = _TRACESTATE_MIP.search(headers.get("tracestate", ""))
-        session_id = ms.group(1) if ms else None
+        # Mêmes identifiants que ceux vus par les appels IA de cette requête :
+        # c'est ce qui fait de ce span le PARENT de leurs mesures.
+        if ctx is None:
+            ctx = request_trace.from_headers(*self._trace_headers(scope))
+        trace_id = ctx.trace_id
+        parent_span_id = ctx.parent_span_id
+        span_id = ctx.span_id
+        session_id = ctx.session_id
 
         # route template FastAPI si le routing l'a posée, sinon path normalisé
         route = scope.get("route")

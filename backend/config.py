@@ -118,6 +118,15 @@ class Settings(BaseSettings):
     # que l'URL ou le token ne sont pas renseignés (aucun envoi xSOM).
     xsom_ai_url: Optional[str] = None          # base incluant /v1, ex. https://xsom…up.railway.app/v1
     xsom_gateway_token: Optional[str] = None   # xsg_… (jamais exposé au navigateur)
+    # Un AGENT xSOM par fonction IA d'UTI. Dans xSOM, un agent EST un jeton de
+    # passerelle : c'est le jeton utilisé à l'envoi qui range l'appel sous tel
+    # agent du tableau de bord (poc-AI_guard, core/agents.py). Sans cette table,
+    # toutes les fonctions IA d'UTI apparaissent comme UN seul agent.
+    # Format : "matching=xsg_…,ao=xsg_…,cv=xsg_…,assistant=xsg_…" — clé = la
+    # route d'un appel (« matching/score ») ou son domaine (« matching »).
+    # Un appel sans correspondance part avec XSOM_GATEWAY_TOKEN : le garder
+    # comme agent fourre-tout, pour qu'aucune fonction ne disparaisse de xSOM.
+    xsom_agent_tokens: Optional[str] = None
     # ── MIP RUM — API de LECTURE (supervision côté UTI) ──────────────
     # Base de l'API propriétaire MIP RUM + token d'accès UTI. Le backend UTI
     # proxifie cette API (le token reste serveur, jamais exposé au navigateur).

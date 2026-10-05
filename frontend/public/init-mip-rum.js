@@ -15,6 +15,7 @@
     clientId: "groupement-it",
     apiKey: "mip_4ecfa86115cf090d0b358b340108139f", // générée le 29/09/2026 ; l'ancienne était publique et jamais enregistrée
     env: "production",
+    // mip:release — remplacée au build par la release (le commit déployé) : scripts/mip-sourcemaps.mjs
     sampleRate: 1.0,   // 100 % des sessions (traces techniques, sans PII)
     trace: true,       // tracing distribué front→back (spans serveur déjà collectés)
     // Session-replay DÉSACTIVÉ : il capture le DOM affiché (noms de consultants,

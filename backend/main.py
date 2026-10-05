@@ -1,3 +1,4 @@
+import logging
 import os
 import subprocess
 from datetime import datetime, timezone
@@ -26,6 +27,12 @@ app = FastAPI(
 # lancement (`opentelemetry-instrument uvicorn …`, uti-backend.service), lit le
 # traceparent posé par le SDK du navigateur et envoie un span par requête à MIP.
 # Réglages : variables OTEL_* de otel.env (otel.env.example).
+#
+# Les journaux d'uvicorn (démarrage, exceptions non rattrapées) s'arrêtent à son
+# logger « uvicorn » ; l'agent écoute le logger racine. On les y laisse remonter
+# pour qu'ils partent à MIP. « uvicorn.access » (une ligne par requête, avec
+# l'adresse IP) garde son propagate=False : il ne part pas.
+logging.getLogger("uvicorn").propagate = True
 
 # Vercel previews for THIS project/account only. Anchored regex — a substring
 # check ("julian-talou" in origin) was bypassable by registering e.g.

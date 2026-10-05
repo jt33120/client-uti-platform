@@ -185,7 +185,7 @@ Toutes sont déclarées dans `backend/config.py`, qui fait autorité.
 | `FILE_URL_SECRET` | Signe les URLs de fichiers. Vide = dérivée de `JWT_SECRET` par HMAC | optionnel |
 | `VISION_ENABLED` | Analyse visuelle des CV (envoie les pages en image au LLM) | optionnel |
 | `EXTRACTION_MODEL` / `SCORING_MODEL` / `DRAFT_MODEL` / `VISION_MODEL` / `ASSISTANT_MODEL` | Modèles par usage | optionnel |
-| `MIP_RUM_*` / `XSOM_*` | Observabilité (traces HTTP et IA). Inactifs si absents | optionnel |
+| `MIP_RUM_APP_ID` / `XSOM_*` | Observabilité IA (xSOM) et lectures de MIP. Inactifs si absents ; les traces HTTP passent par l'agent OpenTelemetry (`backend/otel.env`, voir `otel.env.example`) | optionnel |
 
 `config.py` **refuse de démarrer** dans quatre cas, délibérément : `JWT_SECRET`
 au défaut en production, `STORAGE_BACKEND` inconnu, `STORAGE_BACKEND=local` sans

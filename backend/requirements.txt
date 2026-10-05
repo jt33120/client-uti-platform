@@ -26,3 +26,12 @@ qrcode==7.4.2
 # parallélisable sur carte graphique. Argon2id impose un coût MÉMOIRE — 10 000
 # essais simultanés exigent 190 Gio de RAM aux paramètres retenus.
 argon2-cffi==23.1.0
+# MIP RUM — l'agent OpenTelemetry OFFICIEL (`opentelemetry-instrument`, lancé par
+# uti-backend.service), son instrumentation FastAPI et l'exportateur OTLP HTTP.
+# Mêmes versions que celles éprouvées par MIP sous FastAPI le 29/09/2026. Pas de
+# `opentelemetry-bootstrap` au déploiement : seule l'instrumentation FastAPI est
+# voulue (un span par requête, comme l'ancien middleware), rien sur les appels
+# sortants vers Supabase ou les modèles.
+opentelemetry-distro==0.66b0
+opentelemetry-instrumentation-fastapi==0.66b0
+opentelemetry-exporter-otlp-proto-http==1.45.0

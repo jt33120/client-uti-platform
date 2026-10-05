@@ -1,10 +1,17 @@
-"""Instrumentation des appels LLM → MIP RUM (spans OTel GenAI ``gen_ai``).
+"""Instrumentation des appels LLM (spans OTel GenAI ``gen_ai``).
 
-Émet UN span par appel LLM (provider / modèle / tokens / latence) vers le même
-endpoint OTLP que ``mip_rum_middleware`` (mêmes MIP_RUM_ENDPOINT / APP_ID /
-API_KEY). Best-effort, jamais bloquant, et **aucun contenu** de prompt/réponse :
-seules des métadonnées voyagent. Inactif si l'endpoint/app_id ne sont pas
-configurés (passthrough total).
+Émet UN span par appel LLM (provider / modèle / tokens / latence), vers deux
+destinations :
+
+* **MIP RUM**, par l'agent OpenTelemetry officiel (``opentelemetry-instrument``,
+  voir uti-backend.service) : le span est créé avec l'API OpenTelemetry et part
+  avec ceux du serveur, enfant du span de la requête en cours. Sans agent, l'API
+  ne fait rien.
+* **xSOM AI Guard**, par un envoi direct (``/v1/ai-traces``), sous le jeton de
+  l'agent xSOM de la fonction IA. Inactif sans URL ni jeton.
+
+Best-effort, jamais bloquant, et **aucun contenu** de prompt/réponse : seules des
+métadonnées voyagent.
 
 Usage :
     from mip_rum_ai import record_ai_call
@@ -16,10 +23,10 @@ Usage :
     # à la sortie du bloc : span gen_ai émis (latence = durée). En cas
     # d'exception, error.type est renseigné et le span est émis en statut erreur.
 
-Rattachement à la requête : si l'appel a lieu pendant une requête HTTP, le span
-reprend son trace_id et a pour parent son span http.server (request_trace.py) —
-d'où une trace unique navigateur → backend → appel IA. Hors requête
-(planificateur), une trace neuve est ouverte, comme avant.
+Rattachement à la requête : pendant une requête HTTP, le span reprend son
+trace_id et a pour parent son span serveur (request_trace.py) — d'où une trace
+unique navigateur → backend → appel IA. Hors requête (planificateur), une trace
+neuve est ouverte.
 
 Rattachement à un agent xSOM : dans xSOM AI Guard, un agent EST un jeton de
 passerelle. XSOM_AGENT_TOKENS associe chaque fonction IA (par sa route) au
@@ -35,19 +42,21 @@ import time
 import urllib.request
 from typing import Optional
 
+from opentelemetry import trace
+from opentelemetry.trace import SpanKind, Status, StatusCode
+
 import request_trace
 from config import settings
-# On réutilise l'encodeur d'attribut, le POST OTLP et la version du middleware
-# existant (même format de session que http.server).
-from mip_rum_middleware import _kv, _post, VERSION
 
-_ENDPOINT = settings.mip_rum_endpoint
+VERSION = "0.5.0"
+
+# Sans agent, un traceur qui ne fait rien ; avec l'agent, celui qu'il a installé.
+_tracer = trace.get_tracer("uti.mip_rum_ai", VERSION)
+
 _APP_ID = settings.mip_rum_app_id
-_API_KEY = settings.mip_rum_api_key
-_ENABLED = bool(_ENDPOINT and _APP_ID)
 
-# xSOM AI Guard — deuxième destination (dual-emit). Auth par en-tête, donc pas de
-# mip.api_key dans la ressource. Inactif tant que l'URL/token/app_id manquent.
+# xSOM AI Guard. Auth par en-tête, donc pas de clé MIP dans la ressource. Inactif
+# tant que l'URL/token/app_id manquent.
 _XSOM_URL = settings.xsom_ai_url
 _XSOM_TOKEN = settings.xsom_gateway_token
 
@@ -96,19 +105,16 @@ def session_id_from_tracestate(tracestate: Optional[str]) -> Optional[str]:
     return m.group(1) if m else None
 
 
-def _otlp(span: dict) -> dict:
-    res = [_kv("service.name", "fastapi-ai"), _kv("mip.app_id", _APP_ID)]
-    if _API_KEY:
-        res.append(_kv("mip.api_key", _API_KEY))
-    return {
-        "resourceSpans": [{
-            "resource": {"attributes": res},
-            "scopeSpans": [{
-                "scope": {"name": "mip-rum-ai", "version": VERSION},
-                "spans": [span],
-            }],
-        }]
-    }
+def _kv(key: str, value) -> dict:
+    if isinstance(value, bool):
+        v = {"boolValue": value}
+    elif isinstance(value, int):
+        v = {"intValue": str(value)}
+    elif isinstance(value, float):
+        v = {"doubleValue": value}
+    else:
+        v = {"stringValue": str(value)}
+    return {"key": key, "value": v}
 
 
 def _otlp_xsom(span: dict) -> dict:
@@ -140,22 +146,16 @@ def _post_xsom(payload: dict, token: str) -> None:
 
 
 def _emit(span: dict, xsom_token: Optional[str] = None) -> None:
-    """Envoi fire-and-forget (thread daemon) : ne bloque jamais l'appel métier.
+    """Envoi vers xSOM, fire-and-forget (thread daemon) : ne bloque jamais l'appel
+    métier. MIP, lui, reçoit le span par l'agent OpenTelemetry."""
+    if not (_XSOM_ENABLED and xsom_token):
+        return
 
-    Dual-emit best-effort : MIP RUM et/ou xSOM selon ce qui est configuré. Chaque
-    destination est isolée — l'échec de l'une n'empêche pas l'autre.
-    """
     def _run():
-        if _ENABLED:
-            try:
-                _post(_ENDPOINT, _otlp(span))
-            except Exception:
-                pass
-        if _XSOM_ENABLED and xsom_token:
-            try:
-                _post_xsom(_otlp_xsom(span), xsom_token)
-            except Exception:
-                pass
+        try:
+            _post_xsom(_otlp_xsom(span), xsom_token)
+        except Exception:
+            pass
     try:
         threading.Thread(target=_run, daemon=True).start()
     except Exception:
@@ -207,10 +207,9 @@ def record_ai_call(*, provider: str, model: str, operation: str = "chat",
                    route: Optional[str] = None, session_id: Optional[str] = None):
     """Chronomètre un appel LLM et émet un span ``gen_ai`` à la sortie du bloc."""
     call = _Call()
-    if not (_ENABLED or _XSOM_ENABLED):
-        yield call
-        return
-
+    # Le span n'est PAS rendu courant : un appel IA ne devient pas le parent de ce
+    # que le code métier fait ensuite. Son parent est le span de la requête.
+    otel_span = _tracer.start_span("gen_ai", kind=SpanKind.CLIENT)
     start_ns = time.time_ns()
     try:
         yield call
@@ -223,37 +222,43 @@ def record_ai_call(*, provider: str, model: str, operation: str = "chat",
             ctx = request_trace.current()
             if not session_id and ctx is not None:
                 session_id = ctx.session_id
-            attrs = [
-                _kv("gen_ai.system", str(provider or "").lower() or "unknown"),
-                _kv("gen_ai.request.model", str(model or "")),
-                _kv("gen_ai.operation.name", str(operation or "chat")),
-            ]
+            attrs = {
+                "gen_ai.system": str(provider or "").lower() or "unknown",
+                "gen_ai.request.model": str(model or ""),
+                "gen_ai.operation.name": str(operation or "chat"),
+            }
             if route:
-                attrs.append(_kv("mip.route", route))
+                attrs["mip.route"] = route
             if session_id:
-                attrs.append(_kv("mip.session_id", session_id))
-            for k, v in call._attrs.items():
-                attrs.append(_kv(k, v))
-            # Pendant une requête : même trace qu'elle, et son span http.server
-            # pour parent. Avant, la trace était tirée au hasard ici même : la
-            # mesure IA n'était rattachée à rien.
+                attrs["mip.session_id"] = session_id
+            attrs.update(call._attrs)
+            if call._err:
+                attrs["error.type"] = call._err
+            elif call._refusal:
+                # Refus modèle : error.type reconnu par MIP (refusal_rate), statut OK.
+                attrs["error.type"] = call._refusal
+
+            otel_span.set_attributes(attrs)
+            if call._err:
+                otel_span.set_status(Status(StatusCode.ERROR, call._err))
+            otel_span.end(end_time=end_ns)
+
+            # Les identifiants que l'agent a donnés au span, pour qu'xSOM et MIP
+            # parlent du même appel ; sans agent, une trace neuve.
+            sc = otel_span.get_span_context()
             span = {
-                "traceId": ctx.trace_id if ctx is not None else secrets.token_hex(16),
-                "spanId": secrets.token_hex(8),
+                "traceId": format(sc.trace_id, "032x") if sc.is_valid else secrets.token_hex(16),
+                "spanId": format(sc.span_id, "016x") if sc.is_valid else secrets.token_hex(8),
                 "name": "gen_ai",
                 "kind": 3,  # CLIENT
                 "startTimeUnixNano": str(start_ns),
                 "endTimeUnixNano": str(end_ns),
-                "attributes": attrs,
+                "attributes": [_kv(k, v) for k, v in attrs.items()],
             }
             if ctx is not None:
                 span["parentSpanId"] = ctx.span_id
             if call._err:
-                span["attributes"].append(_kv("error.type", call._err))
                 span["status"] = {"code": 2, "message": call._err}  # STATUS_CODE_ERROR
-            elif call._refusal:
-                # Refus modèle : error.type reconnu par MIP (refusal_rate), statut OK.
-                span["attributes"].append(_kv("error.type", call._refusal))
             _emit(span, _xsom_token_for(route))
         except Exception:
             pass

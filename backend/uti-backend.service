@@ -25,7 +25,11 @@ WorkingDirectory=/home/julian.talou/app/backend
 # double-envoi d'e-mails (atténué par un claim en base, mais à éviter). Pour
 # encaisser plus de charge, préférer un reverse-proxy/plus de RAM à --workers,
 # ou externaliser rate-limit + scheduler (Redis / worker dédié) au préalable.
-ExecStart=/home/julian.talou/app/backend/venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000
+# MIP RUM : uvicorn lancé sous l'agent OpenTelemetry OFFICIEL, réglé par otel.env
+# (otel.env.example). Le « - » rend le fichier facultatif : sans lui, l'agent ne
+# trouve aucune adresse d'envoi, et le backend démarre quand même, sans tracing.
+EnvironmentFile=-/home/julian.talou/app/backend/otel.env
+ExecStart=/home/julian.talou/app/backend/venv/bin/opentelemetry-instrument /home/julian.talou/app/backend/venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000
 Restart=always
 RestartSec=3
 # Arrêt propre : laisse uvicorn terminer les requêtes en cours (un matching IA

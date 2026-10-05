@@ -8,7 +8,6 @@ from fastapi.responses import Response, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from config import settings, is_prod
 from routers import auth, consultants, aos, matching, clients, partners, submissions, invitations, pacs, support, assistant, admin, gdpr, decisions, scoring_config, cartography, notifications, email_templates, cv, client_review, files, emails
-from mip_rum_middleware import MIPRumMiddleware
 
 IS_PROD = is_prod()
 
@@ -22,17 +21,11 @@ app = FastAPI(
     openapi_url=None if IS_PROD else "/openapi.json",
 )
 
-# ── MIP RUM — tracing distribué (inactif sans MIP_RUM_ENDPOINT/MIP_RUM_APP_ID) ──
-# Lit le traceparent posé par le snippet RUM du frontend et expédie un span
-# http.server (route template + durée + statut, rien d'autre) vers MIP RUM.
-# Config via settings : le .env est chargé par pydantic-settings, pas exporté
-# dans os.environ.
-app.add_middleware(
-    MIPRumMiddleware,
-    endpoint=settings.mip_rum_endpoint,
-    app_id=settings.mip_rum_app_id,
-    api_key=settings.mip_rum_api_key,
-)
+# ── MIP RUM — tracing distribué ────────────────────────────────────────────
+# Aucun code ici : l'agent OpenTelemetry OFFICIEL instrumente l'application au
+# lancement (`opentelemetry-instrument uvicorn …`, uti-backend.service), lit le
+# traceparent posé par le SDK du navigateur et envoie un span par requête à MIP.
+# Réglages : variables OTEL_* de otel.env (otel.env.example).
 
 # Vercel previews for THIS project/account only. Anchored regex — a substring
 # check ("julian-talou" in origin) was bypassable by registering e.g.

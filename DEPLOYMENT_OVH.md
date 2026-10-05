@@ -252,5 +252,7 @@ comment on restaure : `RUNBOOK.md` §9 et §10.
 `FILE_URL_SECRET`, `SMTP_PASSWORD`, les jetons `MIP_RUM_*` et `XSOM_*`, et
 l'URI de connexion Supabase (`~/.supabase_db_uri`, en 0600).
 
-Ils vivent uniquement dans `~/app/backend/.env` sur le VPS, ignoré par git.
+Ils vivent uniquement dans `~/app/backend/.env` sur le VPS, ignoré par git. La clé
+d'ingestion de MIP RUM, lue par l'agent OpenTelemetry, vit dans
+`~/app/backend/otel.env` (ignoré par git, modèle : `otel.env.example`).
 Le dépôt est privé, mais un secret dans l'historique git y reste pour toujours.

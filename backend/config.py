@@ -105,12 +105,10 @@ class Settings(BaseSettings):
     # UTI. Liste séparée par virgules ; vide = préfixe « plateforme » par défaut.
     openrouter_supervised_keys: Optional[str] = None
 
-    # MIP RUM — distributed tracing (optional; unset = middleware inactive).
-    # Read here because pydantic-settings loads .env without exporting to
-    # os.environ, which the middleware would otherwise rely on.
-    mip_rum_endpoint: Optional[str] = None
+    # MIP RUM — l'application UTI chez MIP. Le tracing serveur passe par l'agent
+    # OpenTelemetry officiel (OTEL_* de otel.env) ; cet identifiant sert à xSOM et
+    # aux lectures de l'API de MIP.
     mip_rum_app_id: Optional[str] = None
-    mip_rum_api_key: Optional[str] = None
     # ── xSOM AI Guard — ingestion des spans gen_ai (observabilité IA) ────
     # Dual-emit : les mêmes spans gen_ai partent aussi vers xSOM (en plus de
     # MIP RUM), qui devient la source des métriques IA (sens 2). Auth par un

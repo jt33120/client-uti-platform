@@ -19,10 +19,12 @@
     sampleRate: 1.0,   // 100 % des sessions (traces techniques, sans PII)
     trace: true,       // tracing distribué front→back (spans serveur déjà collectés)
     // Rejeu de session ACTIF sur toutes les sessions, sans bannière : décision du
-    // gestionnaire d'UTI du 05/10/2026, qui en porte la base légale. Masquage par
-    // défaut du SDK (« all ») : texte, saisies et images partent masqués — les noms
-    // de consultants et de clients n'apparaissent pas dans les rejeux.
+    // gestionnaire d'UTI du 05/10/2026, qui en porte la base légale. Masquage écrit
+    // ici plutôt que laissé au défaut du SDK : texte, saisies et images partent
+    // masqués — les noms de consultants et de clients n'apparaissent pas dans les
+    // rejeux, même si le défaut du SDK changeait un jour.
     replay: 1.0,
+    replayMask: "all",
     frustration: true, // rage clicks / dead clicks
     // WIDGET D'AVIS MIP (CSAT) : RETIRÉ. Ne pas le remettre.
     //

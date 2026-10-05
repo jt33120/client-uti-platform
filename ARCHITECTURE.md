@@ -114,8 +114,8 @@ sur la production : voir §11.
    `X-Real-IP` — le seul en-tête d'IP non falsifiable, et donc le seul auquel le
    backend se fie (`services/ratelimit.py:22`, `routers/auth.py:_client_ip`).
 4. **FastAPI** : middleware CORS à origine dynamique (`main.py:is_allowed_origin`,
-   regex ancrée sur les previews Vercel de ce compte), en-têtes de sécurité,
-   middleware MIP RUM.
+   regex ancrée sur les previews Vercel de ce compte), en-têtes de sécurité ;
+   l'agent OpenTelemetry officiel (MIP RUM) instrumente l'application au lancement.
 5. La dépendance `get_current_user` décode le JWT **et re-vérifie l'état du
    compte en base** (cache 60 s) : une suspension prend effet en moins d'une
    minute au lieu d'attendre l'expiration du jeton à 3 h.
@@ -491,9 +491,11 @@ consultant) propagée par `contextvars`. Écriture non bloquante dans un thread
 démon. `services/ai_budget.py` compare la dépense aux plafonds hebdo/mensuel et
 **alerte sans jamais couper**.
 
-**Observabilité** : `mip_rum_middleware.py` émet un span `http.server` par
-requête, `mip_rum_ai.py` un span OTel `gen_ai` par appel LLM — **métadonnées
-seulement, aucun contenu de prompt**. Double émission vers MIP RUM et xSOM.
+**Observabilité** : l'agent OpenTelemetry officiel (`opentelemetry-instrument`,
+`backend/uti-backend.service`, réglé par `backend/otel.env`) émet un span serveur
+par requête vers MIP RUM ; `mip_rum_ai.py` un span OTel `gen_ai` par appel LLM —
+**métadonnées seulement, aucun contenu de prompt** — envoyé à MIP par l'agent et
+à xSOM directement.
 
 **Conformité AI Act** : 26 documents dans `compliance/ai-act/` (gouvernance,
 information des personnes, gestion des risques, plan de test de biais,

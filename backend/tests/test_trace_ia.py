@@ -4,38 +4,40 @@ Chaque appel IA doit être rattaché à la requête qui l'a déclenché — et �
 POURQUOI CE FICHIER EXISTE
 
 Jusqu'au 1er octobre 2026, la mesure de chaque appel IA (mip_rum_ai.py) partait
-avec un identifiant de trace tiré au hasard. Elle était orpheline : impossible de
-la rattacher à la requête HTTP qui l'avait déclenchée, ni au clic du navigateur
-derrière cette requête. Le middleware connaissait pourtant ce contexte — mais il
-ne le calculait qu'APRÈS la réponse, trop tard pour qu'un appel IA s'y accroche.
+avec un identifiant de trace tiré au hasard : elle était orpheline. Depuis le
+05/10/2026, le contexte de la requête vient de l'agent OpenTelemetry OFFICIEL
+(qui remplace l'ancien middleware maison) : son instrumentation FastAPI lit le
+traceparent du navigateur et rend courant le span serveur de la requête.
 
-Et côté xSOM AI Guard, où toute la surveillance IA doit désormais être rattachée,
-toutes les fonctions IA d'UTI partaient sous un même jeton — donc comme UN seul
-agent, alors qu'un agent xSOM EST un jeton de passerelle.
+Et côté xSOM AI Guard, un agent EST un jeton de passerelle : chaque fonction IA
+doit partir sous le jeton de son agent.
 
-Ces tests exécutent le vrai middleware et le vrai émetteur, contre des bouchons
-réseau. Ce qu'ils défendent :
+Ces tests exécutent le vrai SDK OpenTelemetry, la vraie instrumentation FastAPI
+et le vrai émetteur, avec un exportateur en mémoire à la place du réseau. Ce
+qu'ils défendent :
 
-  * le contexte de trace est posé AVANT l'application, et retiré après ;
-  * un appel IA fait pendant une requête porte SA trace, a SON span pour parent,
-    et hérite de SA session ;
+  * un appel IA fait pendant une requête porte SA trace, a SON span serveur pour
+    parent, et hérite de SA session (routes synchrones comme asynchrones) ;
+  * le span serveur part vers MIP avec le parent et la session du navigateur ;
   * hors requête, une trace neuve est ouverte (le planificateur n'hérite de rien) ;
   * chaque appel part sous le jeton de son agent, avec un défaut qui ne perd rien.
 """
 from __future__ import annotations
 
-import asyncio
 import importlib.util
 import sys
 import types
 from pathlib import Path
 
 import pytest
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 BACKEND = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND))
 
-import mip_rum_middleware  # noqa: E402  (bibliothèque standard seulement)
 import request_trace  # noqa: E402
 
 TRACE = "4bf92f3577b34da6a3ce929d0e0e4736"
@@ -43,10 +45,24 @@ SPAN_NAVIGATEUR = "00f067aa0ba902b7"
 TRACEPARENT = f"00-{TRACE}-{SPAN_NAVIGATEUR}-01"
 TRACESTATE = "mip=s:session_42"
 
+# Ce que l'agent installe au lancement : un fournisseur de traceurs global. Il ne
+# se pose qu'une fois par processus ; l'exportateur en mémoire tient lieu de MIP.
+EXPORT = InMemorySpanExporter()
+_fournisseur = TracerProvider()
+_fournisseur.add_span_processor(SimpleSpanProcessor(EXPORT))
+trace.set_tracer_provider(_fournisseur)
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  Outillage
 # ═══════════════════════════════════════════════════════════════════════════
+@pytest.fixture(autouse=True)
+def export_vide():
+    EXPORT.clear()
+    yield
+    EXPORT.clear()
+
+
 def charger_emetteur(monkeypatch, **reglages):
     """Le vrai mip_rum_ai.py, chargé avec une configuration de pacotille.
 
@@ -56,11 +72,11 @@ def charger_emetteur(monkeypatch, **reglages):
     charge l'émetteur sous un nom privé : le module réel n'est jamais touché, et
     rien ne fuit vers les autres tests.
 
-    ``_emit`` est remplacé par une capture : on observe exactement le span et le
-    jeton qui partiraient, sans thread ni réseau.
+    ``_emit`` (l'envoi vers xSOM) est remplacé par une capture : on observe
+    exactement le span et le jeton qui partiraient, sans thread ni réseau.
     """
     defauts = dict(
-        mip_rum_endpoint=None, mip_rum_app_id="gip-plateforme", mip_rum_api_key=None,
+        mip_rum_app_id="gip-plateforme",
         xsom_ai_url="https://xsom.invalide/v1", xsom_gateway_token="xsg_defaut",
         xsom_agent_tokens=None,
     )
@@ -91,134 +107,113 @@ def appel_ia(emetteur, route="matching/score", **kw):
         pass
 
 
-def requete(path="/aos/42/matching", traceparent=TRACEPARENT, tracestate=TRACESTATE):
-    entetes = []
-    if traceparent:
-        entetes.append((b"traceparent", traceparent.encode()))
-    if tracestate:
-        entetes.append((b"tracestate", tracestate.encode()))
-    return {"type": "http", "method": "POST", "path": path, "headers": entetes}
+def application(emetteur, session_explicite=None):
+    """Une vraie application FastAPI, instrumentée comme l'agent le fait."""
+    fastapi = pytest.importorskip("fastapi")
+    instrumentation = pytest.importorskip("opentelemetry.instrumentation.fastapi")
+    app = fastapi.FastAPI()
+
+    @app.get("/synchrone")
+    def route_synchrone():
+        appel_ia(emetteur, route="matching/score", session_id=session_explicite)
+        return {"ok": True}
+
+    @app.get("/asynchrone")
+    async def route_asynchrone():
+        appel_ia(emetteur, route="ao/draft", session_id=session_explicite)
+        return {"ok": True}
+
+    @app.get("/contexte")
+    def route_contexte():
+        ctx = request_trace.current()
+        return {"trace_id": ctx.trace_id, "span_id": ctx.span_id, "session_id": ctx.session_id}
+
+    instrumentation.FastAPIInstrumentor.instrument_app(app, tracer_provider=_fournisseur)
+    return app
 
 
-async def jouer(middleware, scope, pendant=None):
-    """Fait passer une requête dans le middleware ; ``pendant`` tourne DANS l'app."""
-    vu = {}
-
-    async def application(scope, receive, send):
-        vu["ctx"] = request_trace.current()
-        if pendant:
-            pendant()
-        await send({"type": "http.response.start", "status": 200, "headers": []})
-        await send({"type": "http.response.body", "body": b"ok"})
-
-    async def receive():
-        return {"type": "http.request", "body": b"", "more_body": False}
-
-    async def send(_message):
-        return None
-
-    middleware.app = application
-    await middleware(scope, receive, send)
-    vu["apres"] = request_trace.current()
-    if middleware._task:
-        middleware._task.cancel()
-    return vu
+def requete(app, chemin, entetes=None):
+    testclient = pytest.importorskip("fastapi.testclient")
+    entetes = {"traceparent": TRACEPARENT, "tracestate": TRACESTATE} if entetes is None else entetes
+    with testclient.TestClient(app) as client:
+        reponse = client.get(chemin, headers=entetes)
+    assert reponse.status_code == 200
+    return reponse
 
 
-def middleware_actif(monkeypatch):
-    """Le vrai middleware, envoi vers MIP actif mais réseau coupé."""
-    monkeypatch.setattr(mip_rum_middleware, "_post", lambda *a, **k: None)
-    return mip_rum_middleware.MIPRumMiddleware(
-        app=None, endpoint="https://mip.invalide/v1/traces", app_id="gip-plateforme",
-        flush_s=3600, batch_size=10_000,
-    )
+def span_serveur():
+    serveurs = [s for s in EXPORT.get_finished_spans() if s.kind == trace.SpanKind.SERVER]
+    assert len(serveurs) == 1, f"{len(serveurs)} spans serveur exportés"
+    return serveurs[0]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  Le contexte de trace
+#  Le contexte de trace, lu sur l'agent
 # ═══════════════════════════════════════════════════════════════════════════
-def test_le_contexte_reprend_la_trace_du_navigateur():
-    ctx = request_trace.from_headers(TRACEPARENT, TRACESTATE)
-    assert ctx.trace_id == TRACE
-    assert ctx.parent_span_id == SPAN_NAVIGATEUR
-    assert ctx.session_id == "session_42"
-    assert len(ctx.span_id) == 16 and ctx.span_id != SPAN_NAVIGATEUR
+def test_hors_requete_aucun_contexte():
+    assert request_trace.current() is None
 
 
-@pytest.mark.parametrize("traceparent", [None, "", "n'importe quoi", "01-" + TRACE + "-" + SPAN_NAVIGATEUR + "-01"])
-def test_sans_traceparent_valide_une_trace_neuve_est_ouverte(traceparent):
-    """Une requête n'est jamais refusée pour sa trace : appel hors navigateur,
-    en-tête malformé ou version inconnue → trace neuve, sans parent."""
-    ctx = request_trace.from_headers(traceparent, None)
-    assert len(ctx.trace_id) == 32 and ctx.trace_id != TRACE
-    assert ctx.parent_span_id is None
-    assert ctx.session_id is None
+def test_pendant_une_requete_le_contexte_est_celui_du_navigateur(monkeypatch):
+    emetteur, _ = charger_emetteur(monkeypatch)
+    ctx = requete(application(emetteur), "/contexte").json()
+    assert ctx["trace_id"] == TRACE
+    assert ctx["session_id"] == "session_42"
+    assert ctx["span_id"] == format(span_serveur().context.span_id, "016x")
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-#  Le middleware pose le contexte AVANT l'application
-# ═══════════════════════════════════════════════════════════════════════════
-def test_lapplication_voit_le_contexte_pendant_la_requete(monkeypatch):
-    """Le défaut d'origine : le contexte n'était calculé qu'APRÈS la réponse,
-    dans _record. Aucun appel IA fait pendant la requête ne pouvait s'y accrocher."""
-    vu = asyncio.run(jouer(middleware_actif(monkeypatch), requete()))
-    assert vu["ctx"] is not None, "aucun contexte de trace pendant la requête"
-    assert vu["ctx"].trace_id == TRACE
-    assert vu["ctx"].session_id == "session_42"
+def test_le_span_serveur_part_vers_mip_avec_le_navigateur_pour_parent(monkeypatch):
+    """Ce que l'ancien middleware envoyait, l'agent l'envoie : un span serveur par
+    requête, enfant du span navigateur, avec la session dans le tracestate (que
+    MIP lit : sessionFromTraceState)."""
+    emetteur, _ = charger_emetteur(monkeypatch)
+    requete(application(emetteur), "/contexte")
+    serveur = span_serveur()
+    assert format(serveur.context.trace_id, "032x") == TRACE
+    assert format(serveur.parent.span_id, "016x") == SPAN_NAVIGATEUR
+    assert serveur.context.trace_state.get("mip") == "s:session_42"
+    assert serveur.attributes.get("http.route") == "/contexte"
 
 
-def test_le_contexte_ne_fuit_pas_hors_de_la_requete(monkeypatch):
-    """Sans retrait, la requête suivante traitée par le même fil hériterait de la
-    trace de la précédente — et ses appels IA seraient rattachés au mauvais clic."""
-    vu = asyncio.run(jouer(middleware_actif(monkeypatch), requete()))
-    assert vu["apres"] is None, "le contexte de trace a survécu à la requête"
-
-
-def test_le_span_http_et_le_contexte_partagent_leurs_identifiants(monkeypatch):
-    """Le span http.server envoyé à MIP doit porter EXACTEMENT les identifiants
-    que les appels IA ont vus : c'est ce qui en fait leur parent."""
-    mw = middleware_actif(monkeypatch)
-    vu = asyncio.run(jouer(mw, requete()))
-    span_http = mw._buf[-1]
-    assert span_http["traceId"] == vu["ctx"].trace_id == TRACE
-    assert span_http["spanId"] == vu["ctx"].span_id
-    assert span_http["parentSpanId"] == SPAN_NAVIGATEUR
-
-
-def test_le_contexte_est_pose_meme_si_lenvoi_vers_mip_est_inactif(monkeypatch):
-    """La surveillance IA part vers xSOM, que MIP soit configuré ou non : le
-    rattachement des appels IA à la requête ne doit pas dépendre de MIP."""
-    monkeypatch.delenv("MIP_RUM_ENDPOINT", raising=False)
-    mw = mip_rum_middleware.MIPRumMiddleware(app=None, endpoint=None, app_id=None)
-    assert not mw.enabled
-    vu = asyncio.run(jouer(mw, requete()))
-    assert vu["ctx"] is not None and vu["ctx"].trace_id == TRACE
-    assert vu["apres"] is None
+def test_sans_traceparent_une_trace_neuve_est_ouverte(monkeypatch):
+    """Une requête n'est jamais refusée pour sa trace : appel hors navigateur →
+    trace neuve, sans parent ni session."""
+    emetteur, _ = charger_emetteur(monkeypatch)
+    ctx = requete(application(emetteur), "/contexte", entetes={}).json()
+    assert len(ctx["trace_id"]) == 32 and ctx["trace_id"] != TRACE
+    assert ctx["session_id"] is None
+    assert span_serveur().parent is None
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  L'appel IA reprend la trace de sa requête
 # ═══════════════════════════════════════════════════════════════════════════
-def test_un_appel_ia_pendant_une_requete_porte_sa_trace(monkeypatch):
+@pytest.mark.parametrize("chemin", ["/synchrone", "/asynchrone"])
+def test_un_appel_ia_pendant_une_requete_porte_sa_trace(monkeypatch, chemin):
+    """Synchrone : la route tourne dans un fil du pool, là où un contexte se perd
+    quand personne ne le copie."""
     emetteur, captures = charger_emetteur(monkeypatch)
-    vu = asyncio.run(jouer(middleware_actif(monkeypatch), requete(),
-                           pendant=lambda: appel_ia(emetteur)))
+    requete(application(emetteur), chemin)
+    serveur_id = format(span_serveur().context.span_id, "016x")
+
     span, _ = captures[-1]
-    assert span["traceId"] == TRACE, "la mesure IA est encore orpheline"
-    assert span["parentSpanId"] == vu["ctx"].span_id, (
-        "la mesure IA n'a pas le span http.server de sa requête pour parent"
-    )
-    assert attribut(span, "mip.session_id") == "session_42", (
-        "la mesure IA n'hérite pas de la session du navigateur"
-    )
+    assert span["traceId"] == TRACE, f"{chemin} : la mesure IA est encore orpheline"
+    assert span["parentSpanId"] == serveur_id, "la mesure IA n'a pas le span serveur de sa requête pour parent"
+    assert attribut(span, "mip.session_id") == "session_42", "la mesure IA n'hérite pas de la session du navigateur"
+
+    # Le même appel, vu par MIP : le span gen_ai exporté par l'agent.
+    gen_ai = [s for s in EXPORT.get_finished_spans() if s.name == "gen_ai"]
+    assert len(gen_ai) == 1
+    assert format(gen_ai[0].context.span_id, "016x") == span["spanId"], "xSOM et MIP ne parlent pas du même appel"
+    assert format(gen_ai[0].parent.span_id, "016x") == serveur_id
+    assert gen_ai[0].attributes.get("gen_ai.request.model") == "mistral-small"
 
 
 def test_une_session_explicite_garde_la_priorite(monkeypatch):
     """routers/assistant.py passe déjà sa session : le contexte ne doit pas
     l'écraser, seulement combler son absence."""
     emetteur, captures = charger_emetteur(monkeypatch)
-    asyncio.run(jouer(middleware_actif(monkeypatch), requete(),
-                      pendant=lambda: appel_ia(emetteur, session_id="session_explicite")))
+    requete(application(emetteur, session_explicite="session_explicite"), "/synchrone")
     assert attribut(captures[-1][0], "mip.session_id") == "session_explicite"
 
 
@@ -230,6 +225,18 @@ def test_hors_requete_une_trace_neuve_est_ouverte(monkeypatch):
     span, _ = captures[-1]
     assert len(span["traceId"]) == 32 and span["traceId"] != TRACE
     assert "parentSpanId" not in span
+
+
+def test_une_exception_passe_le_span_en_erreur(monkeypatch):
+    emetteur, captures = charger_emetteur(monkeypatch)
+    with pytest.raises(TimeoutError):
+        with emetteur.record_ai_call(provider="openrouter", model="m", route="ao/draft"):
+            raise TimeoutError()
+    span, _ = captures[-1]
+    assert attribut(span, "error.type") == "TimeoutError"
+    assert span["status"]["code"] == 2
+    gen_ai = [s for s in EXPORT.get_finished_spans() if s.name == "gen_ai"][-1]
+    assert gen_ai.status.status_code == trace.StatusCode.ERROR
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -280,38 +287,3 @@ def test_sans_jeton_par_defaut_une_fonction_oubliee_nest_envoyee_nulle_part(monk
     assert captures[-1][1] is None
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-#  De bout en bout, dans une vraie application FastAPI
-# ═══════════════════════════════════════════════════════════════════════════
-#  Les tests précédents jouent le middleware sur une application ASGI minimale.
-#  Celui-ci ajoute ce qu'eux ne peuvent pas prouver : que Starlette transmet bien
-#  le contexte jusqu'à une route SYNCHRONE, exécutée dans un fil du pool — c'est
-#  là qu'une variable de contexte se perd quand quelqu'un ne la copie pas.
-#  FastAPI n'est pas installé dans tous les environnements de développement ;
-#  la CI l'installe, et c'est là que ce test fait foi.
-@pytest.mark.parametrize("chemin", ["/synchrone", "/asynchrone"])
-def test_de_bout_en_bout_dans_fastapi(monkeypatch, chemin):
-    fastapi = pytest.importorskip("fastapi")
-    testclient = pytest.importorskip("fastapi.testclient")
-    monkeypatch.delenv("MIP_RUM_ENDPOINT", raising=False)
-    emetteur, captures = charger_emetteur(monkeypatch)
-
-    app = fastapi.FastAPI()
-    app.add_middleware(mip_rum_middleware.MIPRumMiddleware)
-
-    @app.get("/synchrone")
-    def route_synchrone():
-        appel_ia(emetteur, route="matching/score")
-        return {"ok": True}
-
-    @app.get("/asynchrone")
-    async def route_asynchrone():
-        appel_ia(emetteur, route="ao/draft")
-        return {"ok": True}
-
-    with testclient.TestClient(app) as client:
-        reponse = client.get(chemin, headers={"traceparent": TRACEPARENT, "tracestate": TRACESTATE})
-    assert reponse.status_code == 200
-    span, _ = captures[-1]
-    assert span["traceId"] == TRACE, f"{chemin} : le contexte ne parvient pas jusqu'à l'appel IA"
-    assert attribut(span, "mip.session_id") == "session_42"

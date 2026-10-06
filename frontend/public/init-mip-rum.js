@@ -6,11 +6,11 @@
 (function () {
   if (typeof MIPRum === 'undefined') return; // script CDN bloqué/indisponible : l'app vit sans RUM
   MIPRum.init({
-    // Ingestion redéployée sur Vercel (août 2026). L'ancienne adresse était une
-    // edge function du projet Supabase nupxrdpsliqptqnjkmgw, supprimé depuis :
-    // tout ce qui l'appelle échoue désormais, silencieusement — la télémétrie
-    // est best-effort et ne remonte aucune erreur à l'utilisateur.
-    endpoint: "https://mip-rum-console.vercel.app/api/ingest/v1/traces",
+    // Collecte DIRECTE au collector de MIP (Railway), plus par la console Vercel
+    // qui la relayait : un intermédiaire de moins, et le collector déduit le pays
+    // de l'adresse sans la conserver. Le rejeu suit (/v1/replay, dérivé par le SDK).
+    // Le script, lui, reste servi par la console (script-src de vercel.json).
+    endpoint: "https://collector-production-d769.up.railway.app/v1/traces",
     appId: "gip-plateforme",
     clientId: "groupement-it",
     apiKey: "mip_4ecfa86115cf090d0b358b340108139f", // générée le 29/09/2026 ; l'ancienne était publique et jamais enregistrée
